@@ -49,8 +49,11 @@ describe('scaffold — vite.config.ts (pinned port 5277, base /red-baron/)', () 
 
   it('pins port 5277 on both the dev server and preview', () => {
     const cfg = read('vite.config.ts')
-    // Both `server.port` and `preview.port` must be 5277 → at least two hits.
-    expect(count(cfg, RED_BARON_PORT)).toBeGreaterThanOrEqual(2)
+    // Count actual `port:` ASSIGNMENTS (server + preview), not bare occurrences of
+    // the number — the config comment also names 5277, so a raw substring count
+    // would still pass (comment + one block) if a block dropped its port.
+    const portAssignments = cfg.match(new RegExp(`port:\\s*${RED_BARON_PORT}`, 'g')) ?? []
+    expect(portAssignments.length).toBeGreaterThanOrEqual(2)
   })
 
   it('does NOT reuse a sibling pinned port (5270/5273/5274/5275/5276)', () => {
@@ -71,7 +74,11 @@ describe('scaffold — vite.config.ts (pinned port 5277, base /red-baron/)', () 
 
   it('allow-lists arcade.slabgorb.com on both server and preview (tunnel Host)', () => {
     const cfg = read('vite.config.ts')
-    expect(count(cfg, 'arcade.slabgorb.com')).toBeGreaterThanOrEqual(2)
+    // Count actual `allowedHosts: ['arcade.slabgorb.com']` ENTRIES, not bare
+    // hostname mentions — a config comment names the host too, so a raw substring
+    // count could pass even with both allowedHosts entries deleted.
+    const allowLists = cfg.match(/allowedHosts:\s*\[\s*['"]arcade\.slabgorb\.com/g) ?? []
+    expect(allowLists.length).toBeGreaterThanOrEqual(2)
   })
 })
 
@@ -168,5 +175,9 @@ describe('scaffold — first native @arcade/shared consumer (proves the dependen
     // multiply(IDENTITY, IDENTITY) === IDENTITY, and rotationY(0) === IDENTITY.
     expect(noNegZero(m3d.multiply(m3d.IDENTITY, m3d.IDENTITY))).toEqual([...m3d.IDENTITY])
     expect(noNegZero(m3d.rotationY(0))).toEqual([...m3d.IDENTITY])
+    // Non-trivial operand so this discriminates the REAL Math Box from an
+    // identity-shaped stub: I · T(1,2,3) must equal T(1,2,3), not IDENTITY.
+    const t = m3d.translation(1, 2, 3)
+    expect(noNegZero(m3d.multiply(m3d.IDENTITY, t))).toEqual([...t])
   })
 })
