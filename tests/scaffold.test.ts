@@ -162,8 +162,11 @@ describe('scaffold — first native @arcade/shared consumer (proves the dependen
     const m3d = await import('@arcade/shared/math3d')
     expect(Array.isArray(m3d.IDENTITY), '@arcade/shared/math3d must export IDENTITY').toBe(true)
     expect(m3d.IDENTITY.length, 'IDENTITY is a length-16 row-major mat4').toBe(16)
+    // Normalise signed zero (rotationY(0) yields -0 from -sin(0)) so the mat4
+    // identity comparison is mathematical, not bitwise: -0 and +0 are equal reals.
+    const noNegZero = (m: readonly number[]): number[] => m.map((v: number) => v + 0)
     // multiply(IDENTITY, IDENTITY) === IDENTITY, and rotationY(0) === IDENTITY.
-    expect(m3d.multiply(m3d.IDENTITY, m3d.IDENTITY)).toEqual([...m3d.IDENTITY])
-    expect(m3d.rotationY(0)).toEqual([...m3d.IDENTITY])
+    expect(noNegZero(m3d.multiply(m3d.IDENTITY, m3d.IDENTITY))).toEqual([...m3d.IDENTITY])
+    expect(noNegZero(m3d.rotationY(0))).toEqual([...m3d.IDENTITY])
   })
 })
