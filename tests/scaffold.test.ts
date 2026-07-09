@@ -4,7 +4,7 @@
 // OWN config files (they never reach up into the orchestrator — a standalone
 // `git clone red-baron` must still pass) and pin the invariants the epic's
 // toolchain ruling names: pinned port 5277 (NOT 5270/5273/5274/5275/5276, which
-// belong to lobby/tempest/star-wars/asteroids/battlezone), base '/red-baron/',
+// belong to lobby/tempest/star-wars/asteroids/battlezone), base '/',
 // strictPort + allowedHosts on both server and preview, package.json scripts
 // copied verbatim from the sibling games, TS strict, and a black-canvas
 // index.html booting src/main.ts.
@@ -38,13 +38,13 @@ const count = (haystack: string, needle: string): number => haystack.split(needl
 const RED_BARON_PORT = '5277'
 const TAKEN_PORTS = ['5270', '5273', '5274', '5275', '5276']
 
-describe('scaffold — vite.config.ts (pinned port 5277, base /red-baron/)', () => {
+describe('scaffold — vite.config.ts (pinned port 5277, base /)', () => {
   it('vite.config.ts exists', () => {
     expect(existsSync(path('vite.config.ts')), 'red-baron/vite.config.ts must exist').toBe(true)
   })
 
-  it('serves under base /red-baron/', () => {
-    expect(read('vite.config.ts')).toMatch(/base:\s*['"]\/red-baron\/['"]/)
+  it('serves under base /', () => {
+    expect(read('vite.config.ts')).toMatch(/base:\s*['"]\/['"]/)
   })
 
   it('pins port 5277 on both the dev server and preview', () => {
