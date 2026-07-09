@@ -69,9 +69,18 @@ function need<T>(value: T | undefined, name: string): T {
 const ASPECT = 16 / 9
 const LEVEL: Attitude = { roll: 0, pitch: 0, yaw: 0 }
 
-/** Reduce the horizon's NDC segments to a single line: its screen tilt + centre
- *  height, taken between the left-most and right-most endpoints. */
-function line(segs: readonly SceneSegment[]): { tilt: number; midY: number; leftX: number; rightX: number } {
+/** Reduce the horizon's NDC segments to a single line: its ON-SCREEN tilt +
+ *  centre height, taken between the left-most and right-most endpoints.
+ *
+ *  NDC is ANISOTROPIC — x ∈ [-1,1] maps to the full pixel WIDTH, y ∈ [-1,1] to the
+ *  full HEIGHT — so a horizon rolled by θ (which tilts by exactly θ on the square-
+ *  pixel screen) reads as atan(aspect·tanθ) in raw NDC. To recover the physical
+ *  on-screen tilt we scale the x-delta by aspect (dev correction — see the Dev
+ *  design-deviation note in the session file). */
+function line(
+  segs: readonly SceneSegment[],
+  aspect: number,
+): { tilt: number; midY: number; leftX: number; rightX: number } {
   expect(segs.length).toBeGreaterThan(0)
   const pts = segs.flatMap((s) => [
     { x: s.x1, y: s.y1 },
@@ -84,7 +93,7 @@ function line(segs: readonly SceneSegment[]): { tilt: number; midY: number; left
     if (p.x > right.x) right = p
   }
   return {
-    tilt: Math.atan2(right.y - left.y, right.x - left.x),
+    tilt: Math.atan2(right.y - left.y, (right.x - left.x) * aspect),
     midY: (left.y + right.y) / 2,
     leftX: left.x,
     rightX: right.x,
@@ -98,7 +107,7 @@ describe('horizon — level flight', () => {
   })
 
   it('is a FLAT line across the full view width, at the vertical centre', () => {
-    const l = line(need(horizon.horizonSegments, 'horizonSegments')(LEVEL, ASPECT))
+    const l = line(need(horizon.horizonSegments, 'horizonSegments')(LEVEL, ASPECT), ASPECT)
     expect(l.tilt).toBeCloseTo(0, 2) // horizontal
     expect(l.midY).toBeCloseTo(0, 2) // vertical centre
     expect(l.leftX).toBeLessThan(-0.5) // spans left…
@@ -110,15 +119,15 @@ describe('horizon — roll banks the line (the tilting horizon)', () => {
   it('rolling tilts the horizon by the bank angle (|tilt| ≈ |roll|)', () => {
     const horizonSegments = need(horizon.horizonSegments, 'horizonSegments')
     for (const roll of [0.2, 0.4]) {
-      const l = line(horizonSegments({ roll, pitch: 0, yaw: 0 }, ASPECT))
+      const l = line(horizonSegments({ roll, pitch: 0, yaw: 0 }, ASPECT), ASPECT)
       expect(Math.abs(l.tilt)).toBeCloseTo(roll, 1) // within ~0.05 rad
     }
   })
 
   it('opposite banks tilt the horizon opposite ways (sign anti-symmetry)', () => {
     const horizonSegments = need(horizon.horizonSegments, 'horizonSegments')
-    const rightBank = line(horizonSegments({ roll: 0.3, pitch: 0, yaw: 0 }, ASPECT)).tilt
-    const leftBank = line(horizonSegments({ roll: -0.3, pitch: 0, yaw: 0 }, ASPECT)).tilt
+    const rightBank = line(horizonSegments({ roll: 0.3, pitch: 0, yaw: 0 }, ASPECT), ASPECT).tilt
+    const leftBank = line(horizonSegments({ roll: -0.3, pitch: 0, yaw: 0 }, ASPECT), ASPECT).tilt
     expect(Math.sign(rightBank)).toBe(-Math.sign(leftBank))
     expect(Math.abs(rightBank)).toBeGreaterThan(0.1) // a real tilt, not noise
   })
@@ -127,16 +136,16 @@ describe('horizon — roll banks the line (the tilting horizon)', () => {
 describe('horizon — pitch slides it vertically, yaw leaves it alone', () => {
   it('climb and dive move the horizon in opposite vertical directions, level between', () => {
     const horizonSegments = need(horizon.horizonSegments, 'horizonSegments')
-    const up = line(horizonSegments({ roll: 0, pitch: 0.3, yaw: 0 }, ASPECT)).midY
-    const down = line(horizonSegments({ roll: 0, pitch: -0.3, yaw: 0 }, ASPECT)).midY
-    const level = line(horizonSegments(LEVEL, ASPECT)).midY
+    const up = line(horizonSegments({ roll: 0, pitch: 0.3, yaw: 0 }, ASPECT), ASPECT).midY
+    const down = line(horizonSegments({ roll: 0, pitch: -0.3, yaw: 0 }, ASPECT), ASPECT).midY
+    const level = line(horizonSegments(LEVEL, ASPECT), ASPECT).midY
     expect(Math.sign(up - level)).toBe(-Math.sign(down - level)) // opposite sides of level
     expect(Math.abs(up - down)).toBeGreaterThan(0.05) // pitch actually moves it
   })
 
   it('a level TURN (yaw only) does NOT lift, drop, or tilt the horizon (yaw-invariant)', () => {
     const horizonSegments = need(horizon.horizonSegments, 'horizonSegments')
-    const turned = line(horizonSegments({ roll: 0, pitch: 0, yaw: 0.6 }, ASPECT))
+    const turned = line(horizonSegments({ roll: 0, pitch: 0, yaw: 0.6 }, ASPECT), ASPECT)
     expect(turned.tilt).toBeCloseTo(0, 2)
     expect(turned.midY).toBeCloseTo(0, 2)
   })
