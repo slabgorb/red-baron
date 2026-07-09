@@ -151,7 +151,9 @@ function easeTurnRate(current: number, target: number): number {
  */
 export function step(state: FlightState, input: FlightInput): FlightState {
   const scale = DISCHK[input.proximity]
-  const turnRate = easeTurnRate(state.turnRate, input.turn * MAX_TURN)
+  // `turn` is the normalized yoke ∈ [-1, 1]; clamp out-of-range just as POTSCL
+  // clamps the pitch pot, so a bad caller can't over-drive PLDELX past a full turn.
+  const turnRate = easeTurnRate(state.turnRate, clamp(input.turn, -1, 1) * MAX_TURN)
   const pitchRate = pitchDelta(input.pitch)
   return {
     turnRate,

@@ -83,3 +83,21 @@ describe('cockpit boot — scope fence: NO biplane geometry (findings §9 gap #1
     expect(anyMatch(/from\s+['"][^'"]*(biplane|plane-points)['"]/), 'no biplane/plane-points import in rb1-3').toBe(false)
   })
 })
+
+describe('cockpit boot — the flight model drives the camera at the calc-frame rate (rb2-1)', () => {
+  it('the runnable cockpit consumes the rb2 flight model (imports ./core/flight)', () => {
+    expect(anyMatch(/from\s+['"][./]*core\/flight['"]/), 'the cockpit must be flown by src/core/flight').toBe(true)
+  })
+
+  it('steps the sim inside a SIM_TIMESTEP_S accumulator, NOT once per display frame (÷N-trap guard, findings §1)', () => {
+    // Ticking step() per requestAnimationFrame runs the sim ~6× too fast (the Red
+    // Baron analogue of the Asteroids ÷4 trap). The fix is a fixed-step accumulator
+    // gated on the calc-frame timestep — pin it structurally so a refactor back to
+    // "one step per rendered frame" fails loudly here.
+    expect(anyMatch(/from\s+['"][./]*core\/timing['"]/), 'the cockpit must import the calc-frame cadence (SIM_TIMESTEP_S)').toBe(true)
+    expect(
+      anyMatch(/while\s*\([^)]*SIM_TIMESTEP_S[^)]*\)/),
+      'step() must run inside a while-accumulator gated on SIM_TIMESTEP_S, not per rAF frame',
+    ).toBe(true)
+  })
+})
