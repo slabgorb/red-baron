@@ -1,2 +1,11 @@
 node_modules/
 dist/
+.DS_Store
+.session/
+
+# Reference disassembly — the original Atari Red Baron (1980) MAC65 6502 source
+# (github.com/historicalsource/red-baron, Rich Moore's RBARON.MAC et al.), cloned
+# locally as a research quarry. NEVER committed or pushed — checkout-local only.
+# Everything durable extracted from it lives in the committed findings doc
+# (docs/red-baron-1980-source-findings.md) instead (story rb1-2).
+reference/
