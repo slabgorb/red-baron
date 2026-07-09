@@ -95,9 +95,12 @@ describe('cockpit boot — the flight model drives the camera at the calc-frame 
     // gated on the calc-frame timestep — pin it structurally so a refactor back to
     // "one step per rendered frame" fails loudly here.
     expect(anyMatch(/from\s+['"][./]*core\/timing['"]/), 'the cockpit must import the calc-frame cadence (SIM_TIMESTEP_S)').toBe(true)
+    // Require the step() call to appear INSIDE the while-block body — a bare
+    // `while(…SIM_TIMESTEP_S…)` existing somewhere doesn't prove the sim ticks in
+    // it (step() could be moved outside a vestigial loop and still match).
     expect(
-      anyMatch(/while\s*\([^)]*SIM_TIMESTEP_S[^)]*\)/),
-      'step() must run inside a while-accumulator gated on SIM_TIMESTEP_S, not per rAF frame',
+      anyMatch(/while\s*\([^)]*SIM_TIMESTEP_S[^)]*\)\s*\{[^}]*\bstep\s*\(/),
+      'step() must be called INSIDE the SIM_TIMESTEP_S accumulator block, not once per rAF frame',
     ).toBe(true)
   })
 })
