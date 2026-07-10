@@ -13,12 +13,12 @@
 // executed. Like the rb1-1 scaffold suite, this reads src/ as TEXT and asserts the
 // wiring structurally — the "keep the sneaky dev honest" integration guard.
 //
-// SCOPE FENCE (findings §9, open gap #1): the picture-ROM SOURCE (RBPICS.MAC /
-// RBCHAR.MAC — the biplane face/line connect-lists) is ABSENT from the quarry, so
-// the plane's connect topology is not yet enumerable. Authentic biplane geometry
-// is a follow-up story, explicitly BLOCKED before rb1-3. "Empty cockpit" is literal:
-// horizon + terrain substrate, NO enemy/biplane models. This suite fails if a
-// biplane geometry module sneaks in.
+// SCOPE FENCE (RETIRED in rb2-3): rb1-3 fenced off biplane geometry while findings
+// §9 gap #1 was open — the picture-ROM connect-lists were thought absent. That gap
+// is now CLOSED: rb2-2 transcribed the connect-lists (topology.ts) and rb2-3 the 42
+// plane vertices + LOD render (biplane.ts, covered by tests/core/biplane.test.ts).
+// The "NO biplane geometry" fence has served its purpose and is removed; the wiring
+// checks below still keep the runnable cockpit honest.
 
 import { describe, it, expect } from 'vitest'
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
@@ -67,20 +67,6 @@ describe('cockpit boot — the flight camera + tilting horizon are wired to the 
     // path must actually draw the horizon as strokes/paths, somewhere in src.
     expect(anyMatch(/getContext\(\s*['"]2d['"]\s*\)/), 'must acquire a 2D canvas context').toBe(true)
     expect(anyMatch(/\.(stroke|lineTo|moveTo)\s*\(/), 'must stroke vector paths (moveTo/lineTo/stroke)').toBe(true)
-  })
-})
-
-describe('cockpit boot — scope fence: NO biplane geometry (findings §9 gap #1)', () => {
-  it('ships no biplane geometry module (plane.ts / biplane.ts / plane-points.ts)', () => {
-    // The 42 vertices are known, but the connect topology lives in the absent
-    // RBPICS.MAC/RBCHAR.MAC — a BLOCKED follow-up, not rb1-3.
-    const banned = /(^|\/)(plane|biplane|plane-points)\.ts$/
-    const offenders = files.filter((f) => banned.test(f.path)).map((f) => f.path)
-    expect(offenders, `biplane geometry is out of scope (blocked on the absent picture-ROM source): ${offenders.join(', ')}`).toEqual([])
-  })
-
-  it('no src module imports a biplane geometry model', () => {
-    expect(anyMatch(/from\s+['"][^'"]*(biplane|plane-points)['"]/), 'no biplane/plane-points import in rb1-3').toBe(false)
   })
 })
 
