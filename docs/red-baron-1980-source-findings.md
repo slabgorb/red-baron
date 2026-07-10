@@ -4,8 +4,10 @@
 the original Atari MAC65 6502 assembly source for *Red Baron* (arcade, 1980; Atari project
 **22603**, programmer **Rich Moore**, sound driver **Rich Adam**, dated 3/11/81). Cloned
 locally into the gitignored, checkout-local `reference/red-baron/` quarry. This is real Atari
-source — original labels and developer comments — not a community disassembly. The picture/vector
-ROMs' *source* (`RBPICS.MAC`, `RBCHAR.MAC`) are the one part **not** in the checkout; see §9.
+source — original labels and developer comments — not a community disassembly. (Correction,
+rb2-2: an earlier draft called the picture/vector ROMs' *source* — `RBPICS.MAC`/`RBCHAR.MAC` — the
+one part **not** in the checkout. It is present, merely misnamed by ROM part number: `037007.XXX`
+**is** `RBPICS.MAC` and `037006.XXX` **is** `RBCHAR.MAC`. See §7 and the now-closed gap #1 in §9.)
 
 **Scope:** This is rb1-2's authority-chain document — the ROM facts later Red Baron stories rely
 on (frame cadence, the flight-camera pipeline, enemy AI, the wave structure, collision/lives, the
@@ -302,8 +304,10 @@ decaying `$F→0`). **No coin or start jingle** exists (coin = mechanical `TCN65
 **The critical source split (read first):** raw 3-D **vertices** live in the program ROM and **their
 source is present** (`RBARON.MAC`). The **connect-lists + finished pictures** (the plane's face/line
 lists `DB.MAP`/`DB.MAR`/`DB.LNS`, the blimp, explosion pieces, prop, glyphs) live in the **picture/vector
-ROMs** `037007`/`037006`, whose *source* (`RBPICS.MAC`, `RBCHAR.MAC`) is **absent from the checkout** —
-addresses are recoverable, raw bytes are not (§9). [ROM-verified: layout; unresolved: picture contents]
+ROMs** `037007`/`037006` — **and their source is present too, merely misnamed by ROM part number**:
+`037007.XXX` **is** `RBPICS.MAC` (its header reads `.TITLE RBPICS - RED BARON PICTURES`) and `037006.XXX`
+**is** `RBCHAR.MAC`. The full connect-lists are therefore enumerable, and were transcribed byte-for-byte
+into `red-baron/src/core/topology.ts` (rb2-2); gap #1 in §9 is **closed**. [ROM-verified: layout AND contents]
 
 **Point-encoding macros** (`RBARON.MAC:15-35`): each scales args so 8-bit bytes hold sub-unit precision.
 `POINTP .X,.Y,.Z → .BYTE .Z, .X*2, .Y*4` — **one model vertex = 3 bytes, byte order Z, 2·X, 4·Y**, each a
@@ -322,7 +326,8 @@ cube (hit tests, not display). Root pointer table `PLNDB` (`@ 709E`) indexes eve
 
 **Decode engine** (`RBGRND.MAC:658-720`): walks the transformed-point scratch buffer `DB.TRP` (6-byte
 records Z,X,Y lo/hi), emits AVG `VCTR`s. Worked example present in-source: `BULLDE` (bullet-hole "X",
-`RBGRND.MAC:814-822`). The plane's own face/line topology is in the absent `RBPICS.MAC` (§9). [ROM-verified engine; plane topology unresolved]
+`RBGRND.MAC:814-822`). The plane's own face/line topology is in `RBPICS.MAC` = `037007.XXX`
+(`DB.MAP`/`DB.MAR`/`DB.LNS`), transcribed in rb2-2 → `src/core/topology.ts`. [ROM-verified engine AND plane topology]
 
 **Picture-ROM object inventory** (addresses from `RBARON.MAC:378-437` equate chains, anchored by
 `MSGS=$31BE`/`HATCH=$32FC` matching `037001.MAP` and `SINE=$3800` matching `RBARON.DOC`):
@@ -331,8 +336,8 @@ records Z,X,Y lo/hi), emits AVG `VCTR`s. Worked example present in-source: `BULL
 `CHAR.A..Z`, `CHAR.0..9`, 37 labels — the HUD/score font).
 `037007` (picture ROM, base `SINE=$3800`): `PROPS`/`DBPROP` (prop blades), `H.MAP`/`SCMAP` (mountain decode
 ptrs), `DB.MAP`/`DB.MAR`/`DB.LNS` (plane back-face/front-face/wing-strut connect-lists), `COLLD`, `PIECE0..3`
-(4 explosion-debris models), `STAR0`/`STAR1` (starburst debris), `BLIMP`/`DBLIMP` (the Zeppelin). [addresses
-ROM-verified via anchored chain; contents in absent source]
+(4 explosion-debris models), `STAR0`/`STAR1` (starburst debris), `BLIMP`/`DBLIMP` (the Zeppelin). [addresses ROM-verified via
+anchored chain AND contents transcribed from `037007.XXX` = `RBPICS.MAC` in rb2-2 → `src/core/topology.ts`]
 
 **Ground/landscape objects** (`RBGRND.MAC`): mountain silhouettes `SCAPE0..3` (21/16/18/15 pts, `PFPNTS`
 2-D format); the **blimp** (`BLOBJ`, the only airship — no separate balloon); bullet holes (`BULLT0/1` +
@@ -371,12 +376,16 @@ channels + lives/grace (§5), the full POKEY sound model + inventory + the corre
 (§6), the biplane's **42 authentic vertices** + point/connect encoding + Math Box conventions (§7-8).
 
 **Open gaps / deferred (candidate follow-up stories):**
-1. **Picture-ROM source is absent.** `RBPICS.MAC` (037007: the plane connect-lists `DB.MAP`/`DB.MAR`/`DB.LNS`,
-   `BLIMP`, `PIECE0-3`, `DBPROP`, `STAR/DESTR`) and `RBCHAR.MAC` (037006) are **not in the checkout** — only
-   addresses/sizes are known. **Consequence: the plane's face/line topology is not yet enumerable** (we have
-   all 42 vertices but not which vertices the wings/struts/fuselage lines connect). The `VV/BV` format is fully
-   understood, so once the bytes are obtained the topology decodes directly. Recovery = find `RBPICS.MAC`/
-   `RBCHAR.MAC` or disassemble `037007.XXX`/`037006.XXX`. **→ a follow-up story before any authentic-plane render.**
+1. **~~Picture-ROM source is absent.~~ CLOSED (rb2-2).** The picture-ROM *source* shipped in the quarry all
+   along — misnamed by ROM part number: **`037007.XXX` IS `RBPICS.MAC`** (`.TITLE RBPICS - RED BARON PICTURES`)
+   and **`037006.XXX` IS `RBCHAR.MAC`**. The biplane connect-lists (`DB.MAP` back-face, `DB.MAR` front-face,
+   `DB.LNS` wing struts) plus `BLIMP`/`DBLIMP`, the explosion pieces (`PIECE0-3` + `PCDEC0-2`), the prop
+   (`DBPROP` + `PPROPA-C`), the star-burst debris (`STAR0/1` + `DESTR0/1`) and `COLLD` were transcribed
+   byte-for-byte from `037007.XXX` into `red-baron/src/core/topology.ts` (rb2-2), with the `BLANKV`/`VSBLEV`
+   = `pointIndex*6 + pen` opcode arithmetic. **The plane's full face/line topology is now enumerable** (the 42
+   program-ROM vertices from `RBARON.MAC` + these connect-lists). `RBCHAR.MAC` (`037006.XXX`, the glyph/message
+   ROM) remains on hand for a future font/HUD story. **Consequence: rb2-3 (render), rb2-6 (explosions) and
+   rb2-10 (blimp) draw authentic geometry, not stand-ins.**
 2. **Analog sound timbre is off-CPU** — gun/explosion/spiral noise character lives on the discrete sound PCB,
    not this source; must be synthesized to taste from the bit-level control (§6).
 3. **Exact wall-clock game rate** depends on 6502 compute time; 96 ms is the designed minimum, not a guaranteed
@@ -396,8 +405,9 @@ channels + lives/grace (§5), the full POKEY sound model + inventory + the corre
   level-gated firing) + §5 (evade-check death, gun-overheat, spawn grace).
 - **ground wave:** §4 (`MODECT` wave alternation, `SCAPE*` mountains, active/passive ground targets).
 - **sound story:** §6 (5 POKEY envelope tables in the corrected 8-byte format + the analog latch model).
-- **render/objects:** §7 (42-vertex biplane + LOD split, picture-ROM inventory) — **blocked on gap #1** for
-  authentic plane topology.
+- **render/objects:** §7 (42-vertex biplane + LOD split, picture-ROM inventory) + the transcribed
+  `src/core/topology.ts` (rb2-2) — **gap #1 is closed**, so rb2-3/rb2-6/rb2-10 render authentic
+  plane / explosion / blimp topology, not stand-ins.
 
 ---
 
@@ -409,3 +419,10 @@ channels + lives/grace (§5), the full POKEY sound model + inventory + the corre
   62.5 Hz vs 50 Hz — was adjudicated against the `RBARON.COM`/`R2BRON.COM` LINK recipes and the release part
   numbers: **canonical = `RBARON`/`RBGRND`, `FRMECNT=4`, 62.5 Hz** (see the header note). The committed doc is
   self-contained; the `reference/` quarry it was pulled from is gitignored and not required for any fact here.
+- **2026-07-10 — rb2-2 (picture-ROM correction + topology transcription).** Closed gap #1. The picture-ROM
+  *source* was present in the quarry all along, misnamed by ROM part number (`037007.XXX` = `RBPICS.MAC`,
+  `037006.XXX` = `RBCHAR.MAC`). Transcribed the biplane connect-lists (`DB.MAP`/`DB.MAR`/`DB.LNS`) and the
+  prop / explosion / blimp / star picture-lists — 287 connect opcodes across 12 lists — from `037007.XXX`
+  into `red-baron/src/core/topology.ts`, and corrected the four stale "absent" claims here (the header note,
+  §7, §9 gap #1, §10). Encoding: `BLANKV`/`BV` = `point*6` (dark move), `VSBLEV`/`VV` = `point*6+1` (draw),
+  `ENDDB` = `$FF`.
