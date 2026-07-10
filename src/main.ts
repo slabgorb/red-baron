@@ -1,25 +1,33 @@
 // src/main.ts
 //
-// The runnable cockpit — now FLOWN by the authentic rb2-1 flight model. The yoke
-// is the keyboard (←/→ or A/D turn, ↑/↓ or W/S climb-dive); its input feeds a
-// FlightInput that the sim steps ONCE per calculation frame (timing.ts
-// SIM_TIMESTEP_S — findings §1: the sim ticks at ~10.42 Hz, NOT per display
-// frame, or it runs ~6× too fast — the ÷N fidelity trap). The stepped attitude
-// drives the rb1 tilting horizon through the flight camera. No throttle: forward
-// motion is implicit; the pilot commands only turn and pitch (findings §2).
+// The runnable cockpit — flown by the rb2-1 flight model, now with a live enemy.
+// The yoke is the keyboard (←/→ or A/D turn, ↑/↓ or W/S climb-dive); its input
+// feeds a FlightInput the sim steps ONCE per calculation frame (timing.ts
+// SIM_TIMESTEP_S — findings §1: the sim ticks at ~10.42 Hz, NOT per display frame,
+// or it runs ~6× too fast — the ÷N fidelity trap). The stepped attitude drives the
+// rb1 tilting horizon; a single weaving enemy biplane (rb2-4) is spawned, stepped
+// in the SAME calc-frame loop, and drawn through the rb2-3 biplane substrate.
 //
-// Still an EMPTY cockpit: horizon only, no enemy/biplane geometry (blocked on the
-// picture-ROM source, findings §9 gap #1 — a later rb2 story). With nothing near,
-// DISCHK sits in the slow 'far' band; the control feel sharpens near combat once
-// enemies arrive (rb2-4+).
+// The enemy's live depth feeds DISCHK: proximityBand(enemy.depth) sets
+// FlightInput.proximity, so the control feel SHARPENS as the enemy closes in
+// (findings §2). No throttle: forward motion is implicit; the pilot commands only
+// turn and pitch (findings §2).
 
-import { type Attitude } from './core/camera'
+import { flightView, type Attitude } from './core/camera'
 import { horizonSegments } from './core/horizon'
-import { INITIAL_FLIGHT, step, toAttitude, type FlightInput, type ProximityBand } from './core/flight'
+import { INITIAL_FLIGHT, step, toAttitude, type FlightInput } from './core/flight'
+import { spawn, step as stepEnemy, proximityBand, type Enemy } from './core/enemy'
+import { biplaneLOD, renderModel } from './core/biplane'
+import { sceneProjection, type SceneSegment } from './core/scene'
 import { SIM_TIMESTEP_S } from './core/timing'
+import { multiply, translation, rotationZ } from '@arcade/shared/math3d'
+import { createRng } from '@arcade/shared/rng'
 
 const canvas = document.getElementById('game') as HTMLCanvasElement
 const ctx = canvas.getContext('2d')
+
+/** GMLEVL 0 — score-scaled difficulty is rb2-7; this story flies the lone plane. */
+const LEVEL = 0
 
 function resize(): void {
   canvas.width = canvas.clientWidth || window.innerWidth
@@ -31,7 +39,20 @@ function toPixel(nx: number, ny: number, width: number, height: number): [number
   return [((nx + 1) / 2) * width, ((1 - ny) / 2) * height]
 }
 
-function draw(attitude: Attitude): void {
+/** Stroke a list of NDC segments as glowing vectors on the current context. */
+function strokeSegments(segs: readonly SceneSegment[], width: number, height: number): void {
+  if (!ctx) return
+  ctx.beginPath()
+  for (const seg of segs) {
+    const [x1, y1] = toPixel(seg.x1, seg.y1, width, height)
+    const [x2, y2] = toPixel(seg.x2, seg.y2, width, height)
+    ctx.moveTo(x1, y1)
+    ctx.lineTo(x2, y2)
+  }
+  ctx.stroke()
+}
+
+function draw(attitude: Attitude, enemy: Enemy): void {
   if (!ctx) return
   const { width, height } = canvas
   ctx.fillStyle = '#000'
@@ -42,20 +63,21 @@ function draw(attitude: Attitude): void {
   ctx.lineWidth = 2
   ctx.shadowColor = '#33ff66'
   ctx.shadowBlur = 8
-  ctx.beginPath()
-  for (const seg of horizonSegments(attitude, aspect)) {
-    const [x1, y1] = toPixel(seg.x1, seg.y1, width, height)
-    const [x2, y2] = toPixel(seg.x2, seg.y2, width, height)
-    ctx.moveTo(x1, y1)
-    ctx.lineTo(x2, y2)
-  }
-  ctx.stroke()
+
+  // the tilting horizon
+  strokeSegments(horizonSegments(attitude, aspect), width, height)
+
+  // the enemy — a camera-relative screen-window object (x, y) at `depth`, banked,
+  // tilting with the player's attitude. MVP = projection · view · model; the LOD is
+  // picked by depth (biplaneLOD). At LEVEL attitude the view is identity, so the
+  // plane sits where its window pose puts it.
+  const view = flightView(attitude, [0, 0, 0])
+  const model = multiply(translation(enemy.x, enemy.y, -enemy.depth), rotationZ(enemy.bank))
+  const mvp = multiply(multiply(sceneProjection(aspect), view), model)
+  strokeSegments(renderModel(biplaneLOD(enemy.depth), mvp), width, height)
 }
 
 // ─── the yoke: keyboard → FlightInput ─────────────────────────────────────────
-
-/** Nothing near in the empty cockpit → DISCHK's slow air band (findings §2). */
-const proximity: ProximityBand = 'far'
 
 const held = new Set<string>()
 const CONTROL_KEYS = new Set([
@@ -70,11 +92,12 @@ window.addEventListener('keydown', (e) => {
 })
 window.addEventListener('keyup', (e) => held.delete(e.key))
 
-function readInput(): FlightInput {
+/** The pilot's yoke plus the live DISCHK band from the nearest enemy's depth. */
+function readInput(enemy: Enemy): FlightInput {
   return {
     turn: axis(held.has('ArrowRight') || held.has('d') || held.has('D'), held.has('ArrowLeft') || held.has('a') || held.has('A')),
     pitch: axis(held.has('ArrowUp') || held.has('w') || held.has('W'), held.has('ArrowDown') || held.has('s') || held.has('S')),
-    proximity,
+    proximity: proximityBand(enemy.depth),
   }
 }
 
@@ -84,6 +107,7 @@ resize()
 window.addEventListener('resize', resize)
 
 let flight = INITIAL_FLIGHT
+let enemy = spawn(createRng(Date.now() >>> 0), LEVEL)
 let lastMs: number | null = null
 let accumulator = 0
 
@@ -93,13 +117,14 @@ function frame(nowMs: number): void {
   accumulator += Math.min((nowMs - lastMs) / 1000, 0.25)
   lastMs = nowMs
 
-  const input = readInput()
+  const input = readInput(enemy)
   while (accumulator >= SIM_TIMESTEP_S) {
     flight = step(flight, input)
+    enemy = stepEnemy(enemy, LEVEL)
     accumulator -= SIM_TIMESTEP_S
   }
 
-  draw(toAttitude(flight))
+  draw(toAttitude(flight), enemy)
   window.requestAnimationFrame(frame)
 }
 window.requestAnimationFrame(frame)
