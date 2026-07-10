@@ -70,6 +70,33 @@ describe('cockpit boot — the flight camera + tilting horizon are wired to the 
   })
 })
 
+describe('cockpit boot — the single enemy is spawned, flown, drawn, and felt (rb2-4)', () => {
+  const mainTs = files.find((f) => f.path.endsWith('main.ts'))?.text ?? ''
+
+  it('the cockpit consumes the enemy AI (imports ./core/enemy)', () => {
+    expect(anyMatch(/from\s+['"][./]*core\/enemy['"]/), 'the runnable cockpit must fly src/core/enemy').toBe(true)
+  })
+
+  it('the enemy is actually DRAWN — the shell renders the biplane model (renderModel from ./core/biplane)', () => {
+    expect(anyMatch(/from\s+['"][./]*core\/biplane['"]/), 'the cockpit must import src/core/biplane to draw the enemy').toBe(true)
+    expect(anyMatch(/\brenderModel\s*\(/), 'the cockpit must call renderModel to stroke the enemy geometry').toBe(true)
+  })
+
+  it('the live enemy depth drives DISCHK — proximity is COMPUTED, not the hardcoded rb2-1 "far"', () => {
+    // rb2-1 pinned `proximity: 'far'` because there were no enemies. rb2-4 wires the
+    // nearest-enemy depth through proximityBand so the control feel sharpens on approach.
+    expect(anyMatch(/\bproximityBand\s*\(/), 'the cockpit must derive FlightInput.proximity via proximityBand(enemy.depth)').toBe(true)
+  })
+
+  it('the stale "empty cockpit / no enemy geometry" comment is retired from main.ts', () => {
+    // The context calls out the now-false rb2-1 comment. Once the enemy is wired, the
+    // "Still an EMPTY cockpit ... no enemy/biplane geometry ... a later rb2 story" note
+    // is a lie — it must be updated.
+    expect(/no enemy\/biplane geometry/i.test(mainTs), 'main.ts still claims it has no enemy geometry').toBe(false)
+    expect(/Still an EMPTY cockpit/i.test(mainTs), 'main.ts still calls itself an empty cockpit').toBe(false)
+  })
+})
+
 describe('cockpit boot — the flight model drives the camera at the calc-frame rate (rb2-1)', () => {
   it('the runnable cockpit consumes the rb2 flight model (imports ./core/flight)', () => {
     expect(anyMatch(/from\s+['"][./]*core\/flight['"]/), 'the cockpit must be flown by src/core/flight').toBe(true)
