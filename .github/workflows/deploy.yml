@@ -1,0 +1,13 @@
+# Deploys this game to its R2 bucket whenever main is updated (i.e. on release
+# — `just release red-baron` in the arcade orchestrator merges develop into main).
+# Build/test/upload logic lives in slabgorb/arcade .github/workflows/deploy-r2.yml.
+name: deploy
+on:
+  push:
+    branches: [main]
+jobs:
+  deploy:
+    uses: slabgorb/arcade/.github/workflows/deploy-r2.yml@main
+    with:
+      bucket: arcade-red-baron
+    secrets: inherit
