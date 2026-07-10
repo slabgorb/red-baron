@@ -127,3 +127,38 @@ describe('cockpit boot — the flight model drives the camera at the calc-frame 
     ).toBe(true)
   })
 })
+
+describe('cockpit boot — a kill explodes, scores, and ramps the level (rb2-6)', () => {
+  // Scoped to main.ts's OWN text (not anyMatch across src/): explode/scoreKill/
+  // gmlevlForKills are DECLARED in the new core modules, so an anyMatch(/explode\(/)
+  // would be satisfied by those declarations and pass even if main.ts never wired the
+  // kill payoff (the rb2-4 review lesson). The `foo(` forms match the CALL, not the
+  // `import { foo }` line (no `(` after the name there).
+  const mainTs = files.find((f) => f.path.endsWith('main.ts'))?.text ?? ''
+
+  it('the cockpit consumes the wreck sim (imports ./core/explosion)', () => {
+    expect(/from\s+['"][./]*core\/explosion['"]/.test(mainTs), 'main.ts must import src/core/explosion').toBe(true)
+  })
+
+  it('the cockpit consumes the scoring + level ramp (imports ./core/scoring)', () => {
+    expect(/from\s+['"][./]*core\/scoring['"]/.test(mainTs), 'main.ts must import src/core/scoring').toBe(true)
+  })
+
+  it('a hit EXPLODES the plane — main.ts calls explode() and animates the wreck via stepWreck()', () => {
+    // The rb2-5 respawn was instant; rb2-6 replaces it with the falling/spinning wreck.
+    expect(/\bexplode\s*\(/.test(mainTs), 'main.ts must CALL explode(enemy) when a shell connects').toBe(true)
+    expect(/\bstepWreck\s*\(/.test(mainTs), 'main.ts must CALL stepWreck() so the wreck actually falls + bursts').toBe(true)
+  })
+
+  it('a kill SCORES — main.ts calls scoreKill() on a hit', () => {
+    expect(/\bscoreKill\s*\(/.test(mainTs), 'main.ts must CALL scoreKill(kind, depth) to award PLVALU points').toBe(true)
+  })
+
+  it('the level RAMPS with kills — main.ts drives GMLEVL through gmlevlForKills(), not a fixed const', () => {
+    // rb2-5 hardcoded `const LEVEL = 0`. rb2-6 makes OBJKLD (kills) drive the level, so the
+    // enemy weave widens as you win. Pin the ramp is wired AND the dead hardcode is gone —
+    // the exact analogue of rb2-4 retiring the hardcoded `proximity: 'far'`.
+    expect(/\bgmlevlForKills\s*\(/.test(mainTs), 'main.ts must CALL gmlevlForKills(kills) to set the difficulty level').toBe(true)
+    expect(/const\s+LEVEL\s*=\s*0\b/.test(mainTs), 'main.ts must not hardcode the level to a constant 0 — it ramps with kills').toBe(false)
+  })
+})
