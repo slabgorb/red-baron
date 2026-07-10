@@ -74,8 +74,20 @@ const SPAWN_Y_RANGE = 40
 
 // ─── state ───────────────────────────────────────────────────────────────────
 
-/** The lone enemy plane's state — all ROM-window units. */
+/**
+ * Which kind of plane this is — the lead or one of its two drone wingmen (findings §3,
+ * "1 PLANE, 2 DRONES"). rb2-7 adds this discriminant so the kill payoff can score a
+ * drone as the flat DRONE_SCORE and a close lead by depth, and so PLNXCG can promote a
+ * surviving drone into the next lead. A subset of scoring.ts's KillKind (the blimp — a
+ * borrowed slot, findings §3 — arrives in rb2-10); scoreKill accepts an EnemyKind value
+ * structurally, so this type stays HERE (the lower module) with no import into scoring.
+ */
+export type EnemyKind = 'lead' | 'drone'
+
+/** The enemy plane's state — all ROM-window units. */
 export interface Enemy {
+  /** Lead plane or drone wingman (findings §3). */
+  readonly kind: EnemyKind
   /** Screen-window X — weaves across centre (0), bounded ±P_OLIM[level]. */
   readonly x: number
   /** Vertical offset — random at spawn. */
@@ -115,6 +127,7 @@ export function spawn(rng: Rng, level = 0): Enemy {
   const mag = ilim + nextFloat(rng) * (olim - ilim)
   const y = (nextFloat(rng) * 2 - 1) * SPAWN_Y_RANGE
   return {
+    kind: 'lead', // the lone plane is a lead; drones are fielded by waves.ts's spawnWave
     x: side * mag,
     y,
     depth: P_INDP,
@@ -161,4 +174,35 @@ export function proximityBand(depth: number): ProximityBand {
   if (depth < NEAR_DEPTH) return 'near'
   if (depth < MID_DEPTH) return 'mid'
   return 'far'
+}
+
+// ─── PLNLVL level-gated firing (findings §3, PLNSHL/NWPLNE) ────────────────────
+
+/**
+ * The PLNLVL fire GRANT for a GMLEVL — the fraction of planes allowed to shoot the
+ * player (findings §3, NWPLNE:2345-2355): level < 4 never (0), level 4 a 50 % coin
+ * flip (0.5), level ≥ 5 always (1). The early sky (level < 4) never shoots back.
+ * Total — a non-finite / negative level fails safe to "never fire".
+ */
+export function planeFireChance(level: number): number {
+  if (!Number.isFinite(level)) return 0
+  const lvl = Math.floor(level)
+  if (lvl < 4) return 0
+  if (lvl === 4) return 0.5
+  return 1
+}
+
+/**
+ * Does a plane fire THIS calc-frame? Combines the PLNLVL level grant with the ÷2 FRAME
+ * cadence (PLNSHL:4798-4807 — a plane fires at most every OTHER calc-frame, gated by the
+ * FRAME LSB) and, at level 4, a supplied `roll` in [0,1) for the 50 % coin flip. Pure —
+ * the caller draws `roll` (e.g. nextFloat of the seeded Rng), so the decision is
+ * deterministic. NOTE: which frame parity fires is inferred (the ROM pins the ÷2, not
+ * the phase); we fire on even FRAME.
+ */
+export function planeFires(level: number, frame: number, roll: number): boolean {
+  const chance = planeFireChance(level)
+  if (chance === 0) return false
+  if ((Math.floor(frame) & 1) !== 0) return false // ÷2 FRAME cadence — hold fire on odd frames
+  return chance === 1 || roll < 0.5 // always-fire, or win the level-4 coin flip
 }

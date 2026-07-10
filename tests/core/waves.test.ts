@@ -369,19 +369,38 @@ describe('waves — MCOUNT / interWaveDelay (findings §4)', () => {
 // AC-6 — the calc-frame wave clock (findings §1 cadence + §4 MODECT/MCOUNT)
 // ───────────────────────────────────────────────────────────────────────────
 describe('waves — stepWaveClock scheduler (findings §1 calc-frame + §4)', () => {
-  /** Step the clock `n` calc-frames from the initial clock, recording each decision. */
-  function run(n: number): Array<{ step: number; modectBefore: number; spawn: boolean; countdownAfter: number }> {
+  interface Frame {
+    step: number
+    modectBefore: number
+    countdownBefore: number
+    spawn: boolean
+    countdownAfter: number
+  }
+  /**
+   * Step the clock `n` calc-frames from the initial clock, recording the PRE-step
+   * state each frame. A wave DECISION is exactly a frame whose pre-step countdown was
+   * 0 (the gap has elapsed) — the reliable signal, since the decision itself advances
+   * MODECT (so a MODECT-change is visible only on the FOLLOWING frame).
+   */
+  function run(n: number): Frame[] {
     const step = need(m.stepWaveClock, 'stepWaveClock')
     let clock = need(m.INITIAL_WAVE_CLOCK, 'INITIAL_WAVE_CLOCK')
-    const trace: Array<{ step: number; modectBefore: number; spawn: boolean; countdownAfter: number }> = []
+    const trace: Frame[] = []
     for (let i = 0; i < n; i++) {
-      const before = clock.modect
       const r = step(clock)
-      trace.push({ step: i, modectBefore: before, spawn: r.spawnPlaneWave, countdownAfter: r.clock.countdown })
+      trace.push({
+        step: i,
+        modectBefore: clock.modect,
+        countdownBefore: clock.countdown,
+        spawn: r.spawnPlaneWave,
+        countdownAfter: r.clock.countdown,
+      })
       clock = r.clock
     }
     return trace
   }
+  /** The frames on which a wave decision fires — the gap has elapsed (pre-step countdown 0). */
+  const decisionsOf = (trace: Frame[]): Frame[] => trace.filter((t) => t.countdownBefore === 0)
 
   it('INITIAL_WAVE_CLOCK is { modect: 0, countdown: 0 } — the opening wave is due immediately', () => {
     const init = need(m.INITIAL_WAVE_CLOCK, 'INITIAL_WAVE_CLOCK')
@@ -396,15 +415,12 @@ describe('waves — stepWaveClock scheduler (findings §1 calc-frame + §4)', ()
 
   it('spawns ONLY when the countdown has elapsed — no wave fires mid-gap', () => {
     const delay = need(m.interWaveDelay, 'interWaveDelay')
-    const trace = run(40)
-    // A spawn decision is exactly a frame where the pre-step countdown had reached 0 —
-    // detectable because MODECT advances on that step. Reconstruct those decision frames.
-    const decisions = trace.filter((t, i) => i === 0 || t.modectBefore !== trace[i - 1].modectBefore)
-    // modect advances by exactly 1 at each decision.
+    const decisions = decisionsOf(run(40))
+    // MODECT advances by exactly 1 at each decision — one wave slot per decision.
     for (let k = 1; k < decisions.length; k++) {
       expect(decisions[k].modectBefore).toBe(decisions[k - 1].modectBefore + 1)
     }
-    // between two decisions there are exactly `interWaveDelay(newModect)` non-decision frames.
+    // between two decisions there are exactly `interWaveDelay(nextModect)` non-decision frames.
     for (let k = 0; k < decisions.length - 1; k++) {
       const gapFrames = decisions[k + 1].step - decisions[k].step - 1
       expect(gapFrames).toBe(delay(decisions[k].modectBefore + 1))
@@ -413,8 +429,7 @@ describe('waves — stepWaveClock scheduler (findings §1 calc-frame + §4)', ()
 
   it('each decision spawns iff its MODECT is a plane wave — ground slots are silent no-op waits', () => {
     const isPlane = need(m.isPlaneWave, 'isPlaneWave')
-    const trace = run(40)
-    const decisions = trace.filter((t, i) => i === 0 || t.modectBefore !== trace[i - 1].modectBefore)
+    const decisions = decisionsOf(run(40))
     for (const d of decisions) {
       expect(d.spawn).toBe(isPlane(d.modectBefore))
     }
@@ -426,8 +441,8 @@ describe('waves — stepWaveClock scheduler (findings §1 calc-frame + §4)', ()
   it('non-decision frames just tick the countdown down by exactly one, spawning nothing', () => {
     const trace = run(12)
     for (let i = 1; i < trace.length; i++) {
-      const isDecision = trace[i].modectBefore !== trace[i - 1].modectBefore
-      if (!isDecision) {
+      if (trace[i].countdownBefore !== 0) {
+        // a mid-gap tick — never spawns, and the countdown drops by exactly one.
         expect(trace[i].spawn).toBe(false)
         expect(trace[i].countdownAfter).toBe(trace[i - 1].countdownAfter - 1)
       }

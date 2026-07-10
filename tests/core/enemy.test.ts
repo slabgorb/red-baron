@@ -82,6 +82,7 @@ import { sceneProjection } from '../../src/core/scene'
 //     file loads while src/core/enemy.ts does not yet exist) ---
 
 interface Enemy {
+  readonly kind: 'lead' | 'drone' // rb2-7 added the lead/drone discriminant to Enemy
   readonly x: number
   readonly y: number
   readonly depth: number
