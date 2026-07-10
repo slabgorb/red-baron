@@ -69,6 +69,9 @@ const MID_DEPTH = 700
 /** The entry flourish: the plane peels in banked a full 90°. */
 const SPAWN_BANK = Math.PI / 2
 
+/** Vertical spread of the random spawn Y (± window units) — inferred, keeps the plane on-screen. */
+const SPAWN_Y_RANGE = 40
+
 // ─── state ───────────────────────────────────────────────────────────────────
 
 /** The lone enemy plane's state — all ROM-window units. */
@@ -110,7 +113,7 @@ export function spawn(rng: Rng, level = 0): Enemy {
   const side: -1 | 1 = nextFloat(rng) < 0.5 ? -1 : 1
   // random X in the outer band [ilim, olim), on the chosen side — it enters from the edge
   const mag = ilim + nextFloat(rng) * (olim - ilim)
-  const y = (nextFloat(rng) * 2 - 1) * 40
+  const y = (nextFloat(rng) * 2 - 1) * SPAWN_Y_RANGE
   return {
     x: side * mag,
     y,
