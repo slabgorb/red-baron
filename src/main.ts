@@ -73,7 +73,7 @@ function shellSegments(shell: Shell, viewProj: Mat4): readonly SceneSegment[] {
   return seg ? [seg] : []
 }
 
-function draw(attitude: Attitude, enemy: Enemy, shells: readonly Shell[]): void {
+function draw(attitude: Attitude, enemy: Enemy, shells: readonly Shell[], overheated: boolean): void {
   if (!ctx) return
   const { width, height } = canvas
   ctx.fillStyle = '#000'
@@ -100,6 +100,20 @@ function draw(attitude: Attitude, enemy: Enemy, shells: readonly Shell[]): void 
   // the player's tracers — bright bullets streaking out along the boresight (rb2-5)
   for (const shell of shells) {
     strokeSegments(shellSegments(shell, projView), width, height)
+  }
+
+  // GUN.ST overheat warning — the ROM "shows a warning" when the guns lock out
+  // (findings §5); it clears as they cool, so the cue doubles as the cooldown signal.
+  if (overheated) {
+    ctx.save()
+    ctx.fillStyle = '#ff5533'
+    ctx.shadowColor = '#ff5533'
+    ctx.shadowBlur = 12
+    ctx.font = 'bold 24px monospace'
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.fillText('GUNS HOT', width / 2, height * 0.16)
+    ctx.restore()
   }
 }
 
@@ -164,7 +178,7 @@ function frame(nowMs: number): void {
     accumulator -= SIM_TIMESTEP_S
   }
 
-  draw(toAttitude(flight), enemy, guns.shells)
+  draw(toAttitude(flight), enemy, guns.shells, guns.overheated)
   window.requestAnimationFrame(frame)
 }
 window.requestAnimationFrame(frame)

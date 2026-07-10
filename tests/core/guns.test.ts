@@ -194,6 +194,19 @@ function fireOnceThenStep(target: Enemy, frames: number): { hits: Hit[]; guns: G
 
 const didHit = (target: Enemy, frames = 40): boolean => runHold(target, frames).hits.length > 0
 
+/** Fire one shell and step it against a MULTI-target list; return the first Hit (or null). */
+function firstHitOf(targets: readonly Enemy[], frames = 40): Hit | null {
+  const fire = need(m.fire, 'fire')
+  const step = need(m.step, 'step')
+  let guns = fire(initial(), true)
+  for (let i = 0; i < frames && guns.shells.length > 0; i++) {
+    const r = step(guns, targets)
+    guns = r.guns
+    if (r.hits.length > 0) return r.hits[0]
+  }
+  return null
+}
+
 // A wide depth sweep for the collision / no-tunnelling tests. Memoised — the sweep is the
 // heaviest work in the suite, so compute the hit map once and share it.
 const DEPTHS: readonly number[] = Array.from({ length: 120 }, (_, i) => 10 + i * 10) // 10..1200
@@ -453,6 +466,14 @@ describe('guns — hit detection (CDSSET/SHCDCK, findings §5)', () => {
     expect(didHit(enemyAt(0, 0, 1_000_000))).toBe(false)
   })
 
+  it('the window is TIGHT, not just finite — a moderately off-axis enemy (~100u) still misses', () => {
+    // 10 000u proves only "not infinite"; a window 100× too generous would pass that. Pin a
+    // moderate off-axis miss so an over-wide window is caught too (100u > the ~32u window).
+    const depth = reachDepth()
+    expect(didHit(enemyAt(100, 0, depth))).toBe(false)
+    expect(didHit(enemyAt(0, 100, depth))).toBe(false)
+  })
+
   it('a hit CONSUMES the shell — one shell scores at most one hit, then is gone', () => {
     const { hits, guns } = fireOnceThenStep(enemyAt(0, 0, reachDepth()), 40)
     expect(hits.length).toBe(1) // not re-counted every frame
@@ -490,10 +511,48 @@ describe('guns — collides() window in isolation', () => {
     expect(collides(shell, enemyAt(0, 10_000, depth))).toBe(false) // outside in Y
   })
 
-  it('a banked enemy dead-ahead is still hittable — CDSSET rotates the window, it does not vanish', () => {
-    // The window is rotated/projected (CDSSET), not axis-locked. Banking a dead-centre enemy
-    // rotates its window about the centre, so a boresight shot still lands.
-    expect(didHit(enemyAt(0, 0, reachDepth(), Math.PI / 4))).toBe(true)
+  it('CDSSET rotation is REAL — an offset that misses axis-aligned HITS once the enemy banks', () => {
+    // Rotation must be load-bearing, not decorative. Pick an offset (40u) that sits OUTSIDE the
+    // square window axis-aligned but INSIDE it rotated 45° (40 > window ≈ 32, yet 40·cos45° ≈ 28
+    // < 32). If collides() ignored enemy.bank, the banked case would ALSO miss — so this test
+    // FAILS if the rotation math is ever removed. (Replaces a prior test that a rotation-free
+    // collides() could pass, because a dead-centre target is rotation-invariant.)
+    const collides = need(m.collides, 'collides')
+    const depth = reachDepth()
+    const { hits } = fireOnceThenStep(enemyAt(0, 0, depth), 40)
+    const shell = hits[0].shell // a real shell at a z that collides at this depth
+    const off = enemyAt(shell.x + 40, 0, depth) // enemy 40u to one side of the shell's line
+    expect(collides(shell, { ...off, bank: 0 })).toBe(false) // axis-aligned → outside the window
+    expect(collides(shell, { ...off, bank: Math.PI / 4 })).toBe(true) // banked → rotated inside
+  })
+})
+
+// ───────────────────────────────────────────────────────────────────────────
+// AC-7c — multi-target hit selection (firstHit precedence; matters for rb2-7 drones)
+// ───────────────────────────────────────────────────────────────────────────
+describe('guns — multi-target hit selection (Hit.target, findings §5)', () => {
+  it('reports the index of the enemy actually struck, not just index 0', () => {
+    // targets = [off-axis, dead-on]: the shell must strike index 1 (the dead-on plane), proving
+    // Hit.target is the STRUCK target, not a hardcoded 0 nor the first array slot.
+    const depth = reachDepth()
+    const hit = firstHitOf([enemyAt(10_000, 0, depth), enemyAt(0, 0, depth)])
+    expect(hit).not.toBeNull()
+    expect(hit?.target).toBe(1)
+  })
+
+  it('picks the EARLIEST index among overlapping targets (firstHit precedence)', () => {
+    // Two dead-on planes occupy the same window; firstHit documents "the first target" — pin that
+    // the earlier array index wins and a single shell scores exactly one of them.
+    const depth = reachDepth()
+    const hit = firstHitOf([enemyAt(0, 0, depth), enemyAt(0, 0, depth)])
+    expect(hit).not.toBeNull()
+    expect(hit?.target).toBe(0)
+  })
+
+  it('a shell misses ALL targets when none is aligned — no phantom hit from a crowded sky', () => {
+    const depth = reachDepth()
+    const hit = firstHitOf([enemyAt(10_000, 0, depth), enemyAt(0, 10_000, depth)])
+    expect(hit).toBeNull()
   })
 })
 
@@ -517,11 +576,27 @@ describe('guns — pure, deterministic & total', () => {
     expect(JSON.stringify(initial())).toBe(snapshot) // readonly contract honoured
   })
 
-  it('is TOTAL on a degenerate enemy — collides returns a boolean for NaN/Infinity depth, no crash', () => {
+  it('never mutates a NON-frozen, fire()-derived Guns across a later step()/fire()', () => {
+    // INITIAL_GUNS is Object.freeze'd, so mutating it would throw elsewhere first — that test
+    // can't see an in-place mutation of a normal Guns value. Snapshot a real fire()-derived Guns
+    // (with a shell in flight) and prove step()/fire() leave it byte-for-byte untouched.
+    const fire = need(m.fire, 'fire')
+    const step = need(m.step, 'step')
+    const g = fire(initial(), true) // a fresh, un-frozen Guns holding one shell
+    const snapshot = JSON.stringify(g)
+    step(g, [enemyAt(0, 0, reachDepth())])
+    fire(g, true)
+    expect(JSON.stringify(g)).toBe(snapshot) // untouched by either call
+  })
+
+  it('is TOTAL on a degenerate enemy — collides returns FALSE (the documented value) for NaN/±Infinity depth', () => {
+    // The JSDoc contract is stronger than "no throw": a degenerate depth fails the Z bound and
+    // returns false. Asserting the VALUE (not just typeof boolean) catches a regression that let
+    // a NaN/Infinity-depth enemy register a phantom hit.
     const collides = need(m.collides, 'collides')
     const shell = need(m.fire, 'fire')(initial(), true).shells[0]
     for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
-      expect(typeof collides(shell, enemyAt(0, 0, bad))).toBe('boolean')
+      expect(collides(shell, enemyAt(0, 0, bad))).toBe(false)
     }
   })
 })
