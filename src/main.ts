@@ -5,24 +5,29 @@
 // feeds a FlightInput the sim steps ONCE per calculation frame (timing.ts
 // SIM_TIMESTEP_S — findings §1: the sim ticks at ~10.42 Hz, NOT per display frame,
 // or it runs ~6× too fast — the ÷N fidelity trap). The stepped attitude drives the
-// rb1 tilting horizon; a single weaving enemy biplane (rb2-4) is spawned, stepped
-// in the SAME calc-frame loop, and drawn through the rb2-3 biplane substrate.
+// rb1 tilting horizon; MULTI-PLANE WAVES of weaving enemy biplanes (rb2-7) are
+// spawned, stepped in the SAME calc-frame loop, and drawn through the rb2-3 biplane
+// substrate.
 //
-// The enemy's live depth feeds DISCHK: proximityBand(enemy.depth) sets
-// FlightInput.proximity, so the control feel SHARPENS as the enemy closes in
+// The NEAREST plane's live depth feeds DISCHK: proximityBand(nearestDepth) sets
+// FlightInput.proximity, so the control feel SHARPENS as the closest enemy closes in
 // (findings §2). No throttle: forward motion is implicit; the pilot commands only
 // turn and pitch (findings §2).
 //
-// THE KILL PAYOFF (rb2-6): a shell that connects SCORES the plane (PLVALU — closer
-// kills are worth more), bumps the kill count that ramps the difficulty (OBJKLD →
-// gmlevlForKills → GMLEVL, widening the weave), and hands the plane to its UPPLEX
-// wreck — it falls, spins, bursts into the PIECE0-3 debris, then a fresh plane enters
-// (explosion.ts + scoring.ts, replacing rb2-5's instant respawn).
+// THE KILL PAYOFF (rb2-6): a shell that connects SCORES the plane BY ITS KIND (rb2-7 —
+// PLVALU for a close lead, the flat DRONE_SCORE for a drone), bumps the kill count that
+// ramps the difficulty (OBJKLD → gmlevlForKills → GMLEVL, widening the weave), and hands
+// the plane to its UPPLEX wreck — it falls, spins, bursts into the PIECE0-3 debris.
+//
+// THE WAVE (rb2-7): score-scaled counts (300 → 2 planes, 1000 → 3), drones in the
+// PLANE1/PLANE2 formation, PLNXCG lead promotion, and the MODECT/MCOUNT schedule
+// (stepWaveClock) that brings the next wave in after its inter-wave gap (waves.ts).
 
 import { flightView, type Attitude } from './core/camera'
 import { horizonSegments } from './core/horizon'
 import { INITIAL_FLIGHT, step, toAttitude, type FlightInput } from './core/flight'
-import { spawn, step as stepEnemy, proximityBand, type Enemy } from './core/enemy'
+import { step as stepEnemy, proximityBand, type Enemy } from './core/enemy'
+import { spawnWave, promoteLead, INITIAL_WAVE_CLOCK, stepWaveClock } from './core/waves'
 import { biplaneLOD, renderModel } from './core/biplane'
 import { sceneProjection, projectSegment, type SceneSegment } from './core/scene'
 import { SIM_TIMESTEP_S } from './core/timing'
@@ -116,8 +121,8 @@ function drawWreck(wreck: Wreck, projView: Mat4, width: number, height: number):
 
 function draw(
   attitude: Attitude,
-  enemy: Enemy,
-  wreck: Wreck | null,
+  enemies: readonly Enemy[],
+  wrecks: readonly Wreck[],
   shells: readonly Shell[],
   overheated: boolean,
   score: number,
@@ -136,16 +141,16 @@ function draw(
   // the tilting horizon
   strokeSegments(horizonSegments(attitude, aspect), width, height)
 
-  // the enemy — a camera-relative screen-window object (x, y) at `depth`, banked,
-  // tilting with the player's attitude. MVP = projection · view · model; the LOD is
-  // picked by depth (biplaneLOD). At level attitude the view is identity, so the plane
-  // sits where its window pose puts it. Once it is shot down the live plane is replaced
-  // by its UPPLEX wreck — falling, then bursting into PIECE0-3 debris (rb2-6).
+  // the wave — each live plane is a camera-relative screen-window object (x, y) at
+  // `depth`, banked, tilting with the player's attitude. MVP = projection · view · model;
+  // the LOD is picked by depth (biplaneLOD). Downed planes fall away as UPPLEX wrecks
+  // (rb2-6) that coexist with the survivors still weaving (rb2-7 multi-plane waves).
   const view = flightView(attitude, [0, 0, 0])
   const projView = multiply(sceneProjection(aspect), view)
-  if (wreck) {
+  for (const wreck of wrecks) {
     drawWreck(wreck, projView, width, height)
-  } else {
+  }
+  for (const enemy of enemies) {
     const model = multiply(translation(enemy.x, enemy.y, -enemy.depth), rotationZ(enemy.bank))
     strokeSegments(renderModel(biplaneLOD(enemy.depth), multiply(projView, model)), width, height)
   }
@@ -198,12 +203,19 @@ window.addEventListener('keydown', (e) => {
 })
 window.addEventListener('keyup', (e) => held.delete(e.key))
 
-/** The pilot's yoke plus the live DISCHK band from the nearest enemy's depth. */
-function readInput(enemy: Enemy): FlightInput {
+/** Depth of the CLOSEST live plane (smallest depth), or +Infinity when the sky is clear. */
+function nearestDepth(planes: readonly Enemy[]): number {
+  let d = Number.POSITIVE_INFINITY
+  for (const e of planes) if (e.depth < d) d = e.depth
+  return d
+}
+
+/** The pilot's yoke plus the live DISCHK band from the nearest enemy's depth ('far' when clear). */
+function readInput(enemies: readonly Enemy[]): FlightInput {
   return {
     turn: axis(held.has('ArrowRight') || held.has('d') || held.has('D'), held.has('ArrowLeft') || held.has('a') || held.has('A')),
     pitch: axis(held.has('ArrowUp') || held.has('w') || held.has('W'), held.has('ArrowDown') || held.has('s') || held.has('S')),
-    proximity: proximityBand(enemy.depth),
+    proximity: proximityBand(nearestDepth(enemies)),
   }
 }
 
@@ -215,8 +227,9 @@ window.addEventListener('resize', resize)
 let flight = INITIAL_FLIGHT
 let kills = 0 // OBJKLD — each kill bumps this; gmlevlForKills(kills) drives the GMLEVL ramp
 let score = 0 // running PLVALU total (closer kills score more)
-let enemy = spawn(createRng(Date.now() >>> 0), gmlevlForKills(kills))
-let wreck: Wreck | null = null // the downed enemy's falling/exploding UPPLEX wreck, or null when a plane is live
+let enemies: readonly Enemy[] = [] // the live wave (rb2-7); the schedule spawns the opening wave
+let wrecks: Wreck[] = [] // downed planes falling/exploding as UPPLEX wrecks, coexisting with survivors
+let waveClock = INITIAL_WAVE_CLOCK // MODECT/MCOUNT schedule — spaces waves at the calc-frame cadence
 let guns: Guns = INITIAL_GUNS
 let lastMs: number | null = null
 let accumulator = 0
@@ -227,37 +240,49 @@ function frame(nowMs: number): void {
   accumulator += Math.min((nowMs - lastMs) / 1000, 0.25)
   lastMs = nowMs
 
-  const input = readInput(enemy)
+  const input = readInput(enemies)
   const fireHeld = held.has(' ')
   while (accumulator >= SIM_TIMESTEP_S) {
     flight = step(flight, input)
     guns = fire(guns, fireHeld)
-    if (wreck) {
-      // The enemy is dead — animate its UPPLEX wreck (fall → PIECE0-3 burst → done);
-      // shells keep flying but strike nothing until a fresh plane enters.
-      wreck = stepWreck(wreck)
-      guns = stepGuns(guns, []).guns
-      if (wreck.phase === 'done') {
-        wreck = null
-        enemy = spawn(createRng((Date.now() + kills) >>> 0), gmlevlForKills(kills))
-      }
-    } else {
-      // A live plane: weave it at the kill-ramped level, then fire + collide the shells
-      // (4× sub-step) against it. A hit SCORES the kill (closer = more), bumps OBJKLD so
-      // the sky ramps, and hands the plane to the wreck — replacing rb2-5's instant respawn.
-      enemy = stepEnemy(enemy, gmlevlForKills(kills))
-      const shotResult = stepGuns(guns, [enemy])
+    // advance any dying planes (fall → PIECE0-3 burst → done); drop the finished wrecks.
+    wrecks = wrecks.map((w) => stepWreck(w)).filter((w) => w.phase !== 'done')
+
+    const level = gmlevlForKills(kills)
+    if (enemies.length > 0) {
+      // A live wave: weave every plane at the kill-ramped level, then fire + collide the
+      // shells (4× sub-step) against ALL of them. Each hit SCORES the downed plane BY ITS
+      // KIND (drone flat 300, close lead more), bumps OBJKLD so the sky ramps, and hands
+      // that plane to its wreck. If the lead falls, PLNXCG promotes a wingman to lead.
+      enemies = enemies.map((e) => stepEnemy(e, level))
+      const shotResult = stepGuns(guns, enemies)
       guns = shotResult.guns
       if (shotResult.hits.length > 0) {
-        score += scoreKill('lead', enemy.depth)
-        kills += 1
-        wreck = explode(enemy)
+        const downed = new Set<number>(shotResult.hits.map((h) => h.target))
+        for (const idx of downed) {
+          const plane = enemies[idx]
+          score += scoreKill(plane.kind, plane.depth)
+          kills += 1
+          wrecks.push(explode(plane))
+        }
+        enemies = promoteLead(enemies.filter((_, i) => !downed.has(i)))
+      }
+    } else {
+      // Sky clear of live planes: shells keep flying (strike nothing). Once the wrecks
+      // finish, the MODECT/MCOUNT schedule brings the next plane wave in after its gap.
+      guns = stepGuns(guns, []).guns
+      if (wrecks.length === 0) {
+        const sched = stepWaveClock(waveClock)
+        waveClock = sched.clock
+        if (sched.spawnPlaneWave) {
+          enemies = spawnWave(createRng((Date.now() + kills) >>> 0), score, gmlevlForKills(kills))
+        }
       }
     }
     accumulator -= SIM_TIMESTEP_S
   }
 
-  draw(toAttitude(flight), enemy, wreck, guns.shells, guns.overheated, score)
+  draw(toAttitude(flight), enemies, wrecks, guns.shells, guns.overheated, score)
   window.requestAnimationFrame(frame)
 }
 window.requestAnimationFrame(frame)
