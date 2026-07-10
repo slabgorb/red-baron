@@ -1,0 +1,567 @@
+// tests/core/enemy.test.ts
+//
+// Story rb2-4 — RED phase (Furiosa / TEA). The single-enemy dogfight AI + spawn:
+// the weaving window-follower steering, the side-entry spawn, and the DISCHK
+// proximity wiring that sharpens the player's control feel as the enemy closes.
+//
+// CONTRACT for the GREEN phase (The Word Burgers / DEV): create
+// `src/core/enemy.ts`, the pure enemy-plane sim, exporting:
+//
+//   // --- ROM-exact data (findings §3, R2BRON.MAC) ---
+//   export const P_OLIM: readonly number[]  // outer window limit, GMLEVL-indexed:
+//                                            //   [0x40,0x80,0x120,0x1A0,0x200] (R2BRON.MAC:2935)
+//   export const P_ILIM: readonly number[]  // inner window limit, GMLEVL-indexed:
+//                                            //   [0x20,0x30,0x80,0x120,0x160] (R2BRON.MAC:2952)
+//   export const P_INDP: number             // spawn depth = 1080 (NWPLNE, R2BRON.MAC:2237)
+//   export const ACCEL: number              // ΔX acceleration per calc frame = 30 (findings §3)
+//   export const LONE_PLANE_CHANCE: number  // RANDOM roll → 25 % lone plane = 0.25 (findings §3)
+//
+//   export interface Enemy {
+//     readonly x: number        // screen-window X — weaves across centre (0), bounded ±P_OLIM
+//     readonly y: number        // vertical — random at spawn
+//     readonly depth: number    // Z distance in front of the eye; P_INDP at spawn, closes in
+//     readonly deltaX: number   // ΔX weave velocity/turn-rate (accelerates by ACCEL, reverses)
+//     readonly bank: number     // roll (radians): ±90° entry flourish, then ∝ deltaX via biplaneBank
+//     readonly side: -1 | 1     // which screen side it entered from
+//     readonly active: boolean  // D7 "active" status bit
+//   }
+//
+//   export function spawn(rng: Rng, level?: number): Enemy   // one lone plane (25 % case)
+//   export function step(enemy: Enemy, level?: number): Enemy // one calc-frame of weaving AI
+//   export function proximityBand(depth: number): ProximityBand // DISCHK depth → near/mid/far
+//
+// WHY THIS SHAPE (cited — findings §3 "Enemy behavior", R2BRON.MAC):
+//   * SPAWN (NWPLNE/STPLNE, R2BRON.MAC:2237-2386): the enemy enters from a screen
+//     SIDE banked 90°, random X/Y, at depth P.INDP=1080. Score gates the count
+//     (≥1000 → 3 planes, ≥300 → 2), and a RANDOM roll gives a 25 % lone plane — this
+//     story builds THE LONE-PLANE CASE FIRST. The drone-formation branches (PLANE1
+//     -100,+100 / PLANE2 -100,-100) are rb2-7; `spawn` returns ONE plane here.
+//   * STEERING is a WEAVING WINDOW-FOLLOWER, NOT a beeline seeker (UPDPLN/PLNDEL/
+//     P.WINDW, R2BRON.MAC:2566-2870): the plane accelerates ΔX (ACCEL=30) toward the
+//     window limits and REVERSES at the inner/outer boundaries, weaving across screen
+//     centre; the limit tables are GMLEVL-indexed (higher level = wider, more
+//     aggressive weave). It follows the WINDOW, not the player — a player sitting at
+//     centre is NOT chased to a standstill.
+//   * BANK ∝ turn-rate. The story context (rb2-3 carryforward) rules that the enemy
+//     reuses flight.ts's `biplaneBank` (PFROTN = ΔX×8, clamped ±0x100 → ±45°) so
+//     enemy and horizon share ONE coupling with no duplicated ROLL_SCALE. NOTE: the
+//     raw ROM (findings §3) banks via `X/Y rotation = −4·ΔX` clamped `P.MAXR=0x1FF`
+//     (±90°) — a different factor, sign, and clamp. This suite pins the CONTEXT's
+//     biplaneBank decision (higher spec authority) for the settled weave; the ROM
+//     discrepancy is logged as a Delivery Finding + design deviation for the Reviewer
+//     / playtest to ratify or escalate. The 90° SPAWN bank (both sources agree) is an
+//     entry flourish the plane rolls out of as it settles into the weave.
+//   * DISCHK PROXIMITY WIRING (findings §2). rb2-1 hardcoded `proximity: 'far'` in
+//     main.ts because there were no enemies. THIS story wires the live nearest-enemy
+//     depth through `proximityBand` into FlightInput.proximity, so the control feel
+//     sharpens (near ×1.0 / mid ×0.625 / far ×0.375) as the enemy closes. The band
+//     thresholds are an INFERRED tunable (not ROM-pinned) — tested BEHAVIOURALLY
+//     (spawn depth is 'far'; monotone; total on degenerate input), not as magic
+//     numbers.
+//
+// The exact ROM DATA is pinned to the byte (the window tables, P.INDP, ACCEL, the
+// 25 % roll, the 90° entry). Where the ROM→radian scale, the proximity thresholds,
+// and the depth-closing rate are Dev tuning (the source does not pin them), the
+// behaviour is pinned BEHAVIOURALLY — sign, bounds, monotonicity, weave/reversal —
+// not as fabricated constants.
+//
+// Loaded defensively (await import in beforeAll, the flight.test.ts house pattern):
+// during RED `src/core/enemy.ts` does not exist, so each test reports a clean
+// assertion failure instead of a suite-collection crash. flight.ts / biplane.ts /
+// scene.ts and @arcade/shared/rng DO exist — imported statically so the integration
+// tests drive the REAL flight model, render substrate, and seeded PRNG.
+
+import { describe, it, expect, beforeAll } from 'vitest'
+import { multiply, translation, rotationZ, type Mat4 } from '@arcade/shared/math3d'
+import { createRng, type Rng } from '@arcade/shared/rng'
+import { step as flightStep, INITIAL_FLIGHT, DISCHK, type ProximityBand } from '../../src/core/flight'
+import { biplaneLOD, biplaneBank, renderModel } from '../../src/core/biplane'
+import { sceneProjection } from '../../src/core/scene'
+
+// --- local mirror of the RED contract (kept out of the static import graph so the
+//     file loads while src/core/enemy.ts does not yet exist) ---
+
+interface Enemy {
+  readonly x: number
+  readonly y: number
+  readonly depth: number
+  readonly deltaX: number
+  readonly bank: number
+  readonly side: -1 | 1
+  readonly active: boolean
+}
+
+interface EnemyModule {
+  P_OLIM?: readonly number[]
+  P_ILIM?: readonly number[]
+  P_INDP?: number
+  ACCEL?: number
+  LONE_PLANE_CHANCE?: number
+  spawn?: (rng: Rng, level?: number) => Enemy
+  step?: (enemy: Enemy, level?: number) => Enemy
+  proximityBand?: (depth: number) => ProximityBand
+}
+
+let m: EnemyModule = {}
+
+beforeAll(async () => {
+  try {
+    m = (await import('../../src/core/enemy')) as EnemyModule
+  } catch {
+    m = {}
+  }
+})
+
+/** Fail loud-and-clear when a contract export is missing (RED-friendly). */
+function need<T>(value: T | undefined, name: string): T {
+  if (value === undefined) {
+    throw new Error(`src/core/enemy.ts must export ${name} (rb2-4 RED contract)`)
+  }
+  return value
+}
+
+/** A fresh seeded plane; a fixed seed keeps each test deterministic. */
+const spawnAt = (seed = 1, level = 0): Enemy => need(m.spawn, 'spawn')(createRng(seed), level)
+
+/** Override Enemy fields while carrying whatever extra fields Dev adds (robust hand-build). */
+const withEnemy = (overrides: Partial<Enemy>, seed = 1, level = 0): Enemy => ({
+  ...spawnAt(seed, level),
+  ...overrides,
+})
+
+/** Advance `n` calc frames, returning the per-frame trace of the weave. */
+function trace(seed: number, level: number, n: number): { xs: number[]; deltas: number[]; banks: number[]; depths: number[] } {
+  const step = need(m.step, 'step')
+  let e = spawnAt(seed, level)
+  const xs = [e.x]
+  const deltas = [e.deltaX]
+  const banks = [e.bank]
+  const depths = [e.depth]
+  for (let i = 0; i < n; i++) {
+    e = step(e, level)
+    xs.push(e.x)
+    deltas.push(e.deltaX)
+    banks.push(e.bank)
+    depths.push(e.depth)
+  }
+  return { xs, deltas, banks, depths }
+}
+
+/** Count sign changes across screen centre (0), treating exact 0 as "no sign". */
+function crossings(xs: readonly number[]): number {
+  let count = 0
+  let last = 0
+  for (const x of xs) {
+    const s = Math.sign(x)
+    if (s !== 0) {
+      if (last !== 0 && s !== last) count++
+      last = s
+    }
+  }
+  return count
+}
+
+const range = (xs: readonly number[]): number => Math.max(...xs) - Math.min(...xs)
+const maxAbs = (xs: readonly number[]): number => Math.max(...xs.map(Math.abs))
+
+// ───────────────────────────────────────────────────────────────────────────
+// AC-1 — the GMLEVL-indexed weave window (P.OLIM / P.ILIM tables)
+// ───────────────────────────────────────────────────────────────────────────
+describe('enemy — P.OLIM / P.ILIM window tables (findings §3, R2BRON.MAC:2935-2952)', () => {
+  const OLIM = [0x40, 0x80, 0x120, 0x1a0, 0x200]
+  const ILIM = [0x20, 0x30, 0x80, 0x120, 0x160]
+
+  it('P_OLIM is the byte-exact outer-limit table (5 GMLEVL entries)', () => {
+    const t = need(m.P_OLIM, 'P_OLIM')
+    expect([...t]).toEqual(OLIM)
+    expect(t.length).toBe(5) // .LEVLS = 5 (GMLEVL 0..4)
+  })
+
+  it('P_ILIM is the byte-exact inner-limit table (5 GMLEVL entries)', () => {
+    const t = need(m.P_ILIM, 'P_ILIM')
+    expect([...t]).toEqual(ILIM)
+    expect(t.length).toBe(5)
+  })
+
+  it('the window is well-formed at EVERY level — inner strictly inside outer, both positive', () => {
+    // A weave window with inner ≥ outer would never turn around; guard the whole table.
+    const olim = need(m.P_OLIM, 'P_OLIM')
+    const ilim = need(m.P_ILIM, 'P_ILIM')
+    for (let lvl = 0; lvl < olim.length; lvl++) {
+      expect(ilim[lvl]).toBeGreaterThan(0)
+      expect(ilim[lvl]).toBeLessThan(olim[lvl])
+    }
+  })
+
+  it('higher GMLEVL means a wider, more aggressive window (outer limit is non-decreasing)', () => {
+    const olim = need(m.P_OLIM, 'P_OLIM')
+    for (let lvl = 1; lvl < olim.length; lvl++) {
+      expect(olim[lvl]).toBeGreaterThanOrEqual(olim[lvl - 1])
+    }
+    expect(olim[olim.length - 1]).toBeGreaterThan(olim[0]) // and strictly wider end-to-end
+  })
+})
+
+// ───────────────────────────────────────────────────────────────────────────
+// AC-2 — ROM spawn/steer constants
+// ───────────────────────────────────────────────────────────────────────────
+describe('enemy — ROM constants P.INDP / ACCEL / lone-plane roll (findings §3)', () => {
+  it('P_INDP spawn depth is 1080 (NWPLNE, R2BRON.MAC:2237)', () => {
+    expect(need(m.P_INDP, 'P_INDP')).toBe(1080)
+  })
+
+  it('ACCEL — the ΔX weave acceleration per calc frame — is 30 (findings §3)', () => {
+    expect(need(m.ACCEL, 'ACCEL')).toBe(30)
+  })
+
+  it('LONE_PLANE_CHANCE is the 25 % RANDOM roll (findings §3)', () => {
+    // The roll selects lone-vs-formation once formations exist (rb2-7); this story
+    // ships the lone-plane branch, but the ROM probability is pinned now.
+    expect(need(m.LONE_PLANE_CHANCE, 'LONE_PLANE_CHANCE')).toBeCloseTo(0.25, 12)
+  })
+})
+
+// ───────────────────────────────────────────────────────────────────────────
+// AC-3 — spawn: a lone plane, from a screen side, banked 90°, at depth P.INDP
+// ───────────────────────────────────────────────────────────────────────────
+describe('enemy — spawn (NWPLNE: side entry, 90° bank, depth P.INDP)', () => {
+  it('spawns AT depth P.INDP — the plane enters far away', () => {
+    expect(spawnAt(1).depth).toBe(need(m.P_INDP, 'P_INDP'))
+    expect(spawnAt(99).depth).toBe(need(m.P_INDP, 'P_INDP'))
+  })
+
+  it('enters banked 90° (±π/2) — the entry flourish, steeper than any steering bank', () => {
+    // "enters from a screen side banked 90°". 90° = π/2 exceeds biplaneBank's ±45°
+    // clamp, so this is a literal entry orientation, not a steering-derived bank.
+    for (const seed of [1, 2, 7, 42]) {
+      expect(Math.abs(spawnAt(seed).bank)).toBeCloseTo(Math.PI / 2, 6)
+    }
+  })
+
+  it('enters from a SIDE — x is on the side it came from and inside the outer window', () => {
+    for (const seed of [1, 2, 7, 42, 100]) {
+      const e = spawnAt(seed, 0)
+      expect(e.side === -1 || e.side === 1).toBe(true)
+      expect(Math.sign(e.x)).toBe(e.side) // on the side it entered
+      expect(Math.abs(e.x)).toBeGreaterThan(0) // not dead centre
+      expect(Math.abs(e.x)).toBeLessThanOrEqual(need(m.P_OLIM, 'P_OLIM')[0] + 1e-9) // within the window
+    }
+  })
+
+  it('spawns ACTIVE and ready to weave', () => {
+    expect(spawnAt(1).active).toBe(true)
+  })
+
+  it('is deterministic per seed and independently varies X and Y across seeds (consumes the Rng)', () => {
+    // Same seed → identical plane (pure, seeded). Different seeds → X AND Y must EACH
+    // vary — a broken single-axis draw masked by the other axis must NOT slip through
+    // (the old combined `${x},${y}` set couldn't tell them apart).
+    expect(spawnAt(5)).toEqual(spawnAt(5))
+    const many = [1, 2, 3, 4, 5, 6, 7, 8].map((s) => spawnAt(s))
+    expect(new Set(many.map((e) => e.x)).size).toBeGreaterThan(1) // X actually randomized
+    expect(new Set(many.map((e) => e.y)).size).toBeGreaterThan(1) // Y actually randomized
+    // ...and Y stays finite and on-screen-bounded (never NaN or an absurd off-screen value).
+    const olimMax = need(m.P_OLIM, 'P_OLIM')[need(m.P_OLIM, 'P_OLIM').length - 1]
+    for (const e of many) {
+      expect(Number.isFinite(e.y)).toBe(true)
+      expect(Math.abs(e.y)).toBeLessThanOrEqual(olimMax)
+    }
+  })
+
+  it('advances the Rng seed — spawn is not a no-op on the generator', () => {
+    const rng = createRng(1234)
+    const before = rng.seed
+    need(m.spawn, 'spawn')(rng, 0)
+    expect(rng.seed).not.toBe(before)
+  })
+})
+
+// ───────────────────────────────────────────────────────────────────────────
+// AC-4 — weaving window-follower steering (accelerate to limits, reverse, weave)
+// ───────────────────────────────────────────────────────────────────────────
+describe('enemy — weaving window-follower steering (UPDPLN, findings §3)', () => {
+  it('stays inside the outer window — the weave never escapes ±P_OLIM', () => {
+    const olim = need(m.P_OLIM, 'P_OLIM')[0]
+    const { xs } = trace(7, 0, 300)
+    expect(maxAbs(xs)).toBeLessThanOrEqual(olim + 1e-6)
+  })
+
+  it('weaves ACROSS screen centre — x changes sign repeatedly (not stuck on one side)', () => {
+    const { xs } = trace(7, 0, 300)
+    expect(crossings(xs)).toBeGreaterThanOrEqual(2) // out, back, out again — a real weave
+  })
+
+  it('REVERSES at the boundaries — ΔX takes both signs over a run', () => {
+    const { deltas } = trace(7, 0, 300)
+    expect(deltas.some((d) => d > 0)).toBe(true)
+    expect(deltas.some((d) => d < 0)).toBe(true)
+  })
+
+  it('flies OUT toward the limit — the excursion clears the inner window band', () => {
+    // A weave that only jittered near centre would pass "crosses 0" vacuously; pin
+    // that it actually swings out past P.ILIM toward the outer turnaround.
+    const ilim = need(m.P_ILIM, 'P_ILIM')[0]
+    const { xs } = trace(7, 0, 300)
+    expect(maxAbs(xs)).toBeGreaterThan(ilim)
+  })
+
+  it('is NOT a beeline seeker — with the player at centre it never settles at 0', () => {
+    // A seeker would drive x→0 and stop. The window-follower keeps weaving: the LATE
+    // half of a long run still swings a wide range, it has not converged to centre.
+    const ilim = need(m.P_ILIM, 'P_ILIM')[0]
+    const { xs } = trace(7, 0, 400)
+    const lateHalf = xs.slice(xs.length / 2)
+    expect(range(lateHalf)).toBeGreaterThan(ilim) // still weaving wide, not parked at 0
+  })
+
+  it('a higher GMLEVL weaves WIDER — level 4 swings past the entire level-0 window', () => {
+    const olim0 = need(m.P_OLIM, 'P_OLIM')[0]
+    const wide = maxAbs(trace(7, 4, 400).xs)
+    const narrow = maxAbs(trace(7, 0, 400).xs)
+    expect(narrow).toBeLessThanOrEqual(olim0 + 1e-6) // level 0 stays in its small window
+    expect(wide).toBeGreaterThan(olim0) // level 4 flies out past it
+  })
+
+  it('is a pure, deterministic step — same (enemy, level) gives the same next frame, input untouched', () => {
+    const step = need(m.step, 'step')
+    const e = spawnAt(3, 0)
+    const snapshot = JSON.stringify(e)
+    expect(step(e, 0)).toEqual(step(e, 0)) // deterministic
+    expect(JSON.stringify(e)).toBe(snapshot) // no mutation of the input (readonly contract)
+  })
+})
+
+// ───────────────────────────────────────────────────────────────────────────
+// AC-4b — GMLEVL clamping + direct boundary reversal (review-rework edge cases)
+// ───────────────────────────────────────────────────────────────────────────
+describe('enemy — GMLEVL clamping & direct boundary reversal', () => {
+  const olimMax = (): number => {
+    const t = need(m.P_OLIM, 'P_OLIM')
+    return t[t.length - 1]
+  }
+
+  it('clamps an out-of-range GMLEVL — negative / >max / NaN / non-integer never read P_OLIM[undefined]', () => {
+    const step = need(m.step, 'step')
+    for (const bad of [-1, -100, 5, 99, Number.NaN, 2.7]) {
+      const e = spawnAt(3, bad)
+      expect(Number.isFinite(e.x)).toBe(true) // no NaN leak from a bad level index
+      expect(Math.abs(e.x)).toBeLessThanOrEqual(olimMax() + 1e-9) // inside SOME valid window
+      const s = step(e, bad) // stepping a degenerate level must also stay total + bounded
+      expect(Number.isFinite(s.x)).toBe(true)
+      expect(Math.abs(s.x)).toBeLessThanOrEqual(olimMax() + 1e-9)
+    }
+  })
+
+  it('spawns inside the WIDER band at a higher GMLEVL — level indexes the window', () => {
+    const olim0 = need(m.P_OLIM, 'P_OLIM')[0]
+    const olim4 = need(m.P_OLIM, 'P_OLIM')[4]
+    const seeds = [1, 2, 7, 42, 100]
+    for (const seed of seeds) {
+      const e = spawnAt(seed, 4)
+      expect(Math.sign(e.x)).toBe(e.side)
+      expect(Math.abs(e.x)).toBeLessThanOrEqual(olim4 + 1e-9) // inside the level-4 window
+    }
+    // and the band really widened: at least one level-4 spawn lands past the whole level-0 window
+    const widest = Math.max(...seeds.map((s) => Math.abs(spawnAt(s, 4).x)))
+    expect(widest).toBeGreaterThan(olim0)
+  })
+
+  it('reverses IMMEDIATELY at the outer wall — a plane pinned at ±P_OLIM turns back inward', () => {
+    // Deterministic, not inferred from a random trace: seed the plane at the wall moving
+    // outward; one step must decelerate it, and within a short run it leaves the wall.
+    const step = need(m.step, 'step')
+    const olim = need(m.P_OLIM, 'P_OLIM')[0]
+
+    const right = step(withEnemy({ x: olim, deltaX: 50 }), 0)
+    expect(right.x).toBeLessThanOrEqual(olim + 1e-9) // never escapes the wall
+    expect(right.deltaX).toBeLessThan(50) // ΔX decelerating — heading reversed at the bound
+    let e = withEnemy({ x: olim, deltaX: 50 })
+    let minX = e.x
+    for (let i = 0; i < 20; i++) {
+      e = step(e, 0)
+      minX = Math.min(minX, e.x)
+    }
+    expect(minX).toBeLessThan(olim) // it left the +wall and weaved back inward
+
+    const left = step(withEnemy({ x: -olim, deltaX: -50 }), 0) // symmetric at the −wall
+    expect(left.x).toBeGreaterThanOrEqual(-olim - 1e-9)
+    expect(left.deltaX).toBeGreaterThan(-50)
+  })
+})
+
+// ───────────────────────────────────────────────────────────────────────────
+// AC-5 — bank ∝ turn-rate, reusing the player's biplaneBank coupling
+// ───────────────────────────────────────────────────────────────────────────
+describe('enemy — bank ∝ turn-rate via biplaneBank (context: shared ±45° coupling)', () => {
+  it('rolls OUT of the 90° entry as it settles into the weave (settled bank is shallower)', () => {
+    const { banks } = trace(7, 0, 300)
+    expect(Math.abs(banks[0])).toBeCloseTo(Math.PI / 2, 6) // entry: 90°
+    const settled = banks.slice(200) // long after entry
+    for (const b of settled) expect(Math.abs(b)).toBeLessThan(Math.PI / 2 - 0.1) // shallower now
+  })
+
+  it('the settled steering bank IS biplaneBank(ΔX) — one shared coupling, no duplicated ROLL_SCALE', () => {
+    // The context rules the enemy reuses flight.ts's biplaneBank (findings §2), so the
+    // enemy and the player horizon bank through the SAME PFROTN×8 clamp. Pin the exact
+    // identity across the settled weave. [Deviation logged: the raw ROM §3 uses
+    // −4·ΔX/±0x1FF — see Delivery Findings.]
+    const { banks, deltas } = trace(7, 0, 300)
+    for (let i = 200; i < banks.length; i++) {
+      expect(banks[i]).toBeCloseTo(biplaneBank(deltas[i]), 9)
+    }
+  })
+
+  it('a ΔX = 0 frame produced BY step() has zero bank — 0 is a real value, not a falsy default (rule #4)', () => {
+    // The classic `x || fallback` numeric bug: 0 is falsy but a VALID turn-rate.
+    // Drive a REAL step() through the ΔX=0 crossing (don't hand-set bank): at the
+    // outer wall the weave decelerates through zero as it reverses — seed x=P_OLIM
+    // with ΔX=+ACCEL so the very next step's ΔX is exactly 0.
+    const step = need(m.step, 'step')
+    const olim = need(m.P_OLIM, 'P_OLIM')[0]
+    const accel = need(m.ACCEL, 'ACCEL')
+    const reversing = step(withEnemy({ x: olim, deltaX: accel }), 0)
+    expect(reversing.deltaX).toBe(0) // step() actually produced a zero turn-rate...
+    expect(reversing.bank).toBe(0) // ...and the bank read a genuine 0, not a fallback
+    expect(biplaneBank(0)).toBe(0) // and the coupling itself maps 0 → 0
+  })
+})
+
+// ───────────────────────────────────────────────────────────────────────────
+// AC-6 — DISCHK proximity wiring (live nearest-enemy depth → ProximityBand)
+// ───────────────────────────────────────────────────────────────────────────
+describe('enemy — proximityBand: depth → DISCHK band (findings §2 wiring)', () => {
+  it('a freshly-spawned (far) plane reads the slow FAR band', () => {
+    const proximityBand = need(m.proximityBand, 'proximityBand')
+    expect(proximityBand(spawnAt(1).depth)).toBe('far')
+    expect(proximityBand(need(m.P_INDP, 'P_INDP'))).toBe('far')
+  })
+
+  it('a point-blank plane reads the sharp NEAR band', () => {
+    expect(need(m.proximityBand, 'proximityBand')(1)).toBe('near')
+  })
+
+  it('covers all three bands and returns ONLY a valid ProximityBand for any depth (exhaustive)', () => {
+    const proximityBand = need(m.proximityBand, 'proximityBand')
+    const seen = new Set<ProximityBand>()
+    for (let depth = 0; depth <= need(m.P_INDP, 'P_INDP'); depth += 5) {
+      const band = proximityBand(depth)
+      expect(['near', 'mid', 'far']).toContain(band) // #3 exhaustive union — no stray value
+      seen.add(band)
+    }
+    expect(seen).toEqual(new Set<ProximityBand>(['near', 'mid', 'far'])) // all three reachable
+  })
+
+  it('is MONOTONE — closing the distance never jumps to a slower band', () => {
+    const proximityBand = need(m.proximityBand, 'proximityBand')
+    const rank: Record<ProximityBand, number> = { far: 0, mid: 1, near: 2 }
+    let prev = rank[proximityBand(need(m.P_INDP, 'P_INDP'))]
+    for (let depth = need(m.P_INDP, 'P_INDP'); depth >= 0; depth -= 5) {
+      const r = rank[proximityBand(depth)]
+      expect(r).toBeGreaterThanOrEqual(prev) // closer ⇒ same-or-sharper band, never slower
+      prev = r
+    }
+  })
+
+  it('is TOTAL — degenerate depth (negative, NaN, ±Infinity) still yields a valid band (rule #4)', () => {
+    const proximityBand = need(m.proximityBand, 'proximityBand')
+    for (const d of [-1, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      expect(['near', 'mid', 'far']).toContain(proximityBand(d))
+    }
+  })
+
+  it('drives the REAL flight model — a near enemy sharpens the yoke vs a far one (DISCHK)', () => {
+    // The whole point of the wiring: proximityBand(enemy.depth) → FlightInput.proximity
+    // → DISCHK scales the world pan. Prove it end-to-end through the real flight.step:
+    // an enemy at point-blank makes the same turn command pan farther than a far one.
+    const proximityBand = need(m.proximityBand, 'proximityBand')
+    const farBand = proximityBand(spawnAt(1).depth) // 'far'
+    const nearBand = proximityBand(1) // 'near'
+    expect(DISCHK[nearBand]).toBeGreaterThan(DISCHK[farBand]) // sanity: near scales harder
+
+    const pan = (proximity: ProximityBand): number => {
+      let s = INITIAL_FLIGHT
+      for (let i = 0; i < 20; i++) s = flightStep(s, { turn: 1, pitch: 0, proximity })
+      return s.heading
+    }
+    expect(pan(nearBand)).toBeGreaterThan(pan(farBand)) // control feel sharpens near combat
+  })
+})
+
+// ───────────────────────────────────────────────────────────────────────────
+// AC-6b — the plane BORES IN: step() closes the depth so DISCHK sharpens over time
+// (review-rework: the closing mechanic was previously untested)
+// ───────────────────────────────────────────────────────────────────────────
+describe('enemy — depth closes on approach (the seam that makes DISCHK bite)', () => {
+  it('depth decreases MONOTONICALLY under step(), starting from the spawn depth', () => {
+    const { depths } = trace(7, 0, 200)
+    expect(depths[0]).toBe(need(m.P_INDP, 'P_INDP')) // starts at the far spawn depth
+    for (let i = 1; i < depths.length; i++) {
+      expect(depths[i]).toBeLessThanOrEqual(depths[i - 1]) // never retreats
+    }
+    expect(depths[depths.length - 1]).toBeLessThan(depths[0]) // it actually closed
+  })
+
+  it('clamps at a stable positive floor below the spawn depth — never through the eye', () => {
+    // A long run settles on a closest-approach floor (the returning-ace pass past it is
+    // rb2-8). The floor is > 0 (never behind the eye) and < P_INDP (it really closed),
+    // and it is STABLE — a longer run lands on the exact same floor, not oscillating.
+    const floor = trace(7, 0, 1000).depths
+    const settled = floor[floor.length - 1]
+    expect(settled).toBeGreaterThan(0)
+    expect(settled).toBeLessThan(need(m.P_INDP, 'P_INDP'))
+    const longer = trace(7, 0, 1400).depths
+    expect(longer[longer.length - 1]).toBe(settled) // same floor — clamped, not drifting
+  })
+
+  it('closing walks the DISCHK band far → near — the story\'s "sharpens as it closes" is delivered', () => {
+    // End-to-end proof that step()'s closing feeds proximityBand: the band the player's
+    // yoke sees transitions from the slow 'far' at spawn to the sharp 'near' at approach,
+    // monotonically. Had step() forgotten to close depth, this would sit at 'far' forever.
+    const proximityBand = need(m.proximityBand, 'proximityBand')
+    const rank: Record<ProximityBand, number> = { far: 0, mid: 1, near: 2 }
+    const { depths } = trace(7, 0, 1000)
+    expect(proximityBand(depths[0])).toBe('far') // spawns in the slow band
+    expect(proximityBand(depths[depths.length - 1])).toBe('near') // closes into the sharp band
+    for (let i = 1; i < depths.length; i++) {
+      expect(rank[proximityBand(depths[i])]).toBeGreaterThanOrEqual(rank[proximityBand(depths[i - 1])])
+    }
+  })
+})
+
+// ───────────────────────────────────────────────────────────────────────────
+// AC-7 — the spawned enemy renders through the rb2-3 biplane substrate
+// ───────────────────────────────────────────────────────────────────────────
+describe('enemy — renders through biplaneLOD + renderModel (rb2-3 carryforward)', () => {
+  it('a spawned enemy is IN FRONT and draws finite NDC segments (depth sign is correct)', () => {
+    // Compose the render exactly as the cockpit will: model = translate(x,y,-depth) ∘
+    // rotateZ(bank); MVP = projection · model; pick the LOD by depth; walk it. This
+    // pins that the enemy pose places it in FRONT of the eye (depth > 0 ⇒ world −Z)
+    // and produces real geometry — a Dev who stored depth with the wrong sign draws 0.
+    const e = spawnAt(1)
+    const proj = sceneProjection(1)
+    const model: Mat4 = multiply(translation(e.x, e.y, -e.depth), rotationZ(e.bank))
+    const mvp: Mat4 = multiply(proj, model)
+    const segs = renderModel(biplaneLOD(e.depth), mvp)
+    expect(segs.length).toBeGreaterThan(0)
+    for (const s of segs) {
+      for (const v of [s.x1, s.y1, s.x2, s.y2]) expect(Number.isFinite(v)).toBe(true)
+    }
+  })
+})
+
+// ───────────────────────────────────────────────────────────────────────────
+// AC-8 — purity: no DOM / time / ambient randomness (module contract)
+// ───────────────────────────────────────────────────────────────────────────
+describe('enemy — pure & deterministic (the only randomness is the injected Rng)', () => {
+  it('the full spawn→weave sequence is reproducible from the seed alone', () => {
+    const runOnce = (): number[] => trace(2024, 2, 50).xs
+    expect(runOnce()).toEqual(runOnce()) // identical every time — no Date/Math.random leak
+  })
+
+  it('two independently-seeded planes with the SAME seed weave identically', () => {
+    const a = trace(11, 1, 60)
+    const b = trace(11, 1, 60)
+    expect(a.xs).toEqual(b.xs)
+    expect(a.deltas).toEqual(b.deltas)
+  })
+})

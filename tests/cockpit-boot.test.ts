@@ -13,12 +13,12 @@
 // executed. Like the rb1-1 scaffold suite, this reads src/ as TEXT and asserts the
 // wiring structurally — the "keep the sneaky dev honest" integration guard.
 //
-// SCOPE FENCE (findings §9, open gap #1): the picture-ROM SOURCE (RBPICS.MAC /
-// RBCHAR.MAC — the biplane face/line connect-lists) is ABSENT from the quarry, so
-// the plane's connect topology is not yet enumerable. Authentic biplane geometry
-// is a follow-up story, explicitly BLOCKED before rb1-3. "Empty cockpit" is literal:
-// horizon + terrain substrate, NO enemy/biplane models. This suite fails if a
-// biplane geometry module sneaks in.
+// SCOPE FENCE (RETIRED in rb2-3): rb1-3 fenced off biplane geometry while findings
+// §9 gap #1 was open — the picture-ROM connect-lists were thought absent. That gap
+// is now CLOSED: rb2-2 transcribed the connect-lists (topology.ts) and rb2-3 the 42
+// plane vertices + LOD render (biplane.ts, covered by tests/core/biplane.test.ts).
+// The "NO biplane geometry" fence has served its purpose and is removed; the wiring
+// checks below still keep the runnable cockpit honest.
 
 import { describe, it, expect } from 'vitest'
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
@@ -70,17 +70,40 @@ describe('cockpit boot — the flight camera + tilting horizon are wired to the 
   })
 })
 
-describe('cockpit boot — scope fence: NO biplane geometry (findings §9 gap #1)', () => {
-  it('ships no biplane geometry module (plane.ts / biplane.ts / plane-points.ts)', () => {
-    // The 42 vertices are known, but the connect topology lives in the absent
-    // RBPICS.MAC/RBCHAR.MAC — a BLOCKED follow-up, not rb1-3.
-    const banned = /(^|\/)(plane|biplane|plane-points)\.ts$/
-    const offenders = files.filter((f) => banned.test(f.path)).map((f) => f.path)
-    expect(offenders, `biplane geometry is out of scope (blocked on the absent picture-ROM source): ${offenders.join(', ')}`).toEqual([])
+describe('cockpit boot — the single enemy is spawned, flown, drawn, and felt (rb2-4)', () => {
+  const mainTs = files.find((f) => f.path.endsWith('main.ts'))?.text ?? ''
+
+  // NOTE: these guards test `mainTs` (the runnable entry's OWN text), NOT `anyMatch`
+  // across all of src/. `renderModel`/`proximityBand` are DECLARED in core modules
+  // (biplane.ts / enemy.ts), so an `anyMatch(/\brenderModel\s*\(/)` would be satisfied
+  // by those declarations and pass even if main.ts never wired anything (rb2-4 review
+  // finding). Scoping to main.ts's text makes each guard actually fail if the cockpit
+  // drops the wiring. The `renderModel(` / `proximityBand(` forms match the CALL, not
+  // the `import { renderModel }` line (no `(` after the name there).
+
+  it('the cockpit consumes the enemy AI (imports ./core/enemy)', () => {
+    expect(/from\s+['"][./]*core\/enemy['"]/.test(mainTs), 'main.ts must import src/core/enemy').toBe(true)
   })
 
-  it('no src module imports a biplane geometry model', () => {
-    expect(anyMatch(/from\s+['"][^'"]*(biplane|plane-points)['"]/), 'no biplane/plane-points import in rb1-3').toBe(false)
+  it('the enemy is actually DRAWN — main.ts renders the biplane model (renderModel from ./core/biplane)', () => {
+    expect(/from\s+['"][./]*core\/biplane['"]/.test(mainTs), 'main.ts must import src/core/biplane to draw the enemy').toBe(true)
+    expect(/\brenderModel\s*\(/.test(mainTs), 'main.ts must CALL renderModel to stroke the enemy geometry').toBe(true)
+  })
+
+  it('the live enemy depth drives DISCHK — proximity is COMPUTED in main.ts, not the hardcoded rb2-1 "far"', () => {
+    // rb2-1 pinned `proximity: 'far'` because there were no enemies. rb2-4 wires the
+    // nearest-enemy depth through proximityBand so the control feel sharpens on approach.
+    expect(/\bproximityBand\s*\(/.test(mainTs), 'main.ts must CALL proximityBand(enemy.depth) for FlightInput.proximity').toBe(true)
+    // and the dead rb2-1 hardcode must be gone — proximity is no longer a fixed 'far' const.
+    expect(/const\s+proximity\s*:\s*ProximityBand\s*=\s*['"]far['"]/.test(mainTs), 'main.ts must not hardcode proximity to a constant "far"').toBe(false)
+  })
+
+  it('the stale "empty cockpit / no enemy geometry" comment is retired from main.ts', () => {
+    // The context calls out the now-false rb2-1 comment. Once the enemy is wired, the
+    // "Still an EMPTY cockpit ... no enemy/biplane geometry ... a later rb2 story" note
+    // is a lie — it must be updated.
+    expect(/no enemy\/biplane geometry/i.test(mainTs), 'main.ts still claims it has no enemy geometry').toBe(false)
+    expect(/Still an EMPTY cockpit/i.test(mainTs), 'main.ts still calls itself an empty cockpit').toBe(false)
   })
 })
 
