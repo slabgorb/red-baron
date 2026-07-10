@@ -73,19 +73,29 @@ describe('cockpit boot — the flight camera + tilting horizon are wired to the 
 describe('cockpit boot — the single enemy is spawned, flown, drawn, and felt (rb2-4)', () => {
   const mainTs = files.find((f) => f.path.endsWith('main.ts'))?.text ?? ''
 
+  // NOTE: these guards test `mainTs` (the runnable entry's OWN text), NOT `anyMatch`
+  // across all of src/. `renderModel`/`proximityBand` are DECLARED in core modules
+  // (biplane.ts / enemy.ts), so an `anyMatch(/\brenderModel\s*\(/)` would be satisfied
+  // by those declarations and pass even if main.ts never wired anything (rb2-4 review
+  // finding). Scoping to main.ts's text makes each guard actually fail if the cockpit
+  // drops the wiring. The `renderModel(` / `proximityBand(` forms match the CALL, not
+  // the `import { renderModel }` line (no `(` after the name there).
+
   it('the cockpit consumes the enemy AI (imports ./core/enemy)', () => {
-    expect(anyMatch(/from\s+['"][./]*core\/enemy['"]/), 'the runnable cockpit must fly src/core/enemy').toBe(true)
+    expect(/from\s+['"][./]*core\/enemy['"]/.test(mainTs), 'main.ts must import src/core/enemy').toBe(true)
   })
 
-  it('the enemy is actually DRAWN — the shell renders the biplane model (renderModel from ./core/biplane)', () => {
-    expect(anyMatch(/from\s+['"][./]*core\/biplane['"]/), 'the cockpit must import src/core/biplane to draw the enemy').toBe(true)
-    expect(anyMatch(/\brenderModel\s*\(/), 'the cockpit must call renderModel to stroke the enemy geometry').toBe(true)
+  it('the enemy is actually DRAWN — main.ts renders the biplane model (renderModel from ./core/biplane)', () => {
+    expect(/from\s+['"][./]*core\/biplane['"]/.test(mainTs), 'main.ts must import src/core/biplane to draw the enemy').toBe(true)
+    expect(/\brenderModel\s*\(/.test(mainTs), 'main.ts must CALL renderModel to stroke the enemy geometry').toBe(true)
   })
 
-  it('the live enemy depth drives DISCHK — proximity is COMPUTED, not the hardcoded rb2-1 "far"', () => {
+  it('the live enemy depth drives DISCHK — proximity is COMPUTED in main.ts, not the hardcoded rb2-1 "far"', () => {
     // rb2-1 pinned `proximity: 'far'` because there were no enemies. rb2-4 wires the
     // nearest-enemy depth through proximityBand so the control feel sharpens on approach.
-    expect(anyMatch(/\bproximityBand\s*\(/), 'the cockpit must derive FlightInput.proximity via proximityBand(enemy.depth)').toBe(true)
+    expect(/\bproximityBand\s*\(/.test(mainTs), 'main.ts must CALL proximityBand(enemy.depth) for FlightInput.proximity').toBe(true)
+    // and the dead rb2-1 hardcode must be gone — proximity is no longer a fixed 'far' const.
+    expect(/const\s+proximity\s*:\s*ProximityBand\s*=\s*['"]far['"]/.test(mainTs), 'main.ts must not hardcode proximity to a constant "far"').toBe(false)
   })
 
   it('the stale "empty cockpit / no enemy geometry" comment is retired from main.ts', () => {

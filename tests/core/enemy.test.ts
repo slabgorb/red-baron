@@ -252,13 +252,20 @@ describe('enemy — spawn (NWPLNE: side entry, 90° bank, depth P.INDP)', () => 
     expect(spawnAt(1).active).toBe(true)
   })
 
-  it('is deterministic per seed and varies across seeds (consumes the injected Rng)', () => {
-    // Same seed → identical plane (pure, seeded). Different seeds → the random X/Y
-    // actually vary, proving the rng is consumed rather than ignored.
+  it('is deterministic per seed and independently varies X and Y across seeds (consumes the Rng)', () => {
+    // Same seed → identical plane (pure, seeded). Different seeds → X AND Y must EACH
+    // vary — a broken single-axis draw masked by the other axis must NOT slip through
+    // (the old combined `${x},${y}` set couldn't tell them apart).
     expect(spawnAt(5)).toEqual(spawnAt(5))
     const many = [1, 2, 3, 4, 5, 6, 7, 8].map((s) => spawnAt(s))
-    const distinctXY = new Set(many.map((e) => `${e.x},${e.y}`))
-    expect(distinctXY.size).toBeGreaterThan(1)
+    expect(new Set(many.map((e) => e.x)).size).toBeGreaterThan(1) // X actually randomized
+    expect(new Set(many.map((e) => e.y)).size).toBeGreaterThan(1) // Y actually randomized
+    // ...and Y stays finite and on-screen-bounded (never NaN or an absurd off-screen value).
+    const olimMax = need(m.P_OLIM, 'P_OLIM')[need(m.P_OLIM, 'P_OLIM').length - 1]
+    for (const e of many) {
+      expect(Number.isFinite(e.y)).toBe(true)
+      expect(Math.abs(e.y)).toBeLessThanOrEqual(olimMax)
+    }
   })
 
   it('advances the Rng seed — spawn is not a no-op on the generator', () => {
@@ -325,6 +332,64 @@ describe('enemy — weaving window-follower steering (UPDPLN, findings §3)', ()
 })
 
 // ───────────────────────────────────────────────────────────────────────────
+// AC-4b — GMLEVL clamping + direct boundary reversal (review-rework edge cases)
+// ───────────────────────────────────────────────────────────────────────────
+describe('enemy — GMLEVL clamping & direct boundary reversal', () => {
+  const olimMax = (): number => {
+    const t = need(m.P_OLIM, 'P_OLIM')
+    return t[t.length - 1]
+  }
+
+  it('clamps an out-of-range GMLEVL — negative / >max / NaN / non-integer never read P_OLIM[undefined]', () => {
+    const step = need(m.step, 'step')
+    for (const bad of [-1, -100, 5, 99, Number.NaN, 2.7]) {
+      const e = spawnAt(3, bad)
+      expect(Number.isFinite(e.x)).toBe(true) // no NaN leak from a bad level index
+      expect(Math.abs(e.x)).toBeLessThanOrEqual(olimMax() + 1e-9) // inside SOME valid window
+      const s = step(e, bad) // stepping a degenerate level must also stay total + bounded
+      expect(Number.isFinite(s.x)).toBe(true)
+      expect(Math.abs(s.x)).toBeLessThanOrEqual(olimMax() + 1e-9)
+    }
+  })
+
+  it('spawns inside the WIDER band at a higher GMLEVL — level indexes the window', () => {
+    const olim0 = need(m.P_OLIM, 'P_OLIM')[0]
+    const olim4 = need(m.P_OLIM, 'P_OLIM')[4]
+    const seeds = [1, 2, 7, 42, 100]
+    for (const seed of seeds) {
+      const e = spawnAt(seed, 4)
+      expect(Math.sign(e.x)).toBe(e.side)
+      expect(Math.abs(e.x)).toBeLessThanOrEqual(olim4 + 1e-9) // inside the level-4 window
+    }
+    // and the band really widened: at least one level-4 spawn lands past the whole level-0 window
+    const widest = Math.max(...seeds.map((s) => Math.abs(spawnAt(s, 4).x)))
+    expect(widest).toBeGreaterThan(olim0)
+  })
+
+  it('reverses IMMEDIATELY at the outer wall — a plane pinned at ±P_OLIM turns back inward', () => {
+    // Deterministic, not inferred from a random trace: seed the plane at the wall moving
+    // outward; one step must decelerate it, and within a short run it leaves the wall.
+    const step = need(m.step, 'step')
+    const olim = need(m.P_OLIM, 'P_OLIM')[0]
+
+    const right = step(withEnemy({ x: olim, deltaX: 50 }), 0)
+    expect(right.x).toBeLessThanOrEqual(olim + 1e-9) // never escapes the wall
+    expect(right.deltaX).toBeLessThan(50) // ΔX decelerating — heading reversed at the bound
+    let e = withEnemy({ x: olim, deltaX: 50 })
+    let minX = e.x
+    for (let i = 0; i < 20; i++) {
+      e = step(e, 0)
+      minX = Math.min(minX, e.x)
+    }
+    expect(minX).toBeLessThan(olim) // it left the +wall and weaved back inward
+
+    const left = step(withEnemy({ x: -olim, deltaX: -50 }), 0) // symmetric at the −wall
+    expect(left.x).toBeGreaterThanOrEqual(-olim - 1e-9)
+    expect(left.deltaX).toBeGreaterThan(-50)
+  })
+})
+
+// ───────────────────────────────────────────────────────────────────────────
 // AC-5 — bank ∝ turn-rate, reusing the player's biplaneBank coupling
 // ───────────────────────────────────────────────────────────────────────────
 describe('enemy — bank ∝ turn-rate via biplaneBank (context: shared ±45° coupling)', () => {
@@ -346,12 +411,18 @@ describe('enemy — bank ∝ turn-rate via biplaneBank (context: shared ±45° c
     }
   })
 
-  it('a level plane (ΔX = 0) has zero bank — 0 is a real value, not a falsy default (rule #4)', () => {
+  it('a ΔX = 0 frame produced BY step() has zero bank — 0 is a real value, not a falsy default (rule #4)', () => {
     // The classic `x || fallback` numeric bug: 0 is falsy but a VALID turn-rate.
-    // A centred, level enemy must read a genuine zero bank.
-    expect(biplaneBank(0)).toBe(0)
-    const level = withEnemy({ deltaX: 0, bank: biplaneBank(0) })
-    expect(level.bank).toBe(0)
+    // Drive a REAL step() through the ΔX=0 crossing (don't hand-set bank): at the
+    // outer wall the weave decelerates through zero as it reverses — seed x=P_OLIM
+    // with ΔX=+ACCEL so the very next step's ΔX is exactly 0.
+    const step = need(m.step, 'step')
+    const olim = need(m.P_OLIM, 'P_OLIM')[0]
+    const accel = need(m.ACCEL, 'ACCEL')
+    const reversing = step(withEnemy({ x: olim, deltaX: accel }), 0)
+    expect(reversing.deltaX).toBe(0) // step() actually produced a zero turn-rate...
+    expect(reversing.bank).toBe(0) // ...and the bank read a genuine 0, not a fallback
+    expect(biplaneBank(0)).toBe(0) // and the coupling itself maps 0 → 0
   })
 })
 
@@ -413,6 +484,47 @@ describe('enemy — proximityBand: depth → DISCHK band (findings §2 wiring)',
       return s.heading
     }
     expect(pan(nearBand)).toBeGreaterThan(pan(farBand)) // control feel sharpens near combat
+  })
+})
+
+// ───────────────────────────────────────────────────────────────────────────
+// AC-6b — the plane BORES IN: step() closes the depth so DISCHK sharpens over time
+// (review-rework: the closing mechanic was previously untested)
+// ───────────────────────────────────────────────────────────────────────────
+describe('enemy — depth closes on approach (the seam that makes DISCHK bite)', () => {
+  it('depth decreases MONOTONICALLY under step(), starting from the spawn depth', () => {
+    const { depths } = trace(7, 0, 200)
+    expect(depths[0]).toBe(need(m.P_INDP, 'P_INDP')) // starts at the far spawn depth
+    for (let i = 1; i < depths.length; i++) {
+      expect(depths[i]).toBeLessThanOrEqual(depths[i - 1]) // never retreats
+    }
+    expect(depths[depths.length - 1]).toBeLessThan(depths[0]) // it actually closed
+  })
+
+  it('clamps at a stable positive floor below the spawn depth — never through the eye', () => {
+    // A long run settles on a closest-approach floor (the returning-ace pass past it is
+    // rb2-8). The floor is > 0 (never behind the eye) and < P_INDP (it really closed),
+    // and it is STABLE — a longer run lands on the exact same floor, not oscillating.
+    const floor = trace(7, 0, 1000).depths
+    const settled = floor[floor.length - 1]
+    expect(settled).toBeGreaterThan(0)
+    expect(settled).toBeLessThan(need(m.P_INDP, 'P_INDP'))
+    const longer = trace(7, 0, 1400).depths
+    expect(longer[longer.length - 1]).toBe(settled) // same floor — clamped, not drifting
+  })
+
+  it('closing walks the DISCHK band far → near — the story\'s "sharpens as it closes" is delivered', () => {
+    // End-to-end proof that step()'s closing feeds proximityBand: the band the player's
+    // yoke sees transitions from the slow 'far' at spawn to the sharp 'near' at approach,
+    // monotonically. Had step() forgotten to close depth, this would sit at 'far' forever.
+    const proximityBand = need(m.proximityBand, 'proximityBand')
+    const rank: Record<ProximityBand, number> = { far: 0, mid: 1, near: 2 }
+    const { depths } = trace(7, 0, 1000)
+    expect(proximityBand(depths[0])).toBe('far') // spawns in the slow band
+    expect(proximityBand(depths[depths.length - 1])).toBe('near') // closes into the sharp band
+    for (let i = 1; i < depths.length; i++) {
+      expect(rank[proximityBand(depths[i])]).toBeGreaterThanOrEqual(rank[proximityBand(depths[i - 1])])
+    }
   })
 })
 
