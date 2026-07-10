@@ -1,10 +1,12 @@
 // src/core/topology.ts
 //
-// The authentic Red Baron picture-ROM vector topology, transcribed byte-for-byte
-// from `reference/red-baron/037007.XXX` — which IS `RBPICS.MAC` (its own header
-// reads `.TITLE RBPICS - RED BARON PICTURES`), the picture ROM misnamed by part
-// number. This closes the fidelity doc's "gap #1" (findings §7/§9): the plane
-// connect-list topology is NOT unrecoverable — the source shipped in the quarry.
+// The authentic Red Baron vector topology, transcribed byte-for-byte from the ROM
+// quarry: the aerial pictures from `reference/red-baron/037007.XXX` — which IS
+// `RBPICS.MAC` (its own header reads `.TITLE RBPICS - RED BARON PICTURES`), the
+// picture ROM misnamed by part number — and the ground-wave landscape DATA from
+// `RBGRND.MAC` (rb3-1). This closes the fidelity doc's "gap #1" (findings §7/§9):
+// the plane connect-list topology is NOT unrecoverable — the source shipped in
+// the quarry.
 //
 // WHAT'S HERE (findings §7 "connect-lists / picture-ROM inventory"):
 //   • the biplane connect-lists `DB.MAP` / `DB.MAR` / `DB.LNS` (topology only —
@@ -13,7 +15,10 @@
 //   • the self-contained pictures whose vertices AND decode-lists both live in
 //     037007.XXX: the propeller, the four explosion-debris pieces, the two
 //     star-burst debris shapes, and the blimp/Zeppelin;
-//   • the plane collision-detect points `COLLD`.
+//   • the plane collision-detect points `COLLD`;
+//   • the ground-wave landscape data (rb3-1): the `SCAPE0..3` mountain
+//     silhouettes, the `PFOCOL` collision boxes, and the horizon/altitude
+//     constants — see the GROUND / LANDSCAPE section at the foot of the file.
 //
 // CONNECT-LIST OPCODE SEMANTICS (the `BLANKV`/`VSBLEV` macros, 037007.XXX:20-40):
 // a connect-list is a stream of bytes, each `pointIndex * 6 + flag`, terminated
@@ -21,8 +26,11 @@
 // decode scratch buffer `DB.TRP` (Z,X,Y each 2 bytes). The low bits are the pen:
 //   BLANKV/BV .P → .P*6+0  — pen UP, move dark to vertex P
 //   VSBLEV/VV .P → .P*6+1  — pen DOWN, draw a visible line to vertex P
-//   SEGSTR    .P → .P*6+4  — mountain-segment start (used only by the ground-wave
-//                            SCAPE lists, which are out of this module's scope)
+//   SEGSTR    .P → .P*6+4  — mountain-segment start. The `SCAPE0..3` point-sets it
+//                            stitches now live below (rb3-1); the SEGSTR connect-
+//                            tables themselves (`PFOPOS`/`SMAP*`, 037007.XXX) stay
+//                            in the picture ROM for rb3-3 render, so no data in
+//                            this module carries a flag-4 byte yet.
 // Because the stride (6) exceeds the largest flag (4) the encoding is reversible:
 // `point = byte / 6`, `flag = byte % 6`.
 //
@@ -57,7 +65,7 @@ export const POINT_STRIDE = 6
 export const OP_BLANK = 0
 /** Opcode flag: VSBLEV/VV — pen down, draw a visible line to the vertex. */
 export const OP_VISIBLE = 1
-/** Opcode flag: SEGSTR — mountain-segment start (ground-wave lists only, not used here). */
+/** Opcode flag: SEGSTR — mountain-segment start. Stitches the {@link SCAPES} silhouettes; its `PFOPOS`/`SMAP*` connect-tables are rb3-3's (picture ROM), so no list here carries a flag-4 byte yet. */
 export const OP_SEGMENT = 4
 /** End-of-connect-list sentinel (`ENDDB` → `.BYTE $FF`). */
 export const ENDDB = 0xff
@@ -275,3 +283,114 @@ export const DBLIMP: readonly ConnectOp[] = [
 
 /** The blimp as a single self-contained picture. */
 export const BLIMP_PICTURE: VectorPicture = { points: BLIMP_POINTS, connect: DBLIMP }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GROUND / LANDSCAPE (rb3-1) — the ground-wave data rb2-2 scoped OUT, now landed.
+//
+// Transcribed from the canonical `RBGRND.MAC` (".TITLE RBGRND - RED BARON GROUND
+// SEQUENCE" — the shipped RBARON/RBGRND release set, byte-identical to
+// `R2GRND.MAC` across the whole SCAPE/PFOCOL block). The silhouettes and
+// collision boxes sit in its "DISPLAY DB'S" section under `.RADIX 10`
+// (RBGRND.MAC:723-848), so every coordinate below is DECIMAL, exactly as written.
+//
+// MOUNTAIN SILHOUETTES `SCAPE0..3` (RBGRND.MAC:725-797). Each is a `PFPNTS` list —
+// the 2-D playfield-point macro (037007.XXX:11):
+//     .MACRO PFPNTS .X,.Y,.Z  /  .BYTE .X/2,.Y*2  /  .ENDM
+// It emits ONLY two bytes (`X/2`, `Y*2`); the THIRD argument is DISCARDED. We keep
+// the logical `[x, y]` the arguments name (as `Point3` keeps POINTP's coords) and
+// note the drop — a byte auditor halves x, doubles y, and ignores the source's
+// third column.
+//
+// These silhouettes are stroked by the ground decoder through the SEGSTR
+// (`OP_SEGMENT` = pointIndex*6+4) opcode exported above: the picture-ROM `PFOPOS`
+// segment table + `SMAP*`/`SMP*` connect-lists (037007.XXX:83+) name which SCAPE
+// points start and join each scroll segment. Those SEGSTR connect-tables are the
+// RENDER concern (rb3-3) and live in a DIFFERENT ROM, so they are NOT transcribed
+// here — rb3-1 lands the point DATA + collision boxes + horizon constants only.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * One 2-D playfield point, logical `[x, y]`. The ROM `PFPNTS` macro packs it as
+ * `.BYTE x/2, y*2` and discards a third argument; we keep the logical coordinate
+ * its arguments name. (Distinct from {@link Point3}: playfield points are planar.)
+ */
+export type Point2 = readonly [x: number, y: number]
+
+/** Mountain silhouette 0 — 21 points (`SCAPE0`, RBGRND.MAC:725-745). */
+export const SCAPE0: readonly Point2[] = [
+  [-128, 0], [-104, 24], [-88, 24], [-64, 0], [-48, 16], // 0-4
+  [-16, 24], [0, 8], [24, 16], [48, 0], [64, 0], // 5-9
+  [80, 0], [96, 24], [120, 0], [112, 8], [120, 20], // 10-14
+  [128, 0], [-32, 8], [-48, 0], [8, 0], [100, 8], // 15-19
+  [112, 0], // 20
+]
+
+/** Mountain silhouette 1 — 16 points (`SCAPE1`, RBGRND.MAC:747-762). */
+export const SCAPE1: readonly Point2[] = [
+  [-128, 0], [-112, 0], [-64, 12], [0, 0], [16, 16], // 0-4
+  [48, 16], [64, 0], [96, 32], [112, 8], [104, 16], // 5-9
+  [112, 24], [128, 0], [-48, 4], [-64, 0], [92, 16], // 10-14
+  [104, 0], // 15
+]
+
+/** Mountain silhouette 2 — 18 points (`SCAPE2`, RBGRND.MAC:764-781; point 5 is the `PFPNT0` global). */
+export const SCAPE2: readonly Point2[] = [
+  [-128, 0], [-88, 8], [-64, 0], [-32, 24], [-16, 0], // 0-4
+  [0, 0], [16, 0], [32, 16], [48, 16], [64, 24], // 5-9  (index 5 = PFPNT0)
+  [88, 0], [72, 16], [96, 32], [128, 0], [-96, 0], // 10-14
+  [-40, 0], [40, 0], [56, 8], // 15-17
+]
+
+/** Mountain silhouette 3 — 15 points (`SCAPE3`, RBGRND.MAC:783-797). */
+export const SCAPE3: readonly Point2[] = [
+  [-128, 0], [-112, 16], [-96, 16], [-64, 32], [-32, 24], // 0-4
+  [0, 0], [16, 24], [64, 0], [96, 0], [104, 16], // 5-9
+  [128, 0], [-96, 0], [-56, 16], [8, 0], [24, 8], // 10-14
+]
+
+/** ROM `SSEGS` pointer table — the four mountain silhouettes, index 0-3 (RBGRND.MAC:799). */
+export const SCAPES: readonly (readonly Point2[])[] = [SCAPE0, SCAPE1, SCAPE2, SCAPE3]
+
+/**
+ * ROM `.SSEG` table (RBGRND.MAC:801-802) — per silhouette, the byte offset of its
+ * LAST point: `SCAPE(n+1) − SCAPE(n) − 2` = `(pointCount − 1) × 2` (each `PFPNTS`
+ * is 2 bytes). The ground draw loop uses it to bound the segment scan.
+ */
+export const SCAPE_SEG_BYTES: readonly number[] = [40, 30, 34, 28]
+
+// GROUND-OBJECT COLLISION BOXES `PFOCOL` (RBGRND.MAC:824-847). 24 `PFCOL` entries —
+// the collision-box macro (037007.XXX:14):
+//     .MACRO PFCOL .X,.Y  /  .WORD .X*8,.Y*8  /  .ENDM
+// each emitting the (X, Y) corner as two ×8-scaled words. We keep the logical
+// `[x, y]`. `GRDISP` (R2BRON.MAC:3880-3902) reads the entries in CONSECUTIVE PAIRS
+// as (min-corner, max-corner): the 24 entries are 12 axis-aligned boxes, each
+// `[Xmin,Ymin]` then `[Xmax,Ymax]` (every pair satisfies min ≤ max). Object type
+// indexes this table; type ≥ 4 = active gun emplacement (rb3-4 consumes it).
+
+/** `PFOCOL` — 24 `PFCOL` collision corners = 12 (min, max) box pairs (RBGRND.MAC:824-847). */
+export const PFOCOL: readonly Point2[] = [
+  [-104, 20], [-88, 32], // box 0
+  [48, 0], [64, 12], // box 1
+  [64, 0], [80, 12], // box 2
+  [-128, 0], [-112, 12], // box 3
+  [16, 12], [32, 24], // box 4
+  [32, 12], [48, 24], // box 5
+  [-16, 0], [0, 12], // box 6
+  [0, 0], [16, 12], // box 7
+  [32, 12], [48, 24], // box 8
+  [-112, 12], [-96, 24], // box 9
+  [64, 0], [80, 12], // box 10
+  [80, 0], [96, 12], // box 11
+]
+
+// HORIZON / ALTITUDE CONSTANTS (RBARON.MAC:447-455, under `.RADIX 16` — HEX). The
+// ground sequence consumes these program-ROM equates; transcribed here with the
+// SCAPE data they govern. HEX is confirmed by the sibling equate `.STAR0 = 1B`
+// (a `B` hex digit) and by `P.MAXZ = 1001` = HORZ+1 ("PF object max Z on horizon").
+
+/** `HORZ` = $1000 — horizon depth (the Z at which mountains sit on the horizon line). */
+export const HORZ = 0x1000 // 4096
+/** `HORIZN` = $40 — horizon screen Y-offset added after the perspective divide. */
+export const HORIZN = 0x40 // 64
+/** `PFPLOW` = $80·4 — plane minimum altitude above the horizon (I4YPOS floor, ground mode). */
+export const PFPLOW = 0x80 * 4 // 512

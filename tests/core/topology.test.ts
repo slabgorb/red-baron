@@ -1,14 +1,18 @@
 // tests/core/topology.test.ts
 //
-// Story rb2-2 — verifies the picture-ROM vector topology transcribed from
-// `reference/red-baron/037007.XXX` (= `RBPICS.MAC`) into `src/core/topology.ts`.
+// Verifies the Red Baron vector topology transcribed into `src/core/topology.ts`:
+//   • rb2-2 — the aerial picture ROM `reference/red-baron/037007.XXX`
+//     (= `RBPICS.MAC`): biplane / prop / explosion / star / blimp;
+//   • rb3-1 — the ground-wave landscape DATA from `RBGRND.MAC`: the `SCAPE0..3`
+//     mountain silhouettes, the `PFOCOL` collision boxes, and the horizon/
+//     altitude constants.
 //
-// This is a TRANSCRIPTION story: the value is fidelity to the source bytes, so
+// These are TRANSCRIPTION stories: the value is fidelity to the source bytes, so
 // the suite guards (a) the BLANKV/VSBLEV opcode arithmetic, (b) the exact,
-// source-counted length of every connect-list and point-set, (c) a spot-check of
-// representative transcribed values against the .MAC listing, and (d) the
-// structural invariant that every connect-op indexes a real vertex in its
-// point-set. It reads only red-baron's own committed source — never the
+// source-counted length of every list / point-set, (c) FULL literal value pins of
+// the transcribed coordinates against the .MAC listing, and (d) the structural
+// invariants (every connect-op indexes a real vertex; every PFOCOL box pair is
+// min ≤ max). It reads only red-baron's own committed source — never the
 // gitignored `reference/` quarry — so it passes in a fresh clone.
 
 import { describe, it, expect } from 'vitest'
@@ -47,6 +51,18 @@ import {
   BLIMP_POINTS,
   DBLIMP,
   BLIMP_PICTURE,
+  type Point2,
+  OP_SEGMENT,
+  SCAPE0,
+  SCAPE1,
+  SCAPE2,
+  SCAPE3,
+  SCAPES,
+  SCAPE_SEG_BYTES,
+  PFOCOL,
+  HORZ,
+  HORIZN,
+  PFPLOW,
 } from '../../src/core/topology'
 
 describe('topology — connect-list opcode semantics (BLANKV/VSBLEV)', () => {
@@ -213,5 +229,128 @@ describe('topology — structural fidelity', () => {
     const lists = [DB_MAP, DB_MAR, DB_LNS, PPROPA, PPROPB, PPROPC, PCDEC0, PCDEC1, PCDEC2, DESTR0, DESTR1, DBLIMP]
     const total = lists.reduce((n, l) => n + l.length, 0)
     expect(total).toBe(287)
+  })
+})
+
+// ─── rb3-1: ground / landscape data (RBGRND.MAC) ─────────────────────────────
+
+describe('topology — mountain silhouettes (SCAPE0..3)', () => {
+  it('has the exact source-counted point count per silhouette', () => {
+    expect(SCAPE0.length).toBe(21) // RBGRND.MAC:725-745
+    expect(SCAPE1.length).toBe(16) // RBGRND.MAC:747-762
+    expect(SCAPE2.length).toBe(18) // RBGRND.MAC:764-781
+    expect(SCAPE3.length).toBe(15) // RBGRND.MAC:783-797
+  })
+
+  // FULL literal pins — the ROM PFPNTS values (logical x,y; the packed x/2,y*2 and
+  // the discarded third arg are the macro's job, not ours). An in-range coordinate
+  // swap that a length/bounds check would miss fails these.
+  it('transcribes SCAPE0 verbatim (Z discarded)', () => {
+    expect(SCAPE0).toEqual([
+      [-128, 0], [-104, 24], [-88, 24], [-64, 0], [-48, 16],
+      [-16, 24], [0, 8], [24, 16], [48, 0], [64, 0],
+      [80, 0], [96, 24], [120, 0], [112, 8], [120, 20],
+      [128, 0], [-32, 8], [-48, 0], [8, 0], [100, 8],
+      [112, 0],
+    ])
+  })
+
+  it('transcribes SCAPE1 verbatim', () => {
+    expect(SCAPE1).toEqual([
+      [-128, 0], [-112, 0], [-64, 12], [0, 0], [16, 16],
+      [48, 16], [64, 0], [96, 32], [112, 8], [104, 16],
+      [112, 24], [128, 0], [-48, 4], [-64, 0], [92, 16],
+      [104, 0],
+    ])
+  })
+
+  it('transcribes SCAPE2 verbatim (index 5 is the PFPNT0 global)', () => {
+    expect(SCAPE2).toEqual([
+      [-128, 0], [-88, 8], [-64, 0], [-32, 24], [-16, 0],
+      [0, 0], [16, 0], [32, 16], [48, 16], [64, 24],
+      [88, 0], [72, 16], [96, 32], [128, 0], [-96, 0],
+      [-40, 0], [40, 0], [56, 8],
+    ])
+    expect(SCAPE2[5]).toEqual([0, 0]) // PFPNT0
+  })
+
+  it('transcribes SCAPE3 verbatim', () => {
+    expect(SCAPE3).toEqual([
+      [-128, 0], [-112, 16], [-96, 16], [-64, 32], [-32, 24],
+      [0, 0], [16, 24], [64, 0], [96, 0], [104, 16],
+      [128, 0], [-96, 0], [-56, 16], [8, 0], [24, 8],
+    ])
+  })
+
+  it('every silhouette spans the full playfield width from ∓128', () => {
+    // Point 0 is the far-left edge (−128); the main outline reaches the far-right
+    // edge (+128) at some point before the trailing detail vertices.
+    for (const scape of SCAPES) {
+      expect(scape[0][0]).toBe(-128)
+      expect(scape.some(([x]) => x === 128)).toBe(true)
+    }
+  })
+
+  it('SSEGS pointer table lists the four silhouettes in order', () => {
+    expect(SCAPES).toEqual([SCAPE0, SCAPE1, SCAPE2, SCAPE3])
+  })
+
+  it('.SSEG byte-lengths are the last-point offset (pointCount − 1) × 2', () => {
+    expect(SCAPE_SEG_BYTES).toEqual([40, 30, 34, 28]) // RBGRND.MAC:801-802
+    SCAPES.forEach((scape, i) => {
+      expect(SCAPE_SEG_BYTES[i]).toBe((scape.length - 1) * 2)
+    })
+  })
+
+  it('decodes through the exported OP_SEGMENT (SEGSTR = pointIndex*6+4) opcode', () => {
+    // The picture-ROM PFOPOS/SMAP connect-tables (rb3-3) start each segment with a
+    // SEGSTR byte = point*6+4; the opcode those lists use is exported here.
+    expect(OP_SEGMENT).toBe(4)
+    // A hypothetical SEGSTR byte for SCAPE point 3: 3*6+4 = 22.
+    expect(3 * 6 + OP_SEGMENT).toBe(22)
+  })
+})
+
+describe('topology — ground-object collision boxes (PFOCOL)', () => {
+  it('has 24 PFCOL corners = 12 (min, max) boxes', () => {
+    expect(PFOCOL.length).toBe(24) // RBGRND.MAC:824-847
+  })
+
+  it('transcribes every PFCOL corner verbatim (logical x,y; ×8 packing is the macro)', () => {
+    expect(PFOCOL).toEqual([
+      [-104, 20], [-88, 32],
+      [48, 0], [64, 12],
+      [64, 0], [80, 12],
+      [-128, 0], [-112, 12],
+      [16, 12], [32, 24],
+      [32, 12], [48, 24],
+      [-16, 0], [0, 12],
+      [0, 0], [16, 12],
+      [32, 12], [48, 24],
+      [-112, 12], [-96, 24],
+      [64, 0], [80, 12],
+      [80, 0], [96, 12],
+    ])
+  })
+
+  it('reads as consecutive (min-corner, max-corner) pairs — every box is min ≤ max', () => {
+    // GRDISP (R2BRON.MAC:3880-3902) treats entry 2n as the min corner and 2n+1 as
+    // the max corner of box n; a mistranscribed corner that inverts a box fails here.
+    for (let i = 0; i < PFOCOL.length; i += 2) {
+      const min: Point2 = PFOCOL[i]
+      const max: Point2 = PFOCOL[i + 1]
+      expect(min[0]).toBeLessThanOrEqual(max[0]) // Xmin ≤ Xmax
+      expect(min[1]).toBeLessThanOrEqual(max[1]) // Ymin ≤ Ymax
+    }
+  })
+})
+
+describe('topology — horizon / altitude constants (RBARON.MAC, .RADIX 16)', () => {
+  it('transcribes HORZ / HORIZN / PFPLOW as their hex-radix values', () => {
+    // The equate block is `.RADIX 16` (hex) — confirmed by the sibling `.STAR0=1B`
+    // and by `P.MAXZ = 1001` = HORZ+1. Decimal misreads (e.g. HORZ=1000) are wrong.
+    expect(HORZ).toBe(0x1000) // 4096 — horizon depth
+    expect(HORIZN).toBe(0x40) // 64 — horizon Y offset ("$40")
+    expect(PFPLOW).toBe(0x80 * 4) // 512 — plane min altitude
   })
 })
