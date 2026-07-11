@@ -138,3 +138,45 @@ export function stepWaveClock(clock: WaveClock): { clock: WaveClock; spawnPlaneW
   const nextModect = clock.modect + 1
   return { clock: { modect: nextModect, countdown: interWaveDelay(nextModect) }, spawnPlaneWave }
 }
+
+// ─── GRMODE — the ground-wave mode byte (rb3-2, findings §4) ───────────────────
+//
+// rb2-7 pinned the MODECT alternation but left the ground-parity slots as silent no-op
+// waits. rb3-2 makes them ACTIVE: a ground slot enters GRMODE, the mode byte INITGR sets
+// (R2BRON.MAC:1401-1407). The main loop reads GRMODE to skip new-plane generation and to
+// force the slow control band (findings §2/§4).
+//
+// ⚠ .RADIX 16 HEX: the ROM's `GRMODE=0C0` is 0xC0 (= 192), NOT decimal 12. The RBARON.MAC
+// equate block is hex (proven in rb3-1: sibling `.STAR0=1B`, `P.MAXZ=1001`=HORZ+1).
+
+/** GRMODE D7 — a ground wave is running (findings §4, INITGR). */
+export const GRMODE_GROUND = 0x80
+
+/** GRMODE D6 — the main loop skips new-plane generation (findings §4, INITGR). */
+export const GRMODE_PLANE_DISABLE = 0x40
+
+/** INITGR sets GRMODE = 0C0 = 0xC0 — D7 ground + D6 plane-disable both set (findings §4). */
+export const GRMODE_INITGR = GRMODE_GROUND | GRMODE_PLANE_DISABLE
+
+/** STPLNE / plane mode — the ground bits are clear, planes are generated normally. */
+export const GRMODE_PLANE = 0x00
+
+/** Is new-plane generation disabled in this GRMODE? Reads the D6 plane-disable bit (findings §4). */
+export function planeGenDisabled(grmode: number): boolean {
+  return (grmode & GRMODE_PLANE_DISABLE) !== 0
+}
+
+/** Is a ground wave running in this GRMODE? Reads the D7 ground bit (findings §4). */
+export function isGroundMode(grmode: number): boolean {
+  return (grmode & GRMODE_GROUND) !== 0
+}
+
+/**
+ * The INITGR/STPLNE branch: the MODECT LSB selects the GRMODE its wave slot enters
+ * (findings §4, R2BRON.MAC:2254-2269). A plane slot (isPlaneWave) enters GRMODE_PLANE so
+ * planes resume; a ground slot enters GRMODE_INITGR (0C0) so plane-generation is disabled
+ * and control slows. Total — delegates to isPlaneWave, so it never returns NaN on any modect.
+ */
+export function grmodeForWave(modect: number): number {
+  return isPlaneWave(modect) ? GRMODE_PLANE : GRMODE_INITGR
+}
