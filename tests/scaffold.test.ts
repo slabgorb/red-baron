@@ -155,10 +155,12 @@ describe('scaffold — first native @arcade/shared consumer (proves the dependen
     ).toBe(false)
   })
 
-  it('pins @arcade/shared as a git-URL dependency at v0.5.0', () => {
-    // v0.5.0 is the latest remote tag; it carries math3d/rng/highscore/loop.
+  it('pins @arcade/shared as a git-URL dependency at v0.12.0', () => {
+    // SH2-14 (AC-4) bumped red-baron off the pre-font v0.5.0 to v0.12.0 — the tag
+    // that adds /font, /pause and /esc-overlay (the Escape-pause adoption). v0.12.0
+    // still carries math3d/rng/highscore/loop, so rb1-1's runtime proof below holds.
     expect(read('package.json')).toMatch(
-      /"@arcade\/shared":\s*"github:slabgorb\/arcade-shared#v0\.5\.0"/,
+      /"@arcade\/shared":\s*"github:slabgorb\/arcade-shared#v0\.12\.0"/,
     )
   })
 
