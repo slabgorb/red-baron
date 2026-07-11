@@ -65,6 +65,26 @@ export const DISCHK: Readonly<Record<ProximityBand, number>> = Object.freeze({
   far: 0.375,
 })
 
+// ─── forced-slow control band (rb3-2, findings §2) ───────────────────────────
+
+/**
+ * The DISCHK band ground mode forces the controls to — the slow 'far' feel (×0.375),
+ * regardless of the nearest object's distance (findings §2, "ground mode is forced to the
+ * slow band"). 'far' is the minimum DISCHK scale; enemy.ts already calls it "the slow 'far'
+ * band".
+ */
+export const GROUND_CONTROL_BAND: ProximityBand = 'far'
+
+/**
+ * DISCHK band selector for the pilot's FlightInput: in ground mode the controls are pinned
+ * to the slow band (GROUND_CONTROL_BAND) regardless of the nearest object; otherwise the
+ * live nearest-object band passes through unchanged (findings §2). Reuses the existing
+ * ProximityBand plumbing — no new control path.
+ */
+export function controlBand(groundMode: boolean, liveBand: ProximityBand): ProximityBand {
+  return groundMode ? GROUND_CONTROL_BAND : liveBand
+}
+
 // ─── tuning within the tested invariants (see SCALE NOTE) ────────────────────
 
 /** Full-yoke commanded PLDELX. ≥ 0x1C "hard turn" (findings §5) and ×8 saturates BANK_LIMIT. */
