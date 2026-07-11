@@ -394,3 +394,75 @@ export const HORZ = 0x1000 // 4096
 export const HORIZN = 0x40 // 64
 /** `PFPLOW` = $80·4 — plane minimum altitude above the horizon (I4YPOS floor, ground mode). */
 export const PFPLOW = 0x80 * 4 // 512
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MOUNTAIN RENDER CONNECT-TABLES (rb3-3) — the SEGSTR stitch data rb3-1 DEFERRED.
+//
+// rb3-1 landed the SCAPE0..3 silhouette POINT-sets but left the lists that stitch
+// those points into drawable mountain segments in the picture ROM. Transcribed here
+// from `reference/red-baron/037007.XXX` (= RBPICS.MAC), the aerial picture ROM:
+//   • PFOPOS (037007.XXX:83-91) — the `SEGSTR` table. Per silhouette, the START
+//     point-index of each of its 4 scroll segments. Eight rows: 0-3 = L→R scroll
+//     order, 4-7 = R→L. The `SEGSTR .A,.B,.C,.D` macro emits `.A*6+4 …` — i.e.
+//     `point*POINT_STRIDE + OP_SEGMENT`.
+//   • SMAP00..SMAP33 (037007.XXX:93-172) — the 16 forward (L→R) connect-lists,
+//     `SMAP{scape}{segment}`. Each continues the polyline from its SEGSTR start,
+//     using VV (pen down / draw) and BV (pen up / move), exactly like DB.MAP.
+//
+// SCOPE (rb3-3, TEA deviation): the reverse-scroll SMP** lists (037007.XXX:175+)
+// are deferred as a non-blocking follow-up — one scroll direction is a complete
+// playable mountain-pass slice. PFOPOS is transcribed in full (one 8-row ROM table).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * ROM `PFOPOS` SEGSTR table (037007.XXX:83-91): per silhouette, the START
+ * point-index of each of its 4 scroll segments. Rows 0-3 = L→R, rows 4-7 = R→L.
+ * A row's segment g pairs with {@link MOUNTAIN_SEGMAPS}[row % 4][g].
+ */
+export const PFOPOS: readonly (readonly number[])[] = [
+  [0, 3, 6, 9], //  SCAPE0 L→R (037007.XXX:83)
+  [0, 2, 3, 6], //  SCAPE1 L→R (:84)
+  [0, 2, 5, 9], //  SCAPE2 L→R (:85)
+  [0, 3, 5, 7], //  SCAPE3 L→R (:86)
+  [3, 6, 9, 15], // SCAPE0 R→L (:88)
+  [2, 3, 6, 11], // SCAPE1 R→L (:89)
+  [2, 5, 9, 13], // SCAPE2 R→L (:90)
+  [3, 5, 7, 10], // SCAPE3 R→L (:91)
+]
+
+/**
+ * ROM SMAP** forward (L→R) connect-lists (037007.XXX:93-172), indexed
+ * `[scapeIndex 0-3][segmentIndex 0-3]`. Each list continues its segment's polyline
+ * from {@link PFOPOS}[scape][segment]; VV → draw ({@link OP_VISIBLE}), BV → move
+ * ({@link OP_BLANK}). The `ENDDB` terminators are structural, not stored.
+ */
+export const MOUNTAIN_SEGMAPS: readonly (readonly (readonly ConnectOp[])[])[] = [
+  [
+    // SCAPE0 — SMAP00..SMAP03
+    [V(1), V(2), V(3)],
+    [V(4), V(5), V(6)],
+    [V(7), V(8), V(9)],
+    [V(10), V(11), V(12), B(13), V(14), V(15)],
+  ],
+  [
+    // SCAPE1 — SMAP10..SMAP13
+    [V(1), V(2)],
+    [V(3)],
+    [V(4), V(5), V(6)],
+    [V(7), V(8), B(9), V(10), V(11)],
+  ],
+  [
+    // SCAPE2 — SMAP20..SMAP23
+    [V(1), V(2)],
+    [V(3), V(4), V(5)],
+    [V(6), V(7), V(8), V(9)],
+    [V(10), B(11), V(12), V(13)],
+  ],
+  [
+    // SCAPE3 — SMAP30..SMAP33
+    [V(1), V(2), V(3)],
+    [V(4), V(5)],
+    [V(6), V(7)],
+    [V(8), V(9), V(10)],
+  ],
+]
