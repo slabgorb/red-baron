@@ -25,9 +25,12 @@
 
 import { flightView, type Attitude } from './core/camera'
 import { horizonSegments } from './core/horizon'
-import { INITIAL_FLIGHT, step, toAttitude, type FlightInput } from './core/flight'
+import { INITIAL_FLIGHT, step, toAttitude, controlBand, type FlightInput } from './core/flight'
 import { step as stepEnemy, proximityBand, type Enemy } from './core/enemy'
-import { spawnWave, promoteLead, INITIAL_WAVE_CLOCK, stepWaveClock } from './core/waves'
+import {
+  spawnWave, promoteLead, INITIAL_WAVE_CLOCK, stepWaveClock,
+  grmodeForWave, planeGenDisabled, isGroundMode, GRMODE_PLANE,
+} from './core/waves'
 import { biplaneLOD, renderModel } from './core/biplane'
 import { sceneProjection, projectSegment, type SceneSegment } from './core/scene'
 import { SIM_TIMESTEP_S } from './core/timing'
@@ -210,12 +213,16 @@ function nearestDepth(planes: readonly Enemy[]): number {
   return d
 }
 
-/** The pilot's yoke plus the live DISCHK band from the nearest enemy's depth ('far' when clear). */
-function readInput(enemies: readonly Enemy[]): FlightInput {
+/**
+ * The pilot's yoke plus the DISCHK band. Normally the live band from the nearest enemy's
+ * depth ('far' when clear); while a ground wave runs (GRMODE D7) the control is forced to
+ * the slow band regardless of the nearest object (rb3-2, findings §2).
+ */
+function readInput(enemies: readonly Enemy[], grmode: number): FlightInput {
   return {
     turn: axis(held.has('ArrowRight') || held.has('d') || held.has('D'), held.has('ArrowLeft') || held.has('a') || held.has('A')),
     pitch: axis(held.has('ArrowUp') || held.has('w') || held.has('W'), held.has('ArrowDown') || held.has('s') || held.has('S')),
-    proximity: proximityBand(nearestDepth(enemies)),
+    proximity: controlBand(isGroundMode(grmode), proximityBand(nearestDepth(enemies))),
   }
 }
 
@@ -230,6 +237,7 @@ let score = 0 // running PLVALU total (closer kills score more)
 let enemies: readonly Enemy[] = [] // the live wave (rb2-7); the schedule spawns the opening wave
 let wrecks: Wreck[] = [] // downed planes falling/exploding as UPPLEX wrecks, coexisting with survivors
 let waveClock = INITIAL_WAVE_CLOCK // MODECT/MCOUNT schedule — spaces waves at the calc-frame cadence
+let grmode = GRMODE_PLANE // GRMODE ground-wave byte — set to INITGR (0C0) on a ground slot, cleared (STPLNE) on a plane slot (rb3-2)
 let guns: Guns = INITIAL_GUNS
 let lastMs: number | null = null
 let accumulator = 0
@@ -240,7 +248,7 @@ function frame(nowMs: number): void {
   accumulator += Math.min((nowMs - lastMs) / 1000, 0.25)
   lastMs = nowMs
 
-  const input = readInput(enemies)
+  const input = readInput(enemies, grmode)
   const fireHeld = held.has(' ')
   while (accumulator >= SIM_TIMESTEP_S) {
     flight = step(flight, input)
@@ -272,9 +280,20 @@ function frame(nowMs: number): void {
       // finish, the MODECT/MCOUNT schedule brings the next plane wave in after its gap.
       guns = stepGuns(guns, []).guns
       if (wrecks.length === 0) {
+        // A wave DECISION fires when the countdown has elapsed (pre-step countdown 0); it
+        // advances MODECT, so capture the firing slot's modect BEFORE stepping.
+        const decisionModect = waveClock.modect
+        const wasDecision = waveClock.countdown === 0
         const sched = stepWaveClock(waveClock)
         waveClock = sched.clock
-        if (sched.spawnPlaneWave) {
+        // On a decision the slot enters its GRMODE: a plane slot clears ground mode (STPLNE),
+        // a ground slot sets INITGR (0C0) so plane-gen is skipped + control slows. GRMODE holds
+        // between decisions — only a decision transitions it (rb3-2, findings §4).
+        if (wasDecision) grmode = grmodeForWave(decisionModect)
+        // Plane waves spawn only when new-plane generation is enabled (D6 clear); a ground
+        // slot's INITGR disables it, so the ground interval is an empty-sky, slow-control wait
+        // until the next plane slot (ground-wave CONTENT lands in rb3-3..rb3-6).
+        if (sched.spawnPlaneWave && !planeGenDisabled(grmode)) {
           enemies = spawnWave(createRng((Date.now() + kills) >>> 0), score, gmlevlForKills(kills))
         }
       }

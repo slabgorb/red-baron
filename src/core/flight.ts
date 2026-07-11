@@ -47,10 +47,10 @@ export const PITCH_TABLE: readonly number[] = Object.freeze([
 /** PFROTN magnitude clamp: |PLDELX × 8| ≤ 0x100. */
 export const BANK_LIMIT = 0x100
 
-/** I4YPOS altitude floor PLYMIN = 8*4 (RBARON.MAC:445-455). */
-export const ALT_MIN = 8 * 4
-/** I4YPOS altitude ceiling PLYMAX = 180*4. */
-export const ALT_MAX = 180 * 4
+/** I4YPOS altitude floor PLYMIN = $8·4 (RBARON.MAC:445-455, `.RADIX 16` — HEX). */
+export const ALT_MIN = 0x8 * 4 // 32 (0x8 = 8, so decimal read was coincidentally right)
+/** I4YPOS altitude ceiling PLYMAX = $180·4 (same hex equate block; sibling PFPLOW = $80·4 in topology.ts). */
+export const ALT_MAX = 0x180 * 4 // 1536
 
 /** POT.X hysteresis: turnRate ignores commanded changes within 2 counts. */
 export const TURN_HYSTERESIS = 2
@@ -64,6 +64,26 @@ export const DISCHK: Readonly<Record<ProximityBand, number>> = Object.freeze({
   mid: 0.625,
   far: 0.375,
 })
+
+// ─── forced-slow control band (rb3-2, findings §2) ───────────────────────────
+
+/**
+ * The DISCHK band ground mode forces the controls to — the slow 'far' feel (×0.375),
+ * regardless of the nearest object's distance (findings §2, "ground mode is forced to the
+ * slow band"). 'far' is the minimum DISCHK scale; enemy.ts already calls it "the slow 'far'
+ * band".
+ */
+export const GROUND_CONTROL_BAND: ProximityBand = 'far'
+
+/**
+ * DISCHK band selector for the pilot's FlightInput: in ground mode the controls are pinned
+ * to the slow band (GROUND_CONTROL_BAND) regardless of the nearest object; otherwise the
+ * live nearest-object band passes through unchanged (findings §2). Reuses the existing
+ * ProximityBand plumbing — no new control path.
+ */
+export function controlBand(groundMode: boolean, liveBand: ProximityBand): ProximityBand {
+  return groundMode ? GROUND_CONTROL_BAND : liveBand
+}
 
 // ─── tuning within the tested invariants (see SCALE NOTE) ────────────────────
 
