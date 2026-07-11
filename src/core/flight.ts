@@ -47,10 +47,10 @@ export const PITCH_TABLE: readonly number[] = Object.freeze([
 /** PFROTN magnitude clamp: |PLDELX × 8| ≤ 0x100. */
 export const BANK_LIMIT = 0x100
 
-/** I4YPOS altitude floor PLYMIN = 8*4 (RBARON.MAC:445-455). */
-export const ALT_MIN = 8 * 4
-/** I4YPOS altitude ceiling PLYMAX = 180*4. */
-export const ALT_MAX = 180 * 4
+/** I4YPOS altitude floor PLYMIN = $8·4 (RBARON.MAC:445-455, `.RADIX 16` — HEX). */
+export const ALT_MIN = 0x8 * 4 // 32 (0x8 = 8, so decimal read was coincidentally right)
+/** I4YPOS altitude ceiling PLYMAX = $180·4 (same hex equate block; sibling PFPLOW = $80·4 in topology.ts). */
+export const ALT_MAX = 0x180 * 4 // 1536
 
 /** POT.X hysteresis: turnRate ignores commanded changes within 2 counts. */
 export const TURN_HYSTERESIS = 2
