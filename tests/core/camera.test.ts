@@ -30,7 +30,7 @@
 // SCOPE BOUNDARY (roadmap, design brief §4): rb1 is *foundation* — the camera.
 // The authentic FLIGHT MODEL that DRIVES this attitude (PLDELX turn-rate inertia,
 // the 11-step PLDELY pitch table, PFROTN = PLDELX×8 bank coupling clamped ≤0x100,
-// I4YPOS altitude clamp 8*4..180*4, DISCHK feel — findings §2) is filed under
+// I4YPOS altitude clamp $8*4..$180*4 (hex, .RADIX 16), DISCHK feel — findings §2) is filed under
 // **rb2** ("flight model"). rb1-3 builds the camera these later drive; it does
 // NOT implement the dynamics. Testing them here would gold-plate rb2 into rb1.
 //

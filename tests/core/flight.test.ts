@@ -9,8 +9,8 @@
 //   // --- ROM-exact constants (findings §2, §5) ---
 //   export const PITCH_TABLE: readonly number[]  // POTDLY: [-32,-23,-17,-10,-5,0,4,8,13,18,25]
 //   export const BANK_LIMIT: number              // 0x100 = 256   (PFROTN magnitude clamp)
-//   export const ALT_MIN: number                 // PLYMIN = 8*4  = 32
-//   export const ALT_MAX: number                 // PLYMAX = 180*4 = 720
+//   export const ALT_MIN: number                 // PLYMIN = $8*4   = 32   (hex equate, .RADIX 16)
+//   export const ALT_MAX: number                 // PLYMAX = $180*4 = 1536 (hex equate, .RADIX 16)
 //   export const TURN_HYSTERESIS: number         // 2 counts (POT.X)
 //
 //   export type ProximityBand = 'near' | 'mid' | 'far'
@@ -334,9 +334,9 @@ describe('flight — PLDELX turn-rate inertia + hysteresis (POT.X, findings §2)
 // AC-4 — I4YPOS altitude clamp (PLYMIN..PLYMAX)
 // ───────────────────────────────────────────────────────────────────────────
 describe('flight — I4YPOS altitude clamp (findings §2, §5)', () => {
-  it('the clamp bounds are PLYMIN = 8*4 = 32 and PLYMAX = 180*4 = 720', () => {
-    expect(need(f.ALT_MIN, 'ALT_MIN')).toBe(8 * 4)
-    expect(need(f.ALT_MAX, 'ALT_MAX')).toBe(180 * 4)
+  it('the clamp bounds are PLYMIN = 0x8*4 = 32 and PLYMAX = 0x180*4 = 1536 (RBARON.MAC .RADIX 16)', () => {
+    expect(need(f.ALT_MIN, 'ALT_MIN')).toBe(0x8 * 4)
+    expect(need(f.ALT_MAX, 'ALT_MAX')).toBe(0x180 * 4)
   })
 
   it('INITIAL altitude is the ROM spawn value I4YPOS = 0x0210 = 528, inside the clamp', () => {
