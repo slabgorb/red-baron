@@ -32,6 +32,7 @@ import {
   grmodeForWave, planeGenDisabled, isGroundMode, GRMODE_PLANE,
 } from './core/waves'
 import { biplaneLOD, renderModel } from './core/biplane'
+import { initialMountains, stepMountain, mountainSegments, type Mountain } from './core/landscape'
 import { sceneProjection, projectSegment, type SceneSegment } from './core/scene'
 import { SIM_TIMESTEP_S } from './core/timing'
 import { INITIAL_GUNS, fire, step as stepGuns, S_MAXZ, type Guns, type Shell } from './core/guns'
@@ -125,6 +126,7 @@ function drawWreck(wreck: Wreck, projView: Mat4, width: number, height: number):
 function draw(
   attitude: Attitude,
   enemies: readonly Enemy[],
+  mountains: readonly Mountain[],
   wrecks: readonly Wreck[],
   shells: readonly Shell[],
   overheated: boolean,
@@ -143,6 +145,11 @@ function draw(
 
   // the tilting horizon
   strokeSegments(horizonSegments(attitude, aspect), width, height)
+
+  // the scrolling ground-wave landscape (rb3-3) — up to 4 SCAPE mountains falling
+  // from the horizon, projected through the SAME rb1 substrate as everything else.
+  // Empty (renders nothing) outside a ground wave.
+  strokeSegments(mountainSegments(mountains, attitude, [0, 0, 0], aspect), width, height)
 
   // the wave — each live plane is a camera-relative screen-window object (x, y) at
   // `depth`, banked, tilting with the player's attitude. MVP = projection · view · model;
@@ -235,6 +242,7 @@ let flight = INITIAL_FLIGHT
 let kills = 0 // OBJKLD — each kill bumps this; gmlevlForKills(kills) drives the GMLEVL ramp
 let score = 0 // running PLVALU total (closer kills score more)
 let enemies: readonly Enemy[] = [] // the live wave (rb2-7); the schedule spawns the opening wave
+let mountains: readonly Mountain[] = [] // the scrolling ground-wave landscape (rb3-3); populated only in GRMODE
 let wrecks: Wreck[] = [] // downed planes falling/exploding as UPPLEX wrecks, coexisting with survivors
 let waveClock = INITIAL_WAVE_CLOCK // MODECT/MCOUNT schedule — spaces waves at the calc-frame cadence
 let grmode = GRMODE_PLANE // GRMODE ground-wave byte — set to INITGR (0C0) on a ground slot, cleared (STPLNE) on a plane slot (rb3-2)
@@ -255,6 +263,16 @@ function frame(nowMs: number): void {
     guns = fire(guns, fireHeld)
     // advance any dying planes (fall → PIECE0-3 burst → done); drop the finished wrecks.
     wrecks = wrecks.map((w) => stepWreck(w)).filter((w) => w.phase !== 'done')
+
+    // rb3-3: the scrolling landscape runs ONLY while a ground wave is up (GRMODE D7,
+    // rb3-2). It seeds on the first ground calc-frame, scrolls toward the eye each
+    // frame at the calc-frame cadence, and clears when the wave returns to the sky.
+    if (isGroundMode(grmode)) {
+      if (mountains.length === 0) mountains = initialMountains()
+      mountains = mountains.map(stepMountain)
+    } else if (mountains.length > 0) {
+      mountains = []
+    }
 
     const level = gmlevlForKills(kills)
     if (enemies.length > 0) {
@@ -301,7 +319,7 @@ function frame(nowMs: number): void {
     accumulator -= SIM_TIMESTEP_S
   }
 
-  draw(toAttitude(flight), enemies, wrecks, guns.shells, guns.overheated, score)
+  draw(toAttitude(flight), enemies, mountains, wrecks, guns.shells, guns.overheated, score)
   window.requestAnimationFrame(frame)
 }
 window.requestAnimationFrame(frame)
