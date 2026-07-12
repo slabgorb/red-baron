@@ -11,11 +11,23 @@ for the player. Purely internal work is summarised under *Internal*.
 Red Baron is still in active development — it is the newest cabinet in the arcade, and
 not yet feature-complete against the 1980 original.
 
-## [Unreleased]
+## [0.0.11] - 2026-07-12
+
+No player-visible changes. Documentation only.
+
+## [0.0.10] - 2026-07-12
+
+### Internal
+- A ROM-versus-port vector-picture contact sheet, for verifying the hand-transcribed
+  shapes against the 1980 cabinet's own picture data.
+
+## [0.0.9] - 2026-07-12
 
 ### Added
-- **Sound.** The cabinet's POKEY and analog audio — engine, guns, and explosions —
-  arrives at last. Red Baron has been silent until now.
+- **Sound.** The cabinet's POKEY and analog audio — engine hum, machine guns, the
+  approach whine, and explosions — arrives at last. Red Baron has been silent until now.
+  The sound is synthesised locally, as Battlezone's is: these are oscillator voices, not
+  samples, so they can't come from the arcade's shared sample engine.
 
 ## [0.0.8] - 2026-07-12
 
