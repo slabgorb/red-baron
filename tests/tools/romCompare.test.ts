@@ -70,10 +70,19 @@ describe('pairPictures — the headline result', () => {
     expect(p.verticesMatch, name).toBe(true)
   })
 
+  // `pairOne` deliberately returns EMPTY diffs whenever `!verticesMatch` (an
+  // edge diff across mismatched vertices is meaningless — see romCompare.ts).
+  // That makes `onlyInRom`/`onlyInPort` both `[]` a state that is reached two
+  // different ways: real zero drift, OR a vertex mismatch masking the diff.
+  // Asserting `verticesMatch` in the SAME test as the edge-drift assertion
+  // (not just in the separate `it.each` above) is what makes this test
+  // non-vacuous: without it, deleting the "ROM vertices deep-equal" block
+  // would leave this test green even if the vertices had drifted apart.
   it.each(ROM_PICTURES.filter((p) => p.connect.length > 0).map((p) => p.name))(
-    '%s: zero edge drift (onlyInRom and onlyInPort are both empty)',
+    '%s: zero edge drift AND vertices match (so the empty diff cannot be a masked vertex mismatch)',
     (name) => {
       const p = pairs.find((pair) => pair.name === name)!
+      expect(p.verticesMatch, name).toBe(true)
       expect(p.onlyInRom, name).toEqual([])
       expect(p.onlyInPort, name).toEqual([])
     },
