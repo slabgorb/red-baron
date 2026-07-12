@@ -43,6 +43,9 @@ import { INITIAL_GUNS, fire, step as stepGuns, S_MAXZ, type Guns, type Shell } f
 import { explode, stepWreck, EXPL2_FRAMES, type Wreck } from './core/explosion'
 import { scoreKill, gmlevlForKills } from './core/scoring'
 import { EXPLOSION_PIECES, BLIMP_PICTURE } from './core/topology'
+import type { GameEvent } from './core/events'
+import { createAudioEngine } from './shell/audio'
+import { playEventSounds, updateContinuousSounds } from './shell/audio-dispatch'
 import { multiply, translation, rotationZ, rotationY, type Vec3, type Mat4 } from '@arcade/shared/math3d'
 import { createRng, nextFloat } from '@arcade/shared/rng'
 import { INITIAL_PAUSED, isPauseKey, togglePaused } from '@arcade/shared/pause'
@@ -254,6 +257,14 @@ window.addEventListener('keydown', (e) => {
 })
 window.addEventListener('keyup', (e) => held.delete(e.key))
 
+// rb2-11: POKEY + analog sound. The browser forbids an AudioContext before a user
+// gesture, so the engine stays inert until the pilot touches a key (or clicks) —
+// resume() is idempotent, so wiring it to EVERY gesture is safe and costs nothing.
+const audio = createAudioEngine()
+const unlockAudio = (): void => audio.resume()
+window.addEventListener('keydown', unlockAudio)
+window.addEventListener('pointerdown', unlockAudio)
+
 // SH2-14: Escape toggles pause via the shared @arcade/shared/pause gate — the
 // cabinet-wide VERB. Edge, not level (guard e.repeat) so a held key can't
 // machine-gun the toggle. The freeze itself is the frame loop's pause guard below.
@@ -347,6 +358,10 @@ function frame(nowMs: number): void {
 
   const input = readInput(enemies, grmode)
   const fireHeld = held.has(' ')
+  // rb2-11: the sound moments this frame's calc-steps produce. red-baron has no
+  // single stepGame, so the loop ASSEMBLES the event list from the signals it
+  // already computes, then hands it to the shell's dispatch below.
+  const events: GameEvent[] = []
   // SH2-14: the frozen-frame gate. While paused, run NO calc-frames (the sim —
   // flight, guns, waves, wrecks, blimp, mountains, score — is held) and discard the
   // banked time down to the sub-step remainder, so resume never burst-replays the
@@ -389,6 +404,7 @@ function frame(nowMs: number): void {
       const drifted = stepBlimp(blimp)
       if (blimpFires(simFrame) && nextFloat(blimpRng) < BLIMP_HIT_CHANCE) {
         lives = loseLife(lives).lives
+        events.push({ type: 'player-hit' }) // the CRSHSN crash
       }
       blimp = Math.abs(drifted.x) > BLIMP_DESPAWN_X ? null : drifted
     }
@@ -406,9 +422,11 @@ function frame(nowMs: number): void {
       // the shared UPPLEX explosion, and cleared from the sky.
       if (blimp !== null && downed.has(blimpTargetIndex)) {
         const downedBlimp = blimp
-        score += scoreKill('blimp', downedBlimp.depth)
+        const points = scoreKill('blimp', downedBlimp.depth)
+        score += points
         kills += 1
         wrecks.push(explode(blimpEnemy(downedBlimp)))
+        events.push({ type: 'enemy-destroyed', kind: 'blimp', points })
         blimp = null
         downed.delete(blimpTargetIndex)
       }
@@ -416,9 +434,12 @@ function frame(nowMs: number): void {
       if (downed.size > 0) {
         for (const idx of downed) {
           const plane = enemies[idx]
-          score += scoreKill(plane.kind, plane.depth)
+          const points = scoreKill(plane.kind, plane.depth)
+          score += points
           kills += 1
           wrecks.push(explode(plane))
+          // A kill worth the flat 300 also rings the TH jingle (findings §6A).
+          events.push({ type: 'enemy-destroyed', kind: plane.kind, points })
         }
         enemies = promoteLead(enemies.filter((_, i) => !downed.has(i)))
       }
@@ -444,6 +465,7 @@ function frame(nowMs: number): void {
       // until the next plane slot (ground-wave CONTENT lands in rb3-3..rb3-6).
       if (sched.spawnPlaneWave && !planeGenDisabled(grmode)) {
         enemies = spawnWave(createRng((Date.now() + kills) >>> 0), score, gmlevlForKills(kills))
+        events.push({ type: 'wave-incoming' }) // the WP descending announce
       }
       // The BLMOTN ~25% roll: a blimp drifts in during the lull if the sky has none.
       if (wasDecision && blimp === null && shouldSpawnBlimp(nextFloat(blimpRng))) {
@@ -454,6 +476,16 @@ function frame(nowMs: number): void {
     simFrame += 1
     accumulator -= SIM_TIMESTEP_S
   }
+
+  // rb2-11: the sound. One-shot cues ride this frame's event list; the continuous
+  // voices (engine hum, the gun's rat-a-tat, the enemy-approach whine) are re-read
+  // from live state. A paused game falls silent.
+  playEventSounds(audio, events)
+  updateContinuousSounds(audio, {
+    playing: !paused,
+    gunFiring: fireHeld && !guns.overheated,
+    nearestDepth: nearestDepth(enemies),
+  })
 
   draw(toAttitude(flight), enemies, blimp, mountains, wrecks, guns.shells, guns.overheated, score)
   // SH2-14: the pause overlay dims the frozen scene and draws the keybind card over
