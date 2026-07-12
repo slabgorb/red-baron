@@ -32,15 +32,21 @@ import {
   grmodeForWave, planeGenDisabled, isGroundMode, GRMODE_PLANE,
 } from './core/waves'
 import { biplaneLOD, renderModel } from './core/biplane'
+import {
+  shouldSpawnBlimp, spawn as spawnBlimp, step as stepBlimp, blimpFires, type Blimp,
+} from './core/blimp'
+import { initialLives, loseLife, type Lives } from './core/lives'
 import { initialMountains, stepMountain, mountainSegments, type Mountain } from './core/landscape'
 import { sceneProjection, projectSegment, type SceneSegment } from './core/scene'
 import { SIM_TIMESTEP_S } from './core/timing'
 import { INITIAL_GUNS, fire, step as stepGuns, S_MAXZ, type Guns, type Shell } from './core/guns'
 import { explode, stepWreck, EXPL2_FRAMES, type Wreck } from './core/explosion'
 import { scoreKill, gmlevlForKills } from './core/scoring'
-import { EXPLOSION_PIECES } from './core/topology'
-import { multiply, translation, rotationZ, type Vec3, type Mat4 } from '@arcade/shared/math3d'
-import { createRng } from '@arcade/shared/rng'
+import { EXPLOSION_PIECES, BLIMP_PICTURE } from './core/topology'
+import { multiply, translation, rotationZ, rotationY, type Vec3, type Mat4 } from '@arcade/shared/math3d'
+import { createRng, nextFloat } from '@arcade/shared/rng'
+import { INITIAL_PAUSED, isPauseKey, togglePaused } from '@arcade/shared/pause'
+import { drawEscOverlay } from '@arcade/shared/esc-overlay'
 
 const canvas = document.getElementById('game') as HTMLCanvasElement
 const ctx = canvas.getContext('2d')
@@ -60,6 +66,29 @@ const DEBRIS_DIRS: readonly (readonly [number, number])[] = [
 ]
 /** Window units each debris fragment spreads per exploding frame — the burst expands. Inferred. */
 const DEBRIS_SPREAD = 4
+
+/**
+ * The BLIMP_PICTURE ROM geometry is authored NOSE-ON along local z; a quarter-turn yaw
+ * presents the airship's flank (BROADSIDE), the way the cabinet frames the drifting
+ * Zeppelin. Inferred — the source pins the geometry, not the presentation pose.
+ */
+const BLIMP_YAW = Math.PI / 2
+
+/**
+ * Screen-window |x| past which the drifting blimp has left the frame and is despawned.
+ * blimp.step is unbounded by design (it never reverses), so main.ts owns the bound: the
+ * airship enters at |x| ≤ ENTRY_X_MIN+RANGE (300) and drifts across, so this sits well
+ * beyond the entry band. Inferred (BLMOTN off-screen bound is not byte-transcribed).
+ */
+const BLIMP_DESPAWN_X = 640
+
+/**
+ * Chance a blimp shot connects on one of its ÷2 fire-frames. `blimpFires` is a deterministic
+ * even-frame cadence — costing a life on EVERY fire would kill the pilot in ~1 s — so a per-shot
+ * hit roll turns the airship into a real threat that does not insta-kill (the hit model TEA
+ * flagged for Dev). Inferred (BLMOTN's hit probability is not byte-transcribed).
+ */
+const BLIMP_HIT_CHANCE = 0.05
 
 function resize(): void {
   canvas.width = canvas.clientWidth || window.innerWidth
@@ -126,6 +155,7 @@ function drawWreck(wreck: Wreck, projView: Mat4, width: number, height: number):
 function draw(
   attitude: Attitude,
   enemies: readonly Enemy[],
+  blimp: Blimp | null,
   mountains: readonly Mountain[],
   wrecks: readonly Wreck[],
   shells: readonly Shell[],
@@ -163,6 +193,17 @@ function draw(
   for (const enemy of enemies) {
     const model = multiply(translation(enemy.x, enemy.y, -enemy.depth), rotationZ(enemy.bank))
     strokeSegments(renderModel(biplaneLOD(enemy.depth), multiply(projView, model)), width, height)
+  }
+
+  // the drifting blimp (rb2-13) — the authentic BLIMP_PICTURE, yawed BROADSIDE (rotationY):
+  // the ROM geometry is authored nose-on along local z, so a quarter-turn yaw presents the
+  // airship's flank. It flies level (bank 0), drawn through the SAME projection substrate.
+  if (blimp !== null) {
+    const model = multiply(
+      translation(blimp.x, blimp.y, -blimp.depth),
+      multiply(rotationY(BLIMP_YAW), rotationZ(blimp.bank)),
+    )
+    strokeSegments(renderModel(BLIMP_PICTURE, multiply(projView, model)), width, height)
   }
 
   // the player's tracers — bright bullets streaking out along the boresight (rb2-5)
@@ -213,12 +254,56 @@ window.addEventListener('keydown', (e) => {
 })
 window.addEventListener('keyup', (e) => held.delete(e.key))
 
+// SH2-14: Escape toggles pause via the shared @arcade/shared/pause gate — the
+// cabinet-wide VERB. Edge, not level (guard e.repeat) so a held key can't
+// machine-gun the toggle. The freeze itself is the frame loop's pause guard below.
+let paused = INITIAL_PAUSED
+window.addEventListener('keydown', (e) => {
+  if (!e.repeat && isPauseKey(e.key.toLowerCase())) paused = togglePaused(paused)
+})
+
+// Per-cabinet NUMBERS for the pause card: red-baron's yoke keybinds (letter
+// alternates so no arrow glyphs the ROM font lacks), the cabinet green, and the
+// dim alpha. The card strokes through drawEscOverlay's transitive @arcade/shared/font
+// — no separate red-baron HUD-font migration (the clean AC-4 resolution). Copy /
+// colour / opacity are playtest-tunable.
+const RED_BARON_PAUSE = {
+  lines: [
+    'PAUSED',
+    '',
+    'ESC          RESUME',
+    'A / D        TURN',
+    'W / S        CLIMB DIVE',
+    'SPACE        FIRE',
+  ],
+  color: '#33ff66',
+  opacity: 0.72,
+} as const
+
 /** Depth of the CLOSEST live plane (smallest depth), or +Infinity when the sky is clear. */
 function nearestDepth(planes: readonly Enemy[]): number {
   let d = Number.POSITIVE_INFINITY
   for (const e of planes) if (e.depth < d) d = e.depth
   return d
 }
+
+/**
+ * Adapt the drifting blimp to the shared Enemy-shaped target the rb2-5 guns collision
+ * (`stepGuns`/`collides`) and the rb2-6 explosion (`explode`) consume — the airship rides
+ * the SAME kill pipeline as a plane. Its kill is valued on a dedicated 'blimp' score path
+ * (flat 200), so the placeholder `kind` here is cosmetic to those geometry-only seams (rb2-13
+ * AC-7: the Enemy-vs-Blimp kind is resolved by adapting at the main.ts boundary).
+ */
+const blimpEnemy = (b: Blimp): Enemy => ({
+  kind: 'lead',
+  x: b.x,
+  y: b.y,
+  depth: b.depth,
+  deltaX: b.deltaX,
+  bank: b.bank,
+  side: b.side,
+  active: b.active,
+})
 
 /**
  * The pilot's yoke plus the DISCHK band. Normally the live band from the nearest enemy's
@@ -242,11 +327,15 @@ let flight = INITIAL_FLIGHT
 let kills = 0 // OBJKLD — each kill bumps this; gmlevlForKills(kills) drives the GMLEVL ramp
 let score = 0 // running PLVALU total (closer kills score more)
 let enemies: readonly Enemy[] = [] // the live wave (rb2-7); the schedule spawns the opening wave
+let blimp: Blimp | null = null // the drifting airship (rb2-13) — null when none is on screen (BLMOTN ~25% roll)
+let lives: Lives = initialLives() // the player's planes remaining (rb2-9) — the blimp's fire is the first wired damage
 let mountains: readonly Mountain[] = [] // the scrolling ground-wave landscape (rb3-3); populated only in GRMODE
 let wrecks: Wreck[] = [] // downed planes falling/exploding as UPPLEX wrecks, coexisting with survivors
 let waveClock = INITIAL_WAVE_CLOCK // MODECT/MCOUNT schedule — spaces waves at the calc-frame cadence
 let grmode = GRMODE_PLANE // GRMODE ground-wave byte — set to INITGR (0C0) on a ground slot, cleared (STPLNE) on a plane slot (rb3-2)
 let guns: Guns = INITIAL_GUNS
+let simFrame = 0 // calc-frame counter — drives the blimp's ÷2 fire cadence (blimpFires)
+const blimpRng = createRng((Date.now() ^ 0x5e_ed) >>> 0) // the BLMOTN spawn roll + the blimp's per-shot hit roll
 let lastMs: number | null = null
 let accumulator = 0
 
@@ -258,6 +347,14 @@ function frame(nowMs: number): void {
 
   const input = readInput(enemies, grmode)
   const fireHeld = held.has(' ')
+  // SH2-14: the frozen-frame gate. While paused, run NO calc-frames (the sim —
+  // flight, guns, waves, wrecks, blimp, mountains, score — is held) and discard the
+  // banked time down to the sub-step remainder, so resume never burst-replays the
+  // paused span. (red-baron's state lives across many closure vars, not one object,
+  // so the freeze is realised as this loop guard rather than the shared single-state
+  // stepUnlessPaused thunk — see the SH2-14 deviation note; the shared pause VERB is
+  // still the isPauseKey/togglePaused edge above.)
+  if (paused) accumulator %= SIM_TIMESTEP_S
   while (accumulator >= SIM_TIMESTEP_S) {
     flight = step(flight, input)
     guns = fire(guns, fireHeld)
@@ -275,16 +372,48 @@ function frame(nowMs: number): void {
     }
 
     const level = gmlevlForKills(kills)
+
+    // The live wave weaves at the kill-ramped level (rb2-7). Downed planes still score BY
+    // KIND, bump OBJKLD, wreck, and PLNXCG-promote below — but the shells now fire + collide
+    // in ONE pass against the planes AND the blimp, so a shot connects with whatever it meets.
     if (enemies.length > 0) {
-      // A live wave: weave every plane at the kill-ramped level, then fire + collide the
-      // shells (4× sub-step) against ALL of them. Each hit SCORES the downed plane BY ITS
-      // KIND (drone flat 300, close lead more), bumps OBJKLD so the sky ramps, and hands
-      // that plane to its wreck. If the lead falls, PLNXCG promotes a wingman to lead.
       enemies = enemies.map((e) => stepEnemy(e, level))
-      const shotResult = stepGuns(guns, enemies)
-      guns = shotResult.guns
-      if (shotResult.hits.length > 0) {
-        const downed = new Set<number>(shotResult.hits.map((h) => h.target))
+    }
+
+    // ── the blimp (rb2-13): drift + fire, every calc-frame while present ──
+    // The airship drifts one calc-frame (steady, non-weaving) and — on its ÷2 FRAME cadence —
+    // fires at the player. A connecting shot (per-shot hit roll) costs a life through the REAL
+    // rb2-9 damage channel (loseLife), not a discarded bool. Its drift is unbounded by design,
+    // so main.ts DESPAWNS it once it has drifted off-screen (|x| past the bound).
+    if (blimp !== null) {
+      const drifted = stepBlimp(blimp)
+      if (blimpFires(simFrame) && nextFloat(blimpRng) < BLIMP_HIT_CHANCE) {
+        lives = loseLife(lives).lives
+      }
+      blimp = Math.abs(drifted.x) > BLIMP_DESPAWN_X ? null : drifted
+    }
+
+    // ── ONE shared collision pass (rb2-5): the player's shells vs the planes AND the blimp ──
+    // The blimp rides the shared guns seam via blimpEnemy(); it sits AFTER the planes in the
+    // target list, so a hit on that index is the airship going down.
+    const blimpTargetIndex = enemies.length
+    const targets: readonly Enemy[] = blimp !== null ? [...enemies, blimpEnemy(blimp)] : enemies
+    const shotResult = stepGuns(guns, targets)
+    guns = shotResult.guns
+    if (shotResult.hits.length > 0) {
+      const downed = new Set<number>(shotResult.hits.map((h) => h.target))
+      // The blimp kill (AC-5/AC-7): scored a FLAT 200 on its own 'blimp' path, wrecked through
+      // the shared UPPLEX explosion, and cleared from the sky.
+      if (blimp !== null && downed.has(blimpTargetIndex)) {
+        const downedBlimp = blimp
+        score += scoreKill('blimp', downedBlimp.depth)
+        kills += 1
+        wrecks.push(explode(blimpEnemy(downedBlimp)))
+        blimp = null
+        downed.delete(blimpTargetIndex)
+      }
+      // The plane kills (rb2-6/rb2-7): scored BY KIND, wrecked, and PLNXCG lead promotion.
+      if (downed.size > 0) {
         for (const idx of downed) {
           const plane = enemies[idx]
           score += scoreKill(plane.kind, plane.depth)
@@ -293,33 +422,44 @@ function frame(nowMs: number): void {
         }
         enemies = promoteLead(enemies.filter((_, i) => !downed.has(i)))
       }
-    } else {
-      // Sky clear of live planes: shells keep flying (strike nothing). Once the wrecks
-      // finish, the MODECT/MCOUNT schedule brings the next plane wave in after its gap.
-      guns = stepGuns(guns, []).guns
-      if (wrecks.length === 0) {
-        // A wave DECISION fires when the countdown has elapsed (pre-step countdown 0); it
-        // advances MODECT, so capture the firing slot's modect BEFORE stepping.
-        const decisionModect = waveClock.modect
-        const wasDecision = waveClock.countdown === 0
-        const sched = stepWaveClock(waveClock)
-        waveClock = sched.clock
-        // On a decision the slot enters its GRMODE: a plane slot clears ground mode (STPLNE),
-        // a ground slot sets INITGR (0C0) so plane-gen is skipped + control slows. GRMODE holds
-        // between decisions — only a decision transitions it (rb3-2, findings §4).
-        if (wasDecision) grmode = grmodeForWave(decisionModect)
-        // Plane waves spawn only when new-plane generation is enabled (D6 clear); a ground
-        // slot's INITGR disables it, so the ground interval is an empty-sky, slow-control wait
-        // until the next plane slot (ground-wave CONTENT lands in rb3-3..rb3-6).
-        if (sched.spawnPlaneWave && !planeGenDisabled(grmode)) {
-          enemies = spawnWave(createRng((Date.now() + kills) >>> 0), score, gmlevlForKills(kills))
-        }
+    }
+
+    // ── the wave schedule + the BLMOTN blimp roll, only as the sky clears ──
+    // Once the planes are down and their wrecks finished, the MODECT/MCOUNT schedule brings the
+    // next plane wave in after its gap — and, on a wave decision, the blimp rolls in on its
+    // ~25% BLMOTN chance (if none is already drifting), a menace even in the quiet between waves.
+    if (enemies.length === 0 && wrecks.length === 0) {
+      // A wave DECISION fires when the countdown has elapsed (pre-step countdown 0); it
+      // advances MODECT, so capture the firing slot's modect BEFORE stepping.
+      const decisionModect = waveClock.modect
+      const wasDecision = waveClock.countdown === 0
+      const sched = stepWaveClock(waveClock)
+      waveClock = sched.clock
+      // On a decision the slot enters its GRMODE: a plane slot clears ground mode (STPLNE),
+      // a ground slot sets INITGR (0C0) so plane-gen is skipped + control slows. GRMODE holds
+      // between decisions — only a decision transitions it (rb3-2, findings §4).
+      if (wasDecision) grmode = grmodeForWave(decisionModect)
+      // Plane waves spawn only when new-plane generation is enabled (D6 clear); a ground
+      // slot's INITGR disables it, so the ground interval is an empty-sky, slow-control wait
+      // until the next plane slot (ground-wave CONTENT lands in rb3-3..rb3-6).
+      if (sched.spawnPlaneWave && !planeGenDisabled(grmode)) {
+        enemies = spawnWave(createRng((Date.now() + kills) >>> 0), score, gmlevlForKills(kills))
+      }
+      // The BLMOTN ~25% roll: a blimp drifts in during the lull if the sky has none.
+      if (wasDecision && blimp === null && shouldSpawnBlimp(nextFloat(blimpRng))) {
+        blimp = spawnBlimp(blimpRng)
       }
     }
+
+    simFrame += 1
     accumulator -= SIM_TIMESTEP_S
   }
 
-  draw(toAttitude(flight), enemies, mountains, wrecks, guns.shells, guns.overheated, score)
+  draw(toAttitude(flight), enemies, blimp, mountains, wrecks, guns.shells, guns.overheated, score)
+  // SH2-14: the pause overlay dims the frozen scene and draws the keybind card over
+  // it — drawn last (over the whole world) and only while paused. red-baron draws in
+  // device pixels (no dpr pre-scale), so it takes canvas.width/height directly.
+  if (paused && ctx) drawEscOverlay(ctx, canvas.width, canvas.height, RED_BARON_PAUSE)
   window.requestAnimationFrame(frame)
 }
 window.requestAnimationFrame(frame)
