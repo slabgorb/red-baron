@@ -45,6 +45,8 @@ import { scoreKill, gmlevlForKills } from './core/scoring'
 import { EXPLOSION_PIECES, BLIMP_PICTURE } from './core/topology'
 import { multiply, translation, rotationZ, rotationY, type Vec3, type Mat4 } from '@arcade/shared/math3d'
 import { createRng, nextFloat } from '@arcade/shared/rng'
+import { INITIAL_PAUSED, isPauseKey, togglePaused } from '@arcade/shared/pause'
+import { drawEscOverlay } from '@arcade/shared/esc-overlay'
 
 const canvas = document.getElementById('game') as HTMLCanvasElement
 const ctx = canvas.getContext('2d')
@@ -252,6 +254,32 @@ window.addEventListener('keydown', (e) => {
 })
 window.addEventListener('keyup', (e) => held.delete(e.key))
 
+// SH2-14: Escape toggles pause via the shared @arcade/shared/pause gate — the
+// cabinet-wide VERB. Edge, not level (guard e.repeat) so a held key can't
+// machine-gun the toggle. The freeze itself is the frame loop's pause guard below.
+let paused = INITIAL_PAUSED
+window.addEventListener('keydown', (e) => {
+  if (!e.repeat && isPauseKey(e.key.toLowerCase())) paused = togglePaused(paused)
+})
+
+// Per-cabinet NUMBERS for the pause card: red-baron's yoke keybinds (letter
+// alternates so no arrow glyphs the ROM font lacks), the cabinet green, and the
+// dim alpha. The card strokes through drawEscOverlay's transitive @arcade/shared/font
+// — no separate red-baron HUD-font migration (the clean AC-4 resolution). Copy /
+// colour / opacity are playtest-tunable.
+const RED_BARON_PAUSE = {
+  lines: [
+    'PAUSED',
+    '',
+    'ESC          RESUME',
+    'A / D        TURN',
+    'W / S        CLIMB DIVE',
+    'SPACE        FIRE',
+  ],
+  color: '#33ff66',
+  opacity: 0.72,
+} as const
+
 /** Depth of the CLOSEST live plane (smallest depth), or +Infinity when the sky is clear. */
 function nearestDepth(planes: readonly Enemy[]): number {
   let d = Number.POSITIVE_INFINITY
@@ -319,6 +347,14 @@ function frame(nowMs: number): void {
 
   const input = readInput(enemies, grmode)
   const fireHeld = held.has(' ')
+  // SH2-14: the frozen-frame gate. While paused, run NO calc-frames (the sim —
+  // flight, guns, waves, wrecks, blimp, mountains, score — is held) and discard the
+  // banked time down to the sub-step remainder, so resume never burst-replays the
+  // paused span. (red-baron's state lives across many closure vars, not one object,
+  // so the freeze is realised as this loop guard rather than the shared single-state
+  // stepUnlessPaused thunk — see the SH2-14 deviation note; the shared pause VERB is
+  // still the isPauseKey/togglePaused edge above.)
+  if (paused) accumulator %= SIM_TIMESTEP_S
   while (accumulator >= SIM_TIMESTEP_S) {
     flight = step(flight, input)
     guns = fire(guns, fireHeld)
@@ -420,6 +456,10 @@ function frame(nowMs: number): void {
   }
 
   draw(toAttitude(flight), enemies, blimp, mountains, wrecks, guns.shells, guns.overheated, score)
+  // SH2-14: the pause overlay dims the frozen scene and draws the keybind card over
+  // it — drawn last (over the whole world) and only while paused. red-baron draws in
+  // device pixels (no dpr pre-scale), so it takes canvas.width/height directly.
+  if (paused && ctx) drawEscOverlay(ctx, canvas.width, canvas.height, RED_BARON_PAUSE)
   window.requestAnimationFrame(frame)
 }
 window.requestAnimationFrame(frame)
