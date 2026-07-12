@@ -35,27 +35,36 @@
 //
 //   export type ToneName = 'TK' | 'TP' | 'BN' | 'WP' | 'TH'
 //
-//   // One touched POKEY register's 4-byte envelope sequence (RBSOUN.MAC:85-92).
+//   // One touched POKEY register's envelope sequence (RBSOUN.MAC:85-92).
 //   export interface EnvelopeStep {
 //     readonly start: number   // STVAL — initial register value
 //     readonly hold: number    // FRCNT — frames (×4 ms) held per step (≥ 1)
-//     readonly change: number   // CHANGE — signed delta applied each step
-//     readonly count: number   // NUMBER — number of steps (# changes)
+//     readonly change: number  // CHANGE — signed delta applied each step
+//     readonly steps: number   // how many steps are taken (see the OFF-BY-ONE note)
 //   }
+//
+//   // !! OFF-BY-ONE (review round 1) !! The ROM's fourth byte, NUMBER, is
+//   // "# changes − 1" (§6A). We deliberately do NOT store that raw byte: `steps`
+//   // holds the step COUNT (steps === romNUMBER + 1). The field is named `steps`,
+//   // not `count`/`NUMBER`, so a future byte-exact pass can't drop a raw NUMBER
+//   // in and come up one step short.
 //
 //   // A sound = the corrected 8-byte OFFSET table: one slot per POKEY register,
 //   // in order AUDF1,AUDC1,AUDF2,AUDC2,AUDF3,AUDC3,AUDF4,AUDC4. `null` = a `0`
-//   // offset = that register is left untouched.
+//   // offset = that register is left untouched. A fixed-length TUPLE, so a
+//   // malformed table is a COMPILE error (review round 1).
 //   export interface PokeySound {
-//     readonly channel: 1 | 2 | 3 | 4              // primary POKEY channel (§6 table)
-//     readonly registers: readonly (EnvelopeStep | null)[]  // length EXACTLY 8
+//     readonly channel: 1 | 2 | 3 | 4   // primary POKEY channel (§6 table)
+//     readonly registers: RegisterTable // EXACTLY 8 slots
 //   }
 //
 //   export const POKEY_SOUNDS: Readonly<Record<ToneName, PokeySound>>
 //
 //   // MODSND: the register value at frame N (0-based), holding `hold` frames per
-//   // step and clamping after `count` steps (the terminal value persists — a
-//   // faded tone never underflows past its floor).
+//   // step and resting after `steps` steps. Hardened: a non-finite frame or a
+//   // `hold < 1` degrades to `start`, and the result is clamped to [0, 255] — an
+//   // out-of-range value is DANGEROUS downstream, since audio.ts's `audc & 0x0f`
+//   // would read a negative back as FULL volume.
 //   export function stepEnvelope(step: EnvelopeStep, frame: number): number
 //
 // `src/shell/pokey.ts` is absent pre-GREEN — the import failure is the RED signal.
@@ -149,12 +158,12 @@ describe('TK score tick — the ROM-EXACT table (RBSOUN.MAC:157-160)', () => {
 
 describe('stepEnvelope — the MODSND stepper contract', () => {
   it('a zero-change register is constant at its start for every frame', () => {
-    const constant = { start: 0x30, hold: 4, change: 0, count: 0 }
+    const constant = { start: 0x30, hold: 4, change: 0, steps: 0 }
     for (const f of [0, 1, 9, 250]) expect(stepEnvelope(constant, f)).toBe(0x30)
   })
 
   it('holds each step exactly `hold` frames before applying `change`', () => {
-    const s = { start: 10, hold: 3, change: 5, count: 4 }
+    const s = { start: 10, hold: 3, change: 5, steps: 4 }
     expect(stepEnvelope(s, 0)).toBe(10)
     expect(stepEnvelope(s, 2)).toBe(10) // frames 0,1,2 hold the first value
     expect(stepEnvelope(s, 3)).toBe(15) // step at frame 3
@@ -162,11 +171,46 @@ describe('stepEnvelope — the MODSND stepper contract', () => {
   })
 
   it('never applies more than `count` steps (the envelope terminates)', () => {
-    const s = { start: 10, hold: 1, change: 5, count: 3 }
+    const s = { start: 10, hold: 1, change: 5, steps: 3 }
     // 3 steps: 10 → 15 → 20 → 25, then the terminal value persists.
     expect(stepEnvelope(s, 3)).toBe(25)
     expect(stepEnvelope(s, 4)).toBe(25)
     expect(stepEnvelope(s, 99)).toBe(25)
+  })
+})
+
+describe('stepEnvelope — hardening (review round 1)', () => {
+  // These holes were latent: no shipped table hits them, but `stepEnvelope` is an
+  // exported pure function and the header invites a future byte-exact pass.
+  it('a `hold` below 1 degrades to the start value instead of dividing by zero', () => {
+    // hold=0 previously gave 0/0 = NaN at frame 0, and Infinity (silently clamped
+    // to the terminal value) at every later frame.
+    for (const hold of [0, -3]) {
+      const s = { start: 0xa4, hold, change: -1, steps: 4 }
+      expect(stepEnvelope(s, 0), `hold ${hold} @0`).toBe(0xa4)
+      expect(stepEnvelope(s, 50), `hold ${hold} @50`).toBe(0xa4)
+      expect(Number.isNaN(stepEnvelope(s, 5)), `hold ${hold} must never yield NaN`).toBe(false)
+    }
+  })
+
+  it('a non-finite frame never produces NaN', () => {
+    const s = { start: 0xa4, hold: 7, change: -1, steps: 4 }
+    expect(stepEnvelope(s, Number.NaN)).toBe(0xa4)
+    expect(stepEnvelope(s, Number.POSITIVE_INFINITY)).toBe(0xa4)
+  })
+
+  it('clamps into the POKEY byte range — a negative would read back as FULL volume', () => {
+    // The teeth: audio.ts does `(audc & 0x0f) / 15`, and JS bitwise-AND on a
+    // negative uses two's complement — so an unclamped -1 would be volume 15
+    // (LOUDEST) instead of silence. Underflow must land on 0, never below.
+    const underflow = { start: 4, hold: 1, change: -1, steps: 99 }
+    const v = stepEnvelope(underflow, 50)
+    expect(v).toBeGreaterThanOrEqual(0)
+    expect(v).toBe(0)
+    expect((v & 0x0f) / 15, 'a floored register must be SILENT, not full volume').toBe(0)
+
+    const overflow = { start: 250, hold: 1, change: 10, steps: 99 }
+    expect(stepEnvelope(overflow, 50)).toBeLessThanOrEqual(255)
   })
 })
 

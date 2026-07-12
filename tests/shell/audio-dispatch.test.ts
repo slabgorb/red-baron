@@ -185,11 +185,18 @@ describe('updateContinuousSounds — hum / gun / whine free-run from state', () 
     expect(held.calls).toContain('setGun:false')
   })
 
-  it('out of a run everything falls silent — hum off, gun off', () => {
+  it('out of a run everything falls silent — hum off, gun off, whine off', () => {
     const r = recorder()
     updateContinuousSounds(r.audio, world({ playing: false, gunFiring: true, nearestDepth: 50 }))
     expect(r.calls).toContain('setEngine:false')
     expect(r.calls).toContain('setGun:false')
     expect(r.calls, 'a stopped game never keeps the gun going').not.toContain('setGun:true')
+    // Review round 1: the whine was the one continuous voice never asserted here —
+    // forwarding the live nearestDepth would have leaked the enemy whine into a
+    // paused game, the exact bug the setGun assertion above guards against.
+    expect(r.calls).toContain('setApproach:Infinity')
+    expect(r.calls, 'a paused game must not sing about a nearby enemy').not.toContain(
+      'setApproach:50',
+    )
   })
 })

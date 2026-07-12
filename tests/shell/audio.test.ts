@@ -120,6 +120,9 @@ class FakeAudioContext {
   readonly oscillators: FakeOscillator[] = []
   readonly gains: FakeGain[] = []
   readonly sources: FakeBufferSource[] = []
+  // Review round 1: filters were built but never TRACKED, so no test could
+  // assert a cutoff — the crash/explosion/gun timbres were unverifiable.
+  readonly filters: FakeBiquadFilter[] = []
   currentTime = 0
   sampleRate = 48_000
   state = 'running'
@@ -130,25 +133,43 @@ class FakeAudioContext {
   }
   resume(): Promise<void> {
     this.resumeCalls++
+    return this.state === 'closed'
+      ? Promise.reject(new Error('InvalidStateError'))
+      : Promise.resolve()
+  }
+  close(): Promise<void> {
+    this.state = 'closed'
     return Promise.resolve()
   }
+  /** A closed context throws synchronously from every factory — the real
+   *  behaviour that could otherwise freeze the game loop (review round 1). */
+  private assertOpen(): void {
+    if (this.state === 'closed') throw new Error('InvalidStateError: context is closed')
+  }
   createOscillator(): FakeOscillator {
+    this.assertOpen()
     const o = new FakeOscillator()
     this.oscillators.push(o)
     return o
   }
   createGain(): FakeGain {
+    this.assertOpen()
     const g = new FakeGain()
     this.gains.push(g)
     return g
   }
   createBiquadFilter(): FakeBiquadFilter {
-    return new FakeBiquadFilter()
+    this.assertOpen()
+    const f = new FakeBiquadFilter()
+    this.filters.push(f)
+    return f
   }
   createBuffer(channels: number, length: number, sampleRate: number): FakeBuffer {
+    this.assertOpen()
     return new FakeBuffer(channels, length, sampleRate)
   }
   createBufferSource(): FakeBufferSource {
+    this.assertOpen()
     const s = new FakeBufferSource()
     this.sources.push(s)
     return s
@@ -162,6 +183,14 @@ function nodeCount(): number {
 }
 function allGainValues(): number[] {
   return FakeAudioContext.instances.flatMap((c) => c.gains.flatMap((g) => g.gain.values))
+}
+/** Every frequency any oscillator was ever tuned to, across all contexts. */
+function allFrequencyValues(): number[] {
+  return FakeAudioContext.instances.flatMap((c) => c.oscillators.flatMap((o) => o.frequency.values))
+}
+/** Every cutoff any filter was ever set to (review round 1 — previously invisible). */
+function allCutoffValues(): number[] {
+  return FakeAudioContext.instances.flatMap((c) => c.filters.flatMap((f) => f.frequency.values))
 }
 
 async function loadAudio() {
@@ -240,6 +269,42 @@ describe('silent-degrade — a browser with no Web Audio stays playable', () => 
   })
 })
 
+// --- the no-throw contract: a dead context must not kill the GAME -----------
+
+describe('a CLOSED AudioContext degrades to silence — it must never freeze the game', () => {
+  // REVIEW ROUND 1, blocking. main.ts calls updateContinuousSounds() inside
+  // frame(), ABOVE the requestAnimationFrame(frame) re-schedule. A browser can
+  // close the context out from under us (iOS reclaiming audio under memory
+  // pressure, a long-backgrounded tab), and every createOscillator/createGain/
+  // createBufferSource call then throws InvalidStateError SYNCHRONOUSLY. An
+  // escaping exception would abort frame() before it re-armed the rAF — freezing
+  // rendering, input, the whole game — not merely muting the sound.
+  it('every method stays silent and NON-THROWING after the context closes', async () => {
+    const m = await loadAudio()
+    const engine = m.createAudioEngine()
+    engine.resume()
+    engine.setEngine(true)
+    engine.setGun(true)
+
+    // The browser closes it underneath us.
+    await FakeAudioContext.instances[0].close()
+    expect(FakeAudioContext.instances[0].state).toBe('closed')
+
+    expect(() => {
+      engine.play('explosion')
+      engine.play('crash')
+      engine.playTone('TK')
+      engine.playTone('BN')
+      engine.setEngine(true)
+      engine.setEngine(false)
+      engine.setGun(true)
+      engine.setGun(false)
+      engine.setApproach(80)
+      engine.resume()
+    }, 'a dead context must never take the frame loop down with it').not.toThrow()
+  })
+})
+
 // --- the PURE analog seams (the ROM-authentic facts) ------------------------
 
 describe('gunStrobe — the D2 rat-a-tat, INTCNT&8 (findings §6B, RBGRND.MAC:171-174)', () => {
@@ -303,6 +368,15 @@ describe('approachWhine — ATGVAL, nearer ⇒ more intense (findings §6B, infe
     const { approachWhine } = await loadAudio()
     expect(approachWhine(Number.POSITIVE_INFINITY).gain).toBeCloseTo(0, 5)
   })
+
+  it('an UNKNOWN distance (NaN) is silent, not deafening (review round 1)', async () => {
+    const { approachWhine } = await loadAudio()
+    // `NaN > 0` is false, so NaN fell into the same branch as 0 — "on top of you" —
+    // and produced the LOUDEST possible whine. It must read as "no target".
+    const p = approachWhine(Number.NaN)
+    expect(p.gain).toBe(0)
+    expect(Number.isFinite(p.frequency)).toBe(true)
+  })
 })
 
 describe('engineHumParams — the detuned $F8/$F7 pair (findings §6B)', () => {
@@ -326,12 +400,19 @@ describe('engineHumParams — the detuned $F8/$F7 pair (findings §6B)', () => {
 // --- the live wiring: the synth actually reaches the node graph -------------
 
 describe('post-gesture synthesis reaches the node graph', () => {
-  it('setEngine(true) builds the DETUNED hum — at least two oscillators', async () => {
+  it('setEngine(true) wires BOTH detuned frequencies into real oscillators', async () => {
     const m = await loadAudio()
     const engine = m.createAudioEngine()
     engine.resume()
     engine.setEngine(true)
+    const [a, b] = m.engineHumParams().frequencies
     expect(FakeAudioContext.instances[0].oscillators.length, 'a detuned pair').toBeGreaterThanOrEqual(2)
+    // The POINT of the hum is the BEAT between the two divisors. Asserting only
+    // "2 oscillators exist" would pass even if both were tuned identically, which
+    // would destroy the beat — so pin the actual frequencies (review round 1).
+    expect(allFrequencyValues()).toContain(a)
+    expect(allFrequencyValues()).toContain(b)
+    expect(a).not.toBe(b)
   })
 
   it('setEngine(false) drives the hum to a real 0 gain (silence out of a run)', async () => {
@@ -355,13 +436,38 @@ describe('post-gesture synthesis reaches the node graph', () => {
     expect(nodeCount(), 'a post-gesture blast must synthesize').toBeGreaterThan(before)
   })
 
-  it('playTone() fires a POKEY tone through a real oscillator', async () => {
+  it('playTone() fires a POKEY tone at the table’s ACTUAL pitch', async () => {
     const m = await loadAudio()
     const engine = m.createAudioEngine()
     engine.resume()
     const before = FakeAudioContext.instances[0].oscillators.length
-    engine.playTone('TH')
+    engine.playTone('TK')
     expect(FakeAudioContext.instances[0].oscillators.length).toBeGreaterThan(before)
+    // "an oscillator was created" would pass even for a 0 Hz / fixed-pitch tone.
+    // TK's AUDF1 is the ROM-exact $30, so pin the pitch it must actually sound at.
+    const tkHz = 63_920 / (2 * (0x30 + 1))
+    expect(allFrequencyValues(), 'TK must sound at its AUDF1=$30 pitch').toContain(tkHz)
+  })
+
+  it('playTone() releases to silence — a tone never hard-stops at volume (click)', async () => {
+    const m = await loadAudio()
+    const engine = m.createAudioEngine()
+    engine.resume()
+    // BN is the RISING warble: its envelope ENDS LOUD by design, so without a
+    // release ramp the oscillator would be cut off at amplitude and CLICK.
+    engine.playTone('BN')
+    expect(allGainValues(), 'the voice must be ramped to 0 before it stops').toContain(0)
+  })
+
+  it('setGun(true) builds the rat-a-tat STROBE at the INTCNT&8 rate', async () => {
+    const m = await loadAudio()
+    const engine = m.createAudioEngine()
+    engine.resume()
+    engine.setGun(true)
+    // Deleting the strobe wiring would leave the gun a flat hiss. The ROM gate is
+    // 8 NMIs on / 8 off ⇒ a 16-NMI cycle ⇒ 250/16 = 15.625 Hz.
+    expect(allFrequencyValues(), 'the gun must be chopped at the ROM gate rate').toContain(15.625)
+    expect(allCutoffValues(), 'the gun rattle is filtered').toContain(1800)
   })
 
   it('setGun is defensive: double-on and off-when-idle never throw', async () => {
@@ -374,6 +480,19 @@ describe('post-gesture synthesis reaches the node graph', () => {
       engine.setGun(false)
       engine.setGun(false)
     }).not.toThrow()
+  })
+
+  it('crash and explosion are DISTINCT cues, not the same burst', async () => {
+    const m = await loadAudio()
+    const engine = m.createAudioEngine()
+    engine.resume()
+    engine.play('explosion')
+    engine.play('crash')
+    // Previously nothing post-gesture exercised 'crash' at all, and filters were
+    // untracked — so collapsing both cues into one burst would have gone unnoticed.
+    const cutoffs = allCutoffValues()
+    expect(cutoffs, 'the kill blast is the brighter one').toContain(900)
+    expect(cutoffs, 'the pilot’s crash is darker/heavier').toContain(500)
   })
 
   it('setApproach applies the computed whine gain to a live node', async () => {
