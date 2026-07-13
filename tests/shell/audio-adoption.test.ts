@@ -2,22 +2,32 @@
 //
 // SH2-18 — red-baron adopts @arcade/shared/synth (AC-8).
 //
-// Red Baron is the DONOR: its engine already carries the no-throw contract (live(),
-// guard(), the ctor try/catch, the resume().catch()) that battlezone lacks, and the
-// shared skeleton is lifted from it. So unlike battlezone, adoption here is a genuine
-// refactor — no behaviour changes, and the existing suite (tests/shell/audio.test.ts)
-// is the safety net that proves it. What this file adds is the fence:
-//
+// Red Baron is the DONOR: its engine already carried the no-throw contract that the
+// shared skeleton was lifted from, so adoption here is a genuine refactor and the
+// existing suite (tests/shell/audio.test.ts) is the safety net. What this file adds is
+// the fence:
 //   • The VERB must leave  — the skeleton comes from @arcade/shared/synth now.
-//   • The NUMBERS must stay — every ROM seam (gunStrobe / explosionLevel /
-//     approachWhine / engineHumParams) and all POKEY math is Red Baron's alone and
-//     must NOT be pushed up into the shared package. The shared engine has no idea
-//     what a POKEY is, and must never learn.
+//   • The NUMBERS must stay — every ROM seam and all POKEY math is Red Baron's alone.
+//     The shared engine has no idea what a POKEY is, and must never learn.
 //
-// RED until Dev rewrites src/shell/audio.ts on top of the shared skeleton.
+// ── REVIEW ROUND 1: the surface/NUMBERS checks were VACUOUS and are rebuilt ──
+// They scanned source TEXT with un-anchored regexes, so a bare mention in a COMMENT
+// satisfied them, and the "full cabinet surface" check matched the AudioEngine INTERFACE
+// declaration rather than the object `createAudioEngine()` actually returns — the
+// reviewer proved the equivalent battlezone check passed while a renamed method key made
+// `engine.stopEngine()` throw at runtime. Now: the surface is asserted on the real object,
+// the ROM seams are asserted by BEHAVIOUR (they are exported and pure), and the remaining
+// source checks are anchored to declaration forms.
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import {
+  createAudioEngine,
+  gunStrobe,
+  explosionLevel,
+  approachWhine,
+  engineHumParams,
+} from '../../src/shell/audio'
 
 const audioSrc = () =>
   readFileSync(fileURLToPath(new URL('../../src/shell/audio.ts', import.meta.url)), 'utf8')
@@ -32,10 +42,10 @@ describe('SH2-18 — red-baron consumes the shared synthesis skeleton (AC-8)', (
   it('no longer hand-writes the engine skeleton', () => {
     const src = audioSrc()
     const skeleton = [
-      { name: 'resolveContextCtor', re: /function\s+resolveContextCtor\s*\(/ },
-      { name: 'noiseBuffer', re: /function\s+noiseBuffer\s*\(/ },
-      { name: 'guard', re: /function\s+guard\s*\(/ },
-      { name: 'live', re: /function\s+live\s*\(/ },
+      { name: 'resolveContextCtor', re: /\bfunction\s+resolveContextCtor\s*\(/ },
+      { name: 'noiseBuffer', re: /\bfunction\s+noiseBuffer\s*\(/ },
+      { name: 'guard', re: /\bfunction\s+guard\s*\(/ },
+      { name: 'live', re: /\bfunction\s+live\s*\(/ },
     ]
     const stillLocal = skeleton.filter((s) => s.re.test(src)).map((s) => s.name)
     expect(
@@ -51,32 +61,61 @@ describe('SH2-18 — red-baron consumes the shared synthesis skeleton (AC-8)', (
   })
 })
 
+describe('SH2-18 — red-baron KEEPS its full cabinet surface (runtime, not source text)', () => {
+  it('createAudioEngine() returns every method the cabinet had before the extraction', () => {
+    const engine = createAudioEngine()
+    expect(typeof engine.resume).toBe('function')
+    expect(typeof engine.play).toBe('function')
+    // playTone / setGun / setApproach are Red Baron's alone — easiest to lose in a rewrite.
+    expect(typeof engine.playTone).toBe('function')
+    expect(typeof engine.setEngine).toBe('function')
+    expect(typeof engine.setGun).toBe('function')
+    expect(typeof engine.setApproach).toBe('function')
+  })
+
+  it('every method is a silent no-op before the gesture gate opens', () => {
+    // Proves the methods are really WIRED to the shared engine, not merely present.
+    const engine = createAudioEngine()
+    expect(() => {
+      engine.play('explosion')
+      engine.play('crash')
+      engine.playTone('TK')
+      engine.setEngine(true)
+      engine.setGun(true)
+      engine.setGun(false)
+      engine.setApproach(100)
+    }).not.toThrow()
+  })
+})
+
 describe('SH2-18 — red-baron KEEPS its NUMBERS (no over-extraction)', () => {
-  it('still owns every ROM-verified analog seam', () => {
-    const src = audioSrc()
-    // These are ROM facts about ONE cabinet (findings §6B). They are the definition of
-    // a NUMBER: no other game has an INTCNT&8 gun strobe or an EXPVAL ramp.
-    for (const seam of ['gunStrobe', 'explosionLevel', 'approachWhine', 'engineHumParams']) {
-      expect(src, `${seam} is a ROM seam and must stay in red-baron`).toMatch(
-        new RegExp(`export\\s+function\\s+${seam}\\s*\\(`),
-      )
-    }
+  it('still owns every ROM-verified analog seam, and they still compute', () => {
+    // Asserted by BEHAVIOUR, not by grepping for the name. These are ROM facts about ONE
+    // cabinet (findings §6B): no other game has an INTCNT&8 gun strobe or an EXPVAL ramp.
+    expect(gunStrobe(8), 'the D2 gun bit is gated by INTCNT & 8').toBe(true)
+    expect(gunStrobe(0)).toBe(false)
+
+    expect(explosionLevel(0), 'EXPVAL is loaded with $F0').toBe(0xf0)
+    expect(explosionLevel(999), 'and ramps down to nothing').toBe(0)
+
+    // Nearer ⇒ more intense; an UNKNOWN distance must read as "no target", never loudest.
+    expect(approachWhine(10).gain).toBeGreaterThan(approachWhine(1000).gain)
+    expect(approachWhine(Number.NaN).gain).toBe(0)
+
+    // The DETUNED pair — divisors one apart, so the voices beat. That beat IS the engine.
+    const hum = engineHumParams()
+    expect(hum.frequencies[0]).not.toBe(hum.frequencies[1])
   })
 
   it('still owns its POKEY math — the shared engine must never learn what a POKEY is', () => {
     const src = audioSrc()
-    expect(src).toMatch(/POKEY_CLOCK_HZ/)
-    expect(src).toMatch(/audfToHz/)
-    expect(src).toMatch(/audcToGain/)
-  })
-
-  it('still exposes the full cabinet surface it had before the extraction', () => {
-    const src = audioSrc()
-    // setGun / setApproach / playTone are Red Baron's alone — easy to lose in a rewrite.
-    for (const method of ['resume', 'play', 'playTone', 'setEngine', 'setGun', 'setApproach']) {
-      expect(src, `AudioEngine.${method} must survive the extraction`).toMatch(
-        new RegExp(`\\b${method}\\s*\\(`),
-      )
-    }
+    // Anchored to declaration forms: a mention in a comment must not satisfy these.
+    expect(src).toMatch(/\bconst\s+POKEY_CLOCK_HZ\s*=/)
+    expect(src).toMatch(/\bfunction\s+audfToHz\s*\(/)
+    expect(src).toMatch(/\bfunction\s+audcToGain\s*\(/)
+    // And the cabinet's own voice builders stay home.
+    expect(src).toMatch(/\bfunction\s+pokeyTone\s*\(/)
+    expect(src).toMatch(/\bfunction\s+gunVoice\s*\(/)
+    expect(src).toMatch(/\bfunction\s+explosionBurst\s*\(/)
   })
 })

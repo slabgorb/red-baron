@@ -155,16 +155,19 @@ describe('scaffold — first native @arcade/shared consumer (proves the dependen
     ).toBe(false)
   })
 
-  it('pins @arcade/shared as a git-URL dependency', () => {
-    // The invariant rb1-1 actually cares about: the dependency pipe is a git-URL pin at
-    // an explicit ref, never a floating range.
+  it('pins @arcade/shared as a git-URL dependency carrying SOME explicit ref', () => {
+    // What this proves, exactly: the dep is a github: git-URL with a non-empty `#ref` —
+    // NOT an npm semver range. It does NOT prove the ref is immutable; `#main` or a
+    // feature branch would satisfy it too, and a feature branch is in fact what is pinned
+    // during a shared extraction's dev inner-loop (the tag lands at release). The earlier
+    // wording here claimed "never a floating range", which overstated it — a comment that
+    // oversells a guard is worse than no comment, because the next reader trusts it
+    // (review round 1).
     //
-    // SH2-18: this used to hard-code `#v0.12.0`, which made it a tripwire on every pin
-    // bump rather than a guard (SH2-14 already had to rewrite it once). Worse, a shared
-    // extraction pins the FEATURE BRANCH during the dev inner-loop and only moves to the
-    // `vX.Y.Z` tag at release — so an exact-tag match would have to be edited twice per
-    // story. So the shape is pinned here, and what the code actually NEEDS (a resolved
-    // package new enough to carry /synth) is proven below, which is the stronger check.
+    // SH2-18: this used to hard-code `#v0.12.0`, which made it a tripwire on every pin bump
+    // rather than a guard (SH2-14 already had to rewrite it once). The check that carries
+    // the real weight is the next one — it interrogates what actually RESOLVED into
+    // node_modules, which no string match on package.json can see.
     expect(read('package.json')).toMatch(
       /"@arcade\/shared":\s*"github:slabgorb\/arcade-shared#[^"]+"/,
     )

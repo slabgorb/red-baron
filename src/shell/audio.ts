@@ -16,7 +16,9 @@
 // Why not `@arcade/shared/audio`: that shared engine is a SAMPLE (.wav) buffer
 // player — it cannot host oscillator synthesis. The rb2 epic guardrail is
 // explicit that POKEY sound stays local. Battlezone (bz1-11), Red Baron's
-// hardware twin, hand-writes the same local synthesis engine for the same reason.
+// hardware twin, hit the same wall for the same reason — which is why SH2-18
+// gave the two of them a shared SYNTHESIS engine (`/synth`) instead, a sibling
+// of `/audio` rather than a replacement for it. See below.
 //
 // SH2-18 — THE SKELETON MOVED OUT, THE NUMBERS STAYED. The engine substrate (the
 // lazy gesture gate, the vendor-prefix fallback, the white-noise buffer, voice
@@ -168,8 +170,6 @@ const TONE_LEVEL = 0.5
 /** Release ramp applied to a tone that ends at a non-zero level, so it fades out
  *  instead of being cut off — a hard stop at amplitude CLICKS. [inferred] */
 const TONE_RELEASE_S = 0.02
-
-// ─── the engine ──────────────────────────────────────────────────────────────
 
 // ─── red-baron's NUMBERS: the instruments, not the engine ────────────────────
 
