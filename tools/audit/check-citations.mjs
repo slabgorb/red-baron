@@ -33,21 +33,47 @@ function lineAt(path, n) {
  * at a real commit — while the code is free to be fixed.
  */
 const refCache = new Map()
-function lineAtRef(ref, file, n) {
+function lineAtRef(ref, file, n, cwd) {
   const key = `${ref}:${file}`
   if (!refCache.has(key)) {
     try {
+      // `cwd` is mandatory: without it git resolves against process.cwd(), which in another
+      // working directory is a DIFFERENT repository — and a coincidentally-matching path
+      // there would FALSELY VERIFY a citation. That is the exact failure this gate exists
+      // to prevent, so the gate must not be able to commit it.
       const blob = execFileSync('git', ['show', key], {
+        cwd,
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'ignore'],
       })
       refCache.set(key, blob.split('\n'))
     } catch {
+      // The ref itself is known-reachable by the time we get here (checkFindings preflights
+      // it), so a failure here means the FILE genuinely did not exist at that commit.
       refCache.set(key, null)
     }
   }
   const lines = refCache.get(key)
   return lines === null ? undefined : lines[n - 1]
+}
+
+/**
+ * Is `ref` actually in this clone's object database?
+ *
+ * It very often is not: `actions/checkout` defaults to `fetch-depth: 1`, so CI gets a
+ * single-commit clone in which the audit commit does not exist. Without this preflight,
+ * every `git show` fails and the gate reports "does not exist" for all ~150 findings —
+ * 150 errors that all point at the wrong thing and bury the one real cause.
+ *
+ * "I could not check" must never be reported as "I checked, and it is wrong."
+ */
+export function refReachable(ref, cwd) {
+  try {
+    execFileSync('git', ['cat-file', '-e', `${ref}^{commit}`], { cwd, stdio: 'ignore' })
+    return true
+  } catch {
+    return false
+  }
 }
 
 /**
@@ -70,6 +96,17 @@ function lineAtRef(ref, file, n) {
 export function checkFindings(findings, { repoRoot, sourceDir, oursRef = null }) {
   const errors = []
   const seen = new Set()
+
+  // Preflight the ref ONCE. An unreachable audit commit is an ENVIRONMENT problem (a
+  // shallow clone), not ~150 bad citations, and it must say so in one line.
+  if (oursRef && !refReachable(oursRef, repoRoot)) {
+    return [
+      `the audit commit ${oursRef} is not in this clone, so the our-side citations ` +
+        `CANNOT BE VERIFIED (this is not a citation failure — it is a missing commit).\n` +
+        `  Cause:  a shallow clone. \`actions/checkout\` defaults to fetch-depth: 1.\n` +
+        `  Fix:    fetch the audit commit (CI: \`fetch-depth: 0\`), or run \`git fetch --unshallow\`.`,
+    ]
+  }
 
   for (const f of findings) {
     const id = f.id ?? '(missing id)'
@@ -124,7 +161,7 @@ export function checkFindings(findings, { repoRoot, sourceDir, oursRef = null })
     } else {
       const at = oursRef ? `at ${oursRef}` : 'in the working tree'
       const actual = oursRef
-        ? lineAtRef(oursRef, f.ours.file, f.ours.line)
+        ? lineAtRef(oursRef, f.ours.file, f.ours.line, repoRoot)
         : lineAt(join(repoRoot, f.ours.file), f.ours.line)
       if (actual === undefined) {
         errors.push(`${id}: ours ${f.ours.file}:${f.ours.line} does not exist ${at}`)

@@ -464,12 +464,14 @@ describe('returning-ace — integration with the REAL flight model + enemy weave
   it('the REAL enemy weave bores in until closesPast fires — spawn is far, the floor triggers', () => {
     // enemy.step closes the depth toward its MIN_DEPTH floor (= P.MNDP = 0x140 = 320).
     // closesPast is false at the far spawn and true once the plane reaches that floor.
-    // rb4-1: the spawn depth is now 0x1080 = 4224, so the plane needs ~490 calc-frames to
-    // bore in at CLOSE_SPEED — the old 400-step budget no longer reached the floor.
+    // rb4-1 REWORK: the plane now closes at the ROM's OWN rate — PLPOSZ[GMLEVL], which
+    // PLNZD stores as "PLANE MOTION DEPTH DELTA" (RBARON.MAC:2409-2411). At GMLEVL 0 that
+    // is -0x04 = -4 per calc-frame, so crossing 0x1080 -> 0x140 takes (4224-320)/4 = 976
+    // frames. The old budget (400, then 800) was sized for an invented flat CLOSE_SPEED=8.
     const closesPast = need(m.closesPast, 'closesPast')
     let e: Enemy = spawnEnemy(createRng(7), 0)
     expect(closesPast(e.depth)).toBe(false) // spawns far — no pass yet
-    for (let i = 0; i < 800; i++) e = stepEnemy(e, 0) // bore all the way in
+    for (let i = 0; i < 1200; i++) e = stepEnemy(e, 0) // bore all the way in
     expect(closesPast(e.depth)).toBe(true) // reached the P.MNDP floor → the pass triggers
   })
 })

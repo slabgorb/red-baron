@@ -38,6 +38,13 @@ const NEAR = 1
  * horizon when it was under 5× — and, worse, it sat BELOW the ROM's farthest objects: the
  * mountain recycle depth P.OBZI = 0x7F00 = 32512 (RBARON.MAC:443) and PFOBIZ's opening
  * slot at 0x8200 = 33280 (RBARON.MAC:1305).
+ *
+ * HONEST CAVEAT (Reviewer, rb4-1): today this constant is INERT. `perspective()` writes
+ * `far` into the projection matrix's Z row, and `projectSegment` below reads only rows 0,
+ * 1 and 3 (x, y, w) — clip-Z is discarded, and nothing in src/shell/ depth-culls. So no
+ * mountain was ever actually clipped by the old 20000, and raising it changes no pixel.
+ * It is corrected because a wrong number in a comment is how this whole epic started; it
+ * is NOT load-bearing, and nobody should assume it is.
  */
 const FAR = 40000
 

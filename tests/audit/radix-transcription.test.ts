@@ -9,11 +9,16 @@
 // off". This suite is the gate on every other numeric story in epic rb4.
 //
 // ─── THE ONE RULE OF THIS FILE ───────────────────────────────────────────────────
-// It must never assert a magic number. Every expected value below is DERIVED here from
-// the ROM literal, under the radix that governs the exact line that literal sits on
-// (resolved by backward-scanning `.RADIX` directives). That is what AC-4 means by
-// "the transcription is auditable, not asserted": you cannot quietly regress a
-// constant to decimal, because the ROM itself is the oracle.
+// Every value it asserts about a HEX-region constant is DERIVED here from the ROM literal,
+// under the radix that governs the exact line that literal sits on (resolved by backward-
+// scanning `.RADIX` directives). That is what AC-4 means by "the transcription is auditable,
+// not asserted": you cannot quietly regress a constant to decimal, because the ROM is the
+// oracle, not this file.
+//
+// The ONE deliberate exception is the AC-5 block at the bottom. Those are golden-value
+// guards over data that is already CORRECT (the picture ROM's decimal geometry), and their
+// whole job is to fail if a future sweep "helpfully" re-reads it as hex — so they pin the
+// literal decimal arrays on purpose. They are guards, not derivations, and they say so.
 //
 // The Atari source is copyrighted and never enters this repo, so the source-side
 // checks degrade gracefully when it is absent (CI) — exactly as tests/audit/
@@ -24,7 +29,9 @@
 // The sweep needs these constants OBSERVABLE. Several are currently module-private or
 // absent; export them (a constant nobody can read is a constant nobody can audit):
 //
-//   src/core/enemy.ts          export const MIN_DEPTH        // P.MNDP  0x140 = 320
+//   src/core/enemy.ts          export { P_MNDP }             // P.MNDP  0x140 = 320
+//                                                           // (NOT `MIN_DEPTH` — that name is
+//                                                           //  already landscape's, for 0x01C0)
 //   src/core/explosion.ts      export const SPIN_RATE        // 0x180/0x800 turn = 3π/8
 //   src/core/landscape.ts      export const P_OBDZ           // 0x180 = 384 (on horizon)
 //   src/core/landscape.ts      export const PF_FALLEN_DZ     // 0x20  = 32  (once fallen)
@@ -49,8 +56,11 @@ const sourceAvailable = existsSync(sourceDir)
 
 const romCache = new Map<string, readonly string[]>()
 function romLines(file: string): readonly string[] {
-  if (!romCache.has(file)) romCache.set(file, readFileSync(join(sourceDir, file), 'latin1').split('\n'))
-  return romCache.get(file) as readonly string[]
+  const cached = romCache.get(file)
+  if (cached !== undefined) return cached
+  const lines: readonly string[] = readFileSync(join(sourceDir, file), 'latin1').split('\n')
+  romCache.set(file, lines)
+  return lines
 }
 
 /** The ROM line, 1-based, exactly as the assembler sees it. */
@@ -104,7 +114,6 @@ const MANIFEST: readonly Transcription[] = [
   // The enemy — the machine that felt wrong.
   { ours: 'P_INDP', module: 'enemy', symbol: 'P.INDP', romFile: 'RBARON.MAC', romLine: 464, literal: '1080', decimalMisread: 1080 },
   { ours: 'ACCEL', module: 'enemy', symbol: 'ACCEL', romFile: 'RBARON.MAC', romLine: 465, literal: '30', decimalMisread: 30 },
-  { ours: 'MIN_DEPTH', module: 'enemy', symbol: 'P.MNDP', romFile: 'RBARON.MAC', romLine: 469, literal: '140', decimalMisread: 140 },
   { ours: 'P_MNDP', module: 'returning-ace', symbol: 'P.MNDP', romFile: 'RBARON.MAC', romLine: 469, literal: '140', decimalMisread: 140 },
 
   // The guns and the wreck.
@@ -137,12 +146,13 @@ const LOADERS: Record<ModuleName, () => Promise<unknown>> = {
 const loaded: Partial<Record<ModuleName, Record<string, unknown>>> = {}
 
 beforeAll(async () => {
+  // No catch. A missing NAMED export does not throw on import — it is simply `undefined` on
+  // the namespace object, and `exportedValue` reports that precisely. So the only thing a
+  // catch here could swallow is a REAL module failure (a syntax error, a bad path, a
+  // circular-import crash) — and burying that under a generic "must export X" would send
+  // the next reader hunting for entirely the wrong bug. Let it throw.
   for (const name of Object.keys(LOADERS) as ModuleName[]) {
-    try {
-      loaded[name] = (await LOADERS[name]()) as Record<string, unknown>
-    } catch {
-      loaded[name] = {}
-    }
+    loaded[name] = (await LOADERS[name]()) as Record<string, unknown>
   }
 })
 
@@ -226,10 +236,19 @@ describe('AC-1 — the scalars are read as HEX', () => {
     }
   })
 
-  it('the two names for P.MNDP agree — one ROM constant must not have two values', () => {
-    // enemy.ts's MIN_DEPTH and returning-ace.ts's P_MNDP are the SAME ROM equate
-    // (RBARON.MAC:469). They drifted because nothing forced them to agree.
-    expect(exportedNumber('enemy', 'MIN_DEPTH')).toBe(exportedNumber('returning-ace', 'P_MNDP'))
+  it('P.MNDP has exactly ONE home — enemy re-exports it rather than re-typing the value', () => {
+    // The same ROM equate (RBARON.MAC:469) reached the code twice and drifted, because
+    // nothing forced the two copies to agree. They must now be the same binding.
+    expect(exportedNumber('enemy', 'P_MNDP')).toBe(exportedNumber('returning-ace', 'P_MNDP'))
+  })
+
+  it('P.MNDP and the mountain recycle threshold do NOT share a name', () => {
+    // rb4-1 REWORK. enemy briefly exported P.MNDP (320) as `MIN_DEPTH`, colliding with
+    // landscape's own `MIN_DEPTH` (0x01C0 = 448, the PF-object recycle threshold): one
+    // identifier, two unrelated ROM equates. That is the bug class this whole story is
+    // about. Two different ROM constants may never answer to one name.
+    expect(exportedNumber('landscape', 'MIN_DEPTH')).not.toBe(exportedNumber('enemy', 'P_MNDP'))
+    expect(loaded.enemy?.MIN_DEPTH, 'enemy must NOT export a `MIN_DEPTH`').toBeUndefined()
   })
 })
 

@@ -60,11 +60,31 @@ interface Finding {
   readonly ours: { readonly file: string; readonly line: number; readonly verbatim: string } | null
 }
 
+/** Narrow one parsed JSON object to a Finding, rather than casting and hoping. */
+function toFinding(raw: unknown, where: string): Finding {
+  if (typeof raw !== 'object' || raw === null) throw new Error(`${where}: finding is not an object`)
+  const o = raw as Record<string, unknown>
+  if (typeof o.id !== 'string') throw new Error(`${where}: finding has no string id`)
+  if (typeof o.class !== 'string') throw new Error(`${where}: ${o.id} has no string class`)
+  const ours = o.ours
+  if (ours === null || ours === undefined) return { id: o.id, class: o.class, ours: null }
+  if (typeof ours !== 'object') throw new Error(`${where}: ${o.id} has a non-object \`ours\``)
+  const u = ours as Record<string, unknown>
+  if (typeof u.file !== 'string' || typeof u.line !== 'number' || typeof u.verbatim !== 'string') {
+    throw new Error(`${where}: ${o.id} \`ours\` needs {file: string, line: number, verbatim: string}`)
+  }
+  return { id: o.id, class: o.class, ours: { file: u.file, line: u.line, verbatim: u.verbatim } }
+}
+
 function allFindings(): readonly Finding[] {
   if (!existsSync(findingsDir)) return []
   return readdirSync(findingsDir)
     .filter((f) => f.endsWith('.json'))
-    .flatMap((f) => JSON.parse(readFileSync(join(findingsDir, f), 'utf8')) as Finding[])
+    .flatMap((f) => {
+      const parsed: unknown = JSON.parse(readFileSync(join(findingsDir, f), 'utf8'))
+      if (!Array.isArray(parsed)) throw new Error(`${f}: expected an array of findings`)
+      return parsed.map((raw) => toFinding(raw, f))
+    })
 }
 
 /** A file's contents at the audit commit. `null` when the commit is not in this clone. */
@@ -97,10 +117,29 @@ function auditCommitPresent(): boolean {
   }
 }
 
-const haveAuditCommit = auditCommitPresent()
-
-describe.skipIf(!haveAuditCommit)('the audit evidence is frozen at the commit it was taken against', () => {
-  it('the audit commit is reachable from this checkout', () => {
+/**
+ * rb4-1 REWORK — this used to be `describe.skipIf(!haveAuditCommit)`, and that was worse
+ * than having no lock at all.
+ *
+ * Under `actions/checkout`'s default `fetch-depth: 1` the audit commit is not in the clone,
+ * so in CI — the ONE place this runs unattended, and the one place someone could quietly
+ * push edited evidence — the whole anti-tamper block SILENTLY SKIPPED. A skipped describe
+ * is neither pass nor fail: "I could not check" and "I checked, and it is clean" looked
+ * identical in the log. That is a guard that only pretends to guard.
+ *
+ * It now FAILS LOUDLY when the commit is unreachable, and the CI checkout fetches full
+ * history (`fetch-depth: 0`, arcade/.github/workflows/deploy-r2.yml) so the lock genuinely
+ * runs. A developer on a shallow clone gets a red suite that tells them to unshallow —
+ * which is correct: the check cannot run, and pretending otherwise is the bug.
+ */
+describe('the audit evidence is frozen at the commit it was taken against', () => {
+  it('the audit commit is reachable — the evidence lock must RUN, never silently skip', () => {
+    expect(
+      auditCommitPresent(),
+      `the audit commit ${AUDIT_COMMIT.slice(0, 7)} is not in this clone, so the evidence ` +
+        `lock cannot run. This is a SHALLOW CLONE, not a clean bill of health — run ` +
+        `\`git fetch --unshallow\` (CI uses fetch-depth: 0).`,
+    ).toBe(true)
     expect(linesAtAuditCommit('src/core/guns.ts')).not.toBeNull()
   })
 
@@ -150,7 +189,7 @@ describe('the citation gate still means something after the sweep', () => {
     // The other cheap escape: add `"skip": true` / `"stale": true` to the findings that
     // break. The gate is worth nothing if a finding can excuse itself from it.
     for (const f of allFindings()) {
-      const keys = Object.keys(f as unknown as Record<string, unknown>)
+      const keys = Object.keys(f)
       for (const escape of ['skip', 'skipOurs', 'stale', 'ignore', 'fixed', 'obsolete']) {
         expect(keys, `${f.id} must not carry an \`${escape}\` opt-out`).not.toContain(escape)
       }

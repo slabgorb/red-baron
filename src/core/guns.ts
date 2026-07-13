@@ -22,11 +22,15 @@
 // around the enemy; SHCDCK tests each PLAYER shell against it (enemy shells are
 // never passed here — this module holds only player shells).
 //
-// SCALE NOTE: the ROM pins the DATA (13 slots, S.MAXZ = 0x19 = 25, 4× sub-step,
-// +1 heat, ×3 cool) but NOT the overheat THRESHOLD, the shell SPEED, the collision
-// WINDOW size, or the depth→shell-Z projection. Those are chosen here within the
-// tested invariants (like enemy.ts's WEAVE_SPEED_CAP / LOD_DISTANCE) and flagged for
-// ROM/MAME ratification — see the session's Design Deviations + Delivery Findings.
+// SCALE NOTE: the ROM pins the DATA (13 slots, S.MAXZ = 0x19 = 25, S.DPTH = 0x100, the
+// 4× sub-step, +1 heat, ×3 cool) AND — as of rb4-1's rework — the gun's REACH and the
+// depth→shell-Z projection, which are S.MAXZ × S.DPTH = 6400 and `depth / S.DPTH`
+// respectively. The old header claimed the projection was un-pinned and used an invented
+// reach of 800; that made the plane untouchable for its first 41 seconds and put the
+// ROM's own far/dim 300-point kill out of reach entirely.
+//
+// Still genuinely inferred: the overheat THRESHOLD, the shell SPEED, and the collision
+// WINDOW size — flagged for ROM/MAME ratification.
 //
 // PURE and deterministic. No DOM, no time, no randomness.
 
@@ -38,11 +42,44 @@ import type { Enemy } from './enemy'
 export const SHELL_SLOTS = 13
 
 /**
- * S.MAXZ — a shell expires once it has advanced this far in Z (PSTSHL).
+ * S.MAXZ — a shell expires once its Z counter reaches this (PSTSHL, RBARON.MAC:5216-5219).
  * RBARON.MAC:492 `S.MAXZ =19`, .RADIX 16 region (set at :74) → 0x19 = 25.
  * Read as decimal 19 our shells travelled 79% of the ROM's range and died 96 ms early.
  */
 export const S_MAXZ = 0x19
+
+/**
+ * S.DPTH — the shell's Z UNIT, and the depth it is born at.
+ * RBARON.MAC:493 `S.DPTH =100`, .RADIX 16 region (set at :74) → 0x100 = 256.
+ *
+ * The ROM counts a shell's range in the HIGH BYTE of its 16-bit Z: `PSTSHL` does
+ * `INC AX,SHELLS+5` (the Z MSB) once per sub-step and clears the shell when that MSB
+ * reaches S.MAXZ. S.MAXZ's own comment says so out loud — ";SHELL MAX Z (* 100)".
+ * One Z count is therefore 0x100 of depth.
+ */
+export const S_DPTH = 0x100
+
+/**
+ * The gun's REACH — how far downrange a shell can kill.
+ *
+ * rb4-1 REWORK. This was `const SHELL_RANGE_DEPTH = 800`, flagged "Inferred", and it was
+ * the most consequential invented number in the port. It is not inferred at all: the shell
+ * is born at S.DPTH and its Z counter climbs to S.MAXZ, so the reach is
+ *
+ *     S.MAXZ x S.DPTH  =  0x19 x 0x100  =  6400
+ *
+ * which is BEYOND the plane's spawn depth P.INDP = 0x1080 = 4224. In the arcade you can
+ * shoot the plane THE MOMENT IT APPEARS, and — since PLNSCR pays the flat 300 only for a
+ * plane still at depth MSB >= 0x10 — the distant snipe is precisely the shot worth the
+ * most. That is the design: you are paid for the hard, far kill.
+ *
+ * At 800 the gun reached only 19% of the way to the spawn depth. The player could not
+ * touch the plane for its first ~41 seconds, and the far/dim 300-point branch was
+ * UNREACHABLE — the best a lead could ever be worth was 10 points. The radix sweep made
+ * that visible by correcting the depth scale underneath an invented constant that was
+ * never rescaled.
+ */
+export const SHELL_RANGE_DEPTH = S_MAXZ * S_DPTH // 6400
 
 /** SHLMOT sub-steps each shell 4× per calc-frame (findings §1/§5, RBARON.MAC:5186-5198). */
 export const SHELL_SUBSTEPS = 4
@@ -64,9 +101,6 @@ const GUN_OVERHEAT_LIMIT = 30
 
 /** Z advanced per sub-step; SHELL_SPEED × SHELL_SUBSTEPS is the per-calc-frame travel. Inferred. */
 const SHELL_SPEED = 1
-
-/** World depth mapped to shell-Z = S.MAXZ — the gun's reach (CDSSET projection). Inferred. */
-const SHELL_RANGE_DEPTH = 800
 
 /** CDSSET collision half-window in screen-window X — you must roughly aim. Inferred/playtest. */
 const WINDOW_X = 32
@@ -133,8 +167,15 @@ export const INITIAL_GUNS: Guns = Object.freeze({
 const other = (g: Gun): Gun => (g === 'left' ? 'right' : 'left')
 const muzzleX = (g: Gun): number => (g === 'left' ? -MUZZLE_X : MUZZLE_X)
 
-/** CDSSET projection — where an enemy at world `depth` sits on the shell's 0..S.MAXZ range. */
-const depthToShellZ = (depth: number): number => (depth * S_MAXZ) / SHELL_RANGE_DEPTH
+/**
+ * Where an enemy at world `depth` sits on the shell's 0..S.MAXZ range.
+ *
+ * With the reach taken from the ROM this is no longer an invented mapping — it collapses
+ * to the ROM's own arithmetic. `depth × S_MAXZ / (S_MAXZ × S_DPTH)` is just `depth / S_DPTH`:
+ * the shell's Z counter IS the high byte of the depth, which is exactly what `PSTSHL`
+ * increments (`INC AX,SHELLS+5`, the Z MSB).
+ */
+const depthToShellZ = (depth: number): number => depth / S_DPTH
 
 // ─── firing: NEWSHL / GUN.ST (one calc-frame of the trigger — findings §5) ────
 

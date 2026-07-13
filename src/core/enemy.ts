@@ -28,7 +28,7 @@
 import { type Rng, nextFloat } from '@arcade/shared/rng'
 import { biplaneBank } from './biplane'
 import type { ProximityBand } from './flight'
-import { P_MNDP } from './returning-ace'
+import { P_MNDP, closeSpeed } from './returning-ace'
 
 // ─── ROM-exact data (RBARON.MAC, `.RADIX 16` region — HEX) ───────────────────
 //
@@ -62,11 +62,16 @@ export const ACCEL = 0x30
 /**
  * P.MNDP — the closest a plane bores in before the fly-by becomes a returning pass.
  * RBARON.MAC:469 `P.MNDP =140`, .RADIX 16 region (set at :74) → 0x140 = 320.
- * The SAME ROM equate as `P_MNDP` in returning-ace.ts — aliased to it rather than
- * re-typed, so one ROM constant cannot hold two values again (it held 140 in both
- * places, and both were wrong).
+ *
+ * Re-exported from returning-ace.ts under its ROM NAME rather than re-typed, so one ROM
+ * equate cannot hold two values again (it held 140 in both places, and both were wrong).
+ *
+ * rb4-1 REWORK: this was briefly exported as `MIN_DEPTH`, which collided with
+ * landscape.ts's own `MIN_DEPTH` — the mountain recycle threshold, 0x01C0 = 448. One
+ * identifier, two unrelated ROM equates, two values: exactly the bug class this story
+ * exists to kill, recreated in the act of killing it. The ROM name is unambiguous.
  */
-export const MIN_DEPTH = P_MNDP
+export { P_MNDP }
 
 /** The RANDOM roll: 25 % chance of a lone plane (findings §3). rb2-7 branches on it. */
 export const LONE_PLANE_CHANCE = 0.25
@@ -80,9 +85,6 @@ export const LONE_PLANE_CHANCE = 0.25
  * biplane.ts's LOD_DISTANCE), chosen within TEA's weave invariants.
  */
 const WEAVE_SPEED_CAP = 100
-
-/** Per-calc-frame closing speed — the plane bores in so DISCHK proximity sharpens. Inferred. */
-const CLOSE_SPEED = 8
 
 /**
  * DISCHK band cutoffs by depth — INFERRED tunables. DISCHK itself (RBARON.MAC:3468)
@@ -191,7 +193,11 @@ export function step(enemy: Enemy, level = 0): Enemy {
     x: clamp(enemy.x + deltaX, -olim, olim),
     deltaX,
     bank: biplaneBank(deltaX),
-    depth: Math.max(enemy.depth - CLOSE_SPEED, MIN_DEPTH),
+    // The ROM's own approach rate: PLNZD indexes PLPOSZ by GMLEVL and stores it as
+    // "PLANE MOTION DEPTH DELTA" (RBARON.MAC:2409-2411), and UPDPLN ADDS it to the depth
+    // (:2704-2707) — the entries are negative, so the depth falls. Deeper levels close
+    // up to 20× faster. This replaces an invented flat CLOSE_SPEED = 8.
+    depth: Math.max(enemy.depth + closeSpeed(level), P_MNDP),
   }
 }
 
