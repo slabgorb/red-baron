@@ -1,0 +1,465 @@
+[
+  {
+    "id": "CB-001",
+    "class": "DIVERGENCE",
+    "title": "GMLEVL is indexed by OBJKLD >> 1 — our difficulty ramps exactly twice as fast",
+    "claim": "PLNZD0 loads OBJKLD, shifts it RIGHT ONE BIT (`LSR`), clamps the result to 0x10 = 16, and uses THAT as the index into PLNLVL. The table index is therefore floor(kills / 2), not kills. Ours indexes PLNLVL by the raw kill count. Arithmetic: at 8 kills the ROM index is 8>>1 = 4 → PLNLVL[4] = GMLEVL 1; ours is PLNLVL[8] = GMLEVL 3. To reach the top rung GMLEVL 5 the ROM needs index 16 → OBJKLD >= 32 kills; ours needs only 16 kills. Every difficulty knob GMLEVL drives arrives at half the kill count it should.",
+    "reasoning": "RBARON.MAC:2399-2408 reads: `PLNZD0: LDX I,10` (default index = 0x10 = 16, the last PLNLVL entry) / `LDA OBJKLD+1` / `BNE 2$` (kill count >= 256 → saturate) / `LDA OBJKLD` / `LSR` (>>1) / `CMP I,10` / `BCS 2$` (>= 16 → saturate) / `TAX` / `2$: LDA AX,PLNLVL` / `STA GMLEVL`. The LSR at :2403 is the divide-by-two; it is unmissable in the ROM and absent from ours. GMLEVL is not cosmetic: it selects the enemy weave limits P.OLIM/P.ILIM (RBARON.MAC:2756-2759), it decides whether a promoted drone gets the SHOOTS bit (UPPLX1, RBARON.MAC:3024-3028 — `LDX GMLEVL / CPX I,5 / BCC 10$` → PLSTAT+6 = 0xA8 instead of 0xA0), and it aims the ground fire (RBARON.MAC:4038). Doubling the ramp rate makes the whole sky aggressive twice as early. This is the strongest single explanation for the player's 'seems way off' on difficulty. The fix is one shift: index by `objkld >> 1`. Note the PLNLVL table itself is byte-for-byte correct (see CB-002) — only the index is wrong.",
+    "source": {
+      "file": "RBARON.MAC",
+      "line": 2403,
+      "verbatim": "\tLSR"
+    },
+    "ours": {
+      "file": "src/core/scoring.ts",
+      "line": 91,
+      "verbatim": "  const index = Math.max(0, Math.min(Math.floor(objkld), PLNLVL.length - 1))"
+    },
+    "recommendation": "fix",
+    "size": "s"
+  },
+  {
+    "id": "CB-002",
+    "class": "CONFIRMED",
+    "title": "PLNLVL difficulty table is byte-for-byte correct",
+    "claim": "PLNLVL = 0,0,0,0,1,2,2,2,3,3,3,4,4,4,4,4,5 — 17 entries, indices 0..16, ceiling 5 (matching `.LEVLS =5`, RBARON.MAC:504). Our PLNLVL is the identical 17-element array with the identical values, and MAX_GMLEVL derives 5 from it.",
+    "reasoning": "Direct byte comparison of RBARON.MAC:2478 against scoring.ts:36. Both are 17 entries with the same ramp shape and the same saturation value. The data is right; only the INDEX applied to it is wrong (CB-001). Recording this because the table is the load-bearing half of the difficulty curve and it is correct.",
+    "source": {
+      "file": "RBARON.MAC",
+      "line": 2478,
+      "verbatim": "PLNLVL:\t.BYTE 0,0,0,0,1,2,2,2,3,3,3,4,4,4,4,4,5"
+    },
+    "ours": {
+      "file": "src/core/scoring.ts",
+      "line": 36,
+      "verbatim": "export const PLNLVL: readonly number[] = Object.freeze([0, 0, 0, 0, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 4, 4, 5])"
+    }
+  },
+  {
+    "id": "CB-003",
+    "class": "BOOK_WAS_WRONG",
+    "title": "The lead plane's value COUNTS DOWN as it closes and is capped at 300 — ours counts UP to 1056",
+    "claim": "The ROM pays a FLAT 300 for a far/dim plane and a SMALL, SHRINKING PLVALU for a close one. PLNSCR: `LDX PLSTAT+5` (plane depth MSB) / `CPX I,10` / `BCC NWSCRE` — if the depth MSB is BELOW 0x10 the plane scores PLVALU; otherwise it falls through into DRNSCR and scores the flat DRNPNT = 30. = 300 points, commented ';XTRA POINTS IF DIM'. PLVALU itself (RBARON.MAC:2710-2721) = (depth_MSB x VALFRC) / 16, floored at VALMIN. Because depth SHRINKS as the plane approaches, PLVALU SHRINKS with it. Arithmetic with the initial VALFRC = 7: a plane just inside bonus depth (MSB = 0x0F = 15) is worth 15 x 7 / 16 = 6 → 60 points; nose-to-nose (MSB = 1) it is worth 1 x 7 / 16 = 0 → floored to VALMIN → as little as 10 points. So the ROM's plane is worth 300 far, 60 near, ~10 point-blank — ALWAYS <= a drone. Ours (scoring.ts:65) computes DRONE_SCORE + (P_INDP - depth) x 0.7, which starts at 300 far and RISES to 300 + 1080 x 0.7 = 1056 up close. The direction is inverted and the ceiling is 3.5x too high.",
+    "reasoning": "Our scoring.ts header states the design intent explicitly: 'a lit/close LEAD plane is worth MORE the closer it is when killed (\"closer kills are worth more\")' and 'We honour the doc's stated behaviour, not its literal arithmetic'. It is citing docs/red-baron-1980-source-findings.md §4, which says 'a lit/close plane scores PLVALU = depth x VALFRC ... closer kills are worth more'. The doc's ARITHMETIC is right (PLVALU is proportional to depth) but its CONCLUSION is backwards, because depth shrinks as the plane closes — proportional-to-depth means proportional-to-FAR. Our code detected the contradiction and resolved it by discarding the arithmetic and keeping the wrong conclusion, inverting the ROM. The ROM's design is coherent and is confirmed by the comment at RBARON.MAC:3044 ';XTRA POINTS IF DIM' and by DSPSHL's intensity ramp (RBARON.MAC:5241-5247 EOR 0F0 → greater depth = dimmer), which together establish DIM = FAR = the bonus. Red Baron rewards the long shot, not the knife fight. Fix is a rewrite of leadScore: score = 300 when depth >= the bonus-depth threshold, else max(depth x VALFRC / 16 x 10, VALMIN x 10). The secondary source must be corrected too.",
+    "source": {
+      "file": "RBARON.MAC",
+      "line": 3041,
+      "verbatim": "\tBCC NWSCRE\t\t;PLANE PAST BONUS DEPTH"
+    },
+    "ours": {
+      "file": "src/core/scoring.ts",
+      "line": 65,
+      "verbatim": "const leadScore = (depth: number): number => DRONE_SCORE + Math.round(Math.max(0, P_INDP - depth) * VALFRC)"
+    },
+    "recommendation": "fix",
+    "size": "m"
+  },
+  {
+    "id": "CB-004",
+    "class": "NO_COUNTERPART",
+    "title": "Extra lives (BONUSL) do not exist in our game — the player can never earn a plane back",
+    "claim": "SCOREM checks for a bonus life after EVERY score increment (RBARON.MAC:1582-1602): X = ((OPTION & 0x0C) >> 2) + EXLIFE; if SCORE+1 >= BONUSL[X] then EXLIFE += 4, the bonus-life sound and message fire, and `INC LIVES` (RBARON.MAC:1602) hands the player another plane. BONUSL is a 16-byte table walked in strides of 4 from the option index, so each option gets three thresholds and then 0FF (none). SCORE is 16-bit BCD holding score/10 (implicit trailing zero), so SCORE+1 is the BCD digit-pair above the tens — SCORE+1 >= 0x02 means a displayed score >= 2000. Decoding the table: option 0 → BONUSL[0],[4],[8] = 0x02, 0x10, 0x30 → extra planes at 2,000 / 10,000 / 30,000. Option 1 → [1],[5],[9] = 0x04, 0x15, 0x40 → 4,000 / 15,000 / 40,000. Option 2 → [2],[6],[10] = 0x06, 0x20, 0x50 → 6,000 / 20,000 / 50,000. Option 3 → [3],[7],[11] = all 0FF → never. Maximum three extra planes. lives.ts has NO award path at all: `count` only ever decreases, via loseLife.",
+    "reasoning": "The BONUSL rows as written are `.BYTE 2,4,6,0FF` / `10,15,20,0FF` / `30,40,50,0FF` / `0FF,0FF,0FF,0FF`. The indexing at RBARON.MAC:1587-1590 (`ADC EXLIFE / TAX / LDA SCORE+1 / CMP AX,BONUSL`) combined with EXLIFE stepping by 4 (RBARON.MAC:1593-1595) reads the table in COLUMNS, not rows — which is why the flat-array decode above (index, index+4, index+8, index+12) is the correct one and a naive row read would be wrong. The BCD-with-implicit-trailing-zero encoding is established independently by DRNPNT = 30. meaning 300 points (CB-005) and by SCOREM's BCD adds (SED at RBARON.MAC:1565). Missing extra lives is a first-order difficulty error in its own right: the arcade hands back up to three planes over a good game and ours hands back none, so our run length is materially shorter than the original at identical player skill. It compounds with CB-001 (difficulty ramping twice as fast) and CB-003 (scoring inverted) — the player earns the wrong points, on a sky that got hard too early, and never gets a plane back for it.",
+    "source": {
+      "file": "RBARON.MAC",
+      "line": 1605,
+      "verbatim": "BONUSL:\t.BYTE 2,4,6,0FF\t\t;BONUS LIFE LEVELS (0FF=NONE)"
+    },
+    "ours": null,
+    "recommendation": "fix",
+    "size": "m"
+  },
+  {
+    "id": "CB-005",
+    "class": "CONFIRMED",
+    "title": "Score encoding is BCD with an implicit trailing zero; DRNPNT = 30. = 300 points per drone",
+    "claim": "DRNPNT is declared `=30.` — an EXPLICIT decimal literal inside the .RADIX 16 region — and the comment reads ';300 POINTS/DRONE (OR UNLIT PLANE)'. The stored value 30 becomes 300 displayed points because SCORE is a 16-bit BCD accumulator holding score/10: PLNSCR/DRNSCR queue the raw value into SCRTAB (RBARON.MAC:3049), and SCOREM counts it into SCORE in BCD (SED at RBARON.MAC:1565), adding 0x10 at a time while SCRTAB+3 >= 10., so SCRTAB = 30 produces SCORE += BCD 30, displayed as 300. Our DRONE_SCORE = 300 is the correct decoded value.",
+    "reasoning": "This is the classic trap for this pair and we did NOT fall into it — the constant was decoded to real points, not copied raw. Recording it explicitly. The same encoding governs CB-003 (PLVALU x 10), CB-006 (blimp 20. → 200) and CB-004 (BONUSL against SCORE+1). Note the trailing period is what makes 30 decimal here: without it, `30` in this region would be 0x30 = 48 → 480 points.",
+    "source": {
+      "file": "RBARON.MAC",
+      "line": 508,
+      "verbatim": "DRNPNT\t=30.\t\t\t;300 POINTS/DRONE (OR UNLIT PLANE)"
+    },
+    "ours": {
+      "file": "src/core/scoring.ts",
+      "line": 30,
+      "verbatim": "export const DRONE_SCORE = 300"
+    }
+  },
+  {
+    "id": "CB-006",
+    "class": "CONFIRMED",
+    "title": "Blimp is worth 200 points",
+    "claim": "The blimp collision branch of SHCDCK loads the explicit decimal literal 20. and jumps into NWSCRE, the shared score-queue entry point; the source's own comment on the JMP reads ';200 POINTS'. Under the BCD implicit-trailing-zero encoding (CB-005), 20 x 10 = 200 points. Our BLIMP_SCORE = 200 matches.",
+    "reasoning": "RBARON.MAC:5687-5705 is unambiguously the blimp path (it loads POINTR from BLOBJ+8, calls COLSTP, sets BLOBJ+6 bit 6 = BLIMP EXPLOSION, starts the explosion sound, then `LDA I,20.` / `JMP NWSCRE ;200 POINTS`). Because 20 != DRNPNT (30), NWSCRE's `CMP I,DRNPNT / BNE` correctly suppresses the '300 POINTS' on-screen message for the blimp. Our flat, depth-independent BLIMP_SCORE is exactly right: unlike the plane, the blimp's value is a constant with no depth term.",
+    "source": {
+      "file": "RBARON.MAC",
+      "line": 5704,
+      "verbatim": "\tLDA I,20."
+    },
+    "ours": {
+      "file": "src/core/scoring.ts",
+      "line": 33,
+      "verbatim": "export const BLIMP_SCORE = 200"
+    }
+  },
+  {
+    "id": "CB-007",
+    "class": "DIVERGENCE",
+    "title": "VALFRC is a fixed 0.7 for us; the ROM ramps VALFRC 7→24 AND VALMIN 0→24, one step per plane wave",
+    "claim": "STPLNE increments BOTH bytes of the VALFRC word on every plane wave in play mode, capping each at 0x18 = 24 decimal: `LDY I,1 / 5$: LDX ZY,VALFRC / INX / CPX I,19 / BCC 10$ / LDX I,18 / 10$: STX ZY,VALFRC / DEY / BPL 5$` (RBARON.MAC:2277-2285 — Y=1 addresses VALMIN = VALFRC+1, Y=0 addresses VALFRC). VALFRC starts at 7 (RBARON.MAC:5965, ';INITIALLY 7/10*DEPTH PLANE SCORE') and VALMIN starts at 0. Over a game the plane-value multiplier climbs 7/16 → 24/16 of depth_MSB and the FLOOR climbs from 0 to 24 → 240 points. Late game the floor dominates: at VALMIN = 24 the maximum PLVALU from depth is 15 x 24 / 16 = 22 < 24, so every close plane pays exactly VALMIN x 10 = 240. We have a single fixed float VALFRC = 0.7 and no VALMIN and no per-wave ramp at all, so our plane values never scale with game progress.",
+    "reasoning": "The `CPX I,19` is a hex-region literal = 25 decimal; the store-back on overflow is `LDX I,18` = 24 decimal — so the cap is 24, not 25 and not 0x19. VALMIN's existence is established at RBARON.MAC:131 (`VALMIN =VALFRC+1 ;PLANE VALUE MINIMUM`) and its use as a floor at RBARON.MAC:2718-2720 (`CMP VALMIN / BCS 55$ / LDA VALMIN`). This is the ROM's score-progression mechanic — a wave-count-driven ramp entirely independent of the OBJKLD/GMLEVL ramp — and it is the reason a long Red Baron game's plane values creep upward. Ours cannot express it at any constant setting: VALFRC must become a pair of mutable per-game counters stepped by the wave spawner. Fix depends on CB-003 landing first (the ramp is meaningless while the scoring direction is inverted).",
+    "source": {
+      "file": "RBARON.MAC",
+      "line": 2280,
+      "verbatim": "\tCPX I,19"
+    },
+    "ours": {
+      "file": "src/core/scoring.ts",
+      "line": 48,
+      "verbatim": "const VALFRC = 0.7"
+    },
+    "recommendation": "fix",
+    "size": "m"
+  },
+  {
+    "id": "CB-008",
+    "class": "DIVERGENCE",
+    "title": "Gun overheat threshold is bit 6 of GUN.ST = 64 shots, not 30",
+    "claim": "NEWSHL gates firing with `BIT GUN.ST` / `BVC 10$` (RBARON.MAC:2158-2160): the 6502 BIT instruction copies bit 6 of the operand into V, and BVC skips the RTS. So the gun is locked out EXACTLY when GUN.ST bit 6 is set — i.e. when GUN.ST reaches 0x40 = 64 decimal. GUN.ST is INC'd by 1 per shot (RBARON.MAC:2161) and at most one shot is fired per calculation frame, so continuous fire overheats after 64 shots = 64 x 96 ms = 6.144 seconds. Our GUN_OVERHEAT_LIMIT = 30 overheats after 30 x 96 ms = 2.88 s — the player loses their guns in less than half the time the arcade allows. The same bit-6 test drives the on-screen OVERHEAT message (RBARON.MAC:5334-5336, `BIT GUN.ST / BVC 25$`), which independently confirms 0x40 is the threshold and not merely a status flag set elsewhere.",
+    "reasoning": "Our guns.ts admits the limit is inferred ('the findings doc pins the +1/x3 rates but not the limit'). It is in fact pinned, and pinned unusually — not by an equate but by the choice of the BIT/BVC idiom, which IS the constant. This is exactly the 'operand you have not decoded' case: BIT+BVC reads as a generic flag check unless you know BIT loads V from bit 6. The value is 0x40 = 64. Our 30 also happens to sit awkwardly close to SHELL_SLOTS = 13, but that is coincidence, not derivation.",
+    "source": {
+      "file": "RBARON.MAC",
+      "line": 2158,
+      "verbatim": "\tBIT GUN.ST"
+    },
+    "ours": {
+      "file": "src/core/guns.ts",
+      "line": 59,
+      "verbatim": "const GUN_OVERHEAT_LIMIT = 30"
+    },
+    "recommendation": "fix",
+    "size": "s"
+  },
+  {
+    "id": "CB-009",
+    "class": "DIVERGENCE",
+    "title": "Overheat is a level test on bit 6, not a latch — the ROM's lockout clears in ONE frame, ours takes ten",
+    "claim": "The ROM re-evaluates `BIT GUN.ST` / `BVC` every frame; there is no latched 'overheated' state. Cooling subtracts 3 per frame while the trigger is released (RBARON.MAC:2172-2177). Arithmetic: GUN.ST maxes at exactly 0x40 = 64 (INC is skipped once bit 6 is set), so ONE released frame drops it to 64 - 3 = 61 = 0x3D — bit 6 is clear and the gun fires again on the very next frame, 96 ms later. Sustained fire therefore settles into a duty cycle of roughly three shots per one released frame. Ours latches `overheated: true` and clears it only when heat reaches 0 (guns.ts:148), which from 30 takes ceil(30/3) = 10 released frames = 960 ms. Our lockout is TEN TIMES longer than the arcade's, on top of triggering at less than half the shot count (CB-008).",
+    "reasoning": "Read together with CB-008 these two produce the compounding error the player is most likely to feel as 'the guns keep dying': we overheat after 2.88 s instead of 6.14 s, and then we take 0.96 s to recover instead of 0.096 s. The ROM's design is a soft rate-limiter — hold the trigger and you jam permanently (GUN.ST stays pinned at 64 because NEWSHL RTSs before the INC), tap it and you fire almost freely. Our design is a hard punitive lockout. Fixing this properly means dropping the boolean latch and deriving overheat from `heat >= 64` at read time. Note the cooling RATE itself is correct — see CB-010.",
+    "source": {
+      "file": "RBARON.MAC",
+      "line": 2174,
+      "verbatim": "\tSBC I,3\t\t\t;GUNS COOL 3 TIMES AS FAST AS HEAT"
+    },
+    "ours": {
+      "file": "src/core/guns.ts",
+      "line": 148,
+      "verbatim": "    return { ...guns, heat, overheated: heat > 0 ? guns.overheated : false }"
+    },
+    "recommendation": "fix",
+    "size": "s"
+  },
+  {
+    "id": "CB-010",
+    "class": "CONFIRMED",
+    "title": "GUN.ST heats +1 per shot and cools -3 per frame, only while the trigger is released",
+    "claim": "NEWSHL's fire-button-held path does `INC GUN.ST` — exactly +1 per shot (RBARON.MAC:2161). NWSHL1, reached only when the fire button is NOT pressed (`BIT SWSTAT / BPL NWSHL1`, RBARON.MAC:2153-2154), does `SEC / LDA GUN.ST / SBC I,3` with a clamp to 0 (`BCS 10$ / LDA I,0`) — exactly -3 per calculation frame, floored at zero. Our GUN_HEAT_PER_SHOT = 1 and GUN_COOL_RATE = 3 match, our fire() cools ONLY on the !fireHeld branch, and it clamps with Math.max(0, ...). The rates and the release-gating are correct.",
+    "reasoning": "Recording the half of the overheat model we got right. The +1/-3 asymmetry, the clamp at zero, and the crucial detail that heat does not bleed off while the trigger is held (so holding fire pins the gun) are all faithfully reproduced. Only the THRESHOLD (CB-008) and the LOCKOUT SEMANTICS (CB-009) diverge. The source's own comment ';GUNS COOL 3 TIMES AS FAST AS HEAT' is the ratio our doc took, and the doc was right here.",
+    "source": {
+      "file": "RBARON.MAC",
+      "line": 2161,
+      "verbatim": "10$:\tINC GUN.ST\t\t;INC GUN USE COUNTER (OVERHEAT)"
+    },
+    "ours": {
+      "file": "src/core/guns.ts",
+      "line": 50,
+      "verbatim": "export const GUN_COOL_RATE = 3"
+    }
+  },
+  {
+    "id": "CB-011",
+    "class": "DIVERGENCE",
+    "title": "S.MAXZ is 0x19 = 25, not 19 — a radix misread that costs the shell 21% of its range",
+    "claim": "`S.MAXZ =19` sits in the .RADIX 16 region (`.RADIX 16` is set at RBARON.MAC:74 and there is no decimal island before line 700), so it is 0x19 = 25 decimal, NOT 19. The companion `S.DPTH =100` (RBARON.MAC:493) is likewise 0x100, so a shell is born with its Z MSB = 1 (`LDA I,S.DPTH&0FF00/100`, RBARON.MAC:2235). PSTSHL increments the Z MSB once per sub-step (`INC AX,SHELLS+5`) and clears the shell when the MSB reaches S.MAXZ (`CMP I,S.MAXZ&0FF / BCC 20$`, RBARON.MAC:5216-5221). Range = 25 - 1 = 24 sub-steps = 24/4 = 6 calculation frames = 6 x 96 ms = 576 ms of flight. Ours starts z at 0, advances 1 per sub-step, and expires at z >= 19 → 19 sub-steps = 4.75 → 5 calc frames = 480 ms. Our shells travel 19/24 = 79% as far and die 96 ms early.",
+    "reasoning": "Our S_MAXZ = 19 is the literal typed in the source read as decimal. The equate block around it uses an explicit trailing period whenever decimal is meant (L.OBJ =28., N.SHL =12.*L.SHL, DRNPNT =30.) — S.MAXZ has no period, so it is hex. The '(* 100)' in its comment is the scale note: the compared byte is the Z MSB, so the full-precision max Z is 0x19 x 0x100 = 0x1900 = 6400. This same radix slip is what makes our gun's reach too short (CB-012). Fix is the constant: 25, with the shell born at z = 1.",
+    "source": {
+      "file": "RBARON.MAC",
+      "line": 492,
+      "verbatim": "S.MAXZ\t=19\t\t\t;SHELL MAX Z (* 100)"
+    },
+    "ours": {
+      "file": "src/core/guns.ts",
+      "line": 41,
+      "verbatim": "export const S_MAXZ = 19"
+    },
+    "recommendation": "fix",
+    "size": "s"
+  },
+  {
+    "id": "CB-012",
+    "class": "DIVERGENCE",
+    "title": "Our guns cannot reach the enemy spawn depth — the ROM's shells outrange it by 1.5x",
+    "claim": "In the ROM the shell's Z and the plane's depth are the SAME 16-bit world coordinate (COLSTP subtracts SHELLS+4/+5 directly from the object depth). Shell Z runs from S.DPTH = 0x100 = 256 out to S.MAXZ x 0x100 = 0x1900 = 6400. The plane spawns at P.INDP = 0x1080 = 4224 and closes to P.MNDP = 0x140 = 320. So the shell's range [256, 6400] COMPLETELY COVERS the plane's depth range [320, 4224], with 6400/4224 = 1.5x to spare — a plane can be shot the instant it appears, which is precisely how the 300-point dim/far bonus (CB-003) is earned. Ours maps world depth to shell-z through SHELL_RANGE_DEPTH = 800, so a shell at S_MAXZ = 19 reaches world depth 800 — but our enemies spawn at P_INDP = 1080 (enemy.ts:41). Depths 800..1080 are UNREACHABLE: our maximum gun reach is 800/1080 = 74% of the spawn depth. The far/dim long shot the arcade rewards most is impossible in our game.",
+    "reasoning": "SHELL_RANGE_DEPTH = 800 is flagged 'Inferred' in guns.ts and was chosen without reference to the spawn depth. The ROM never needs such a mapping because shell Z and object depth share one coordinate system — the projection in guns.ts (depthToShellZ) is our invention, and it was calibrated to a number smaller than the depth it must span. Interacts with CB-011: even after S_MAXZ is corrected to 25 the mapping is still short unless SHELL_RANGE_DEPTH is raised past P_INDP. The structurally faithful fix is to drop depthToShellZ and put shell Z in the same units as enemy depth (ratio S.MAXZ x 0x100 : P.INDP = 6400 : 4224 = 1.515, so SHELL_RANGE_DEPTH should be at least 1.515 x P_INDP). I am NOT claiming P_INDP = 1080 is itself correct — enemy.ts is another pair's file, and note that P.INDP in the source is hex 0x1080 = 4224, so that constant deserves their scrutiny — but the RATIO argument above holds whatever absolute units they land on.",
+    "source": {
+      "file": "RBARON.MAC",
+      "line": 464,
+      "verbatim": "P.INDP\t=1080\t\t\t;INITIAL PLANE DEPTH"
+    },
+    "ours": {
+      "file": "src/core/guns.ts",
+      "line": 65,
+      "verbatim": "const SHELL_RANGE_DEPTH = 800"
+    },
+    "recommendation": "fix",
+    "size": "m"
+  },
+  {
+    "id": "CB-013",
+    "class": "DIVERGENCE",
+    "title": "The hit box is the perspective-projected silhouette of the plane, not a fixed ±32 window",
+    "claim": "CDSSET builds the target's collision window per frame from geometry: it takes the plane's 4-point collision frame (.COLLD = 0C = 12 bytes, RBARON.MAC:435), rotates it by the plane's live attitude through PLTEST (Z then Y-or-X axis, RBARON.MAC:4984-5022), runs D.LOOP to PROJECT it, then calls MINMAX (RBARON.MAC:5537) which reduces the projected points to a screen-space min/max box in X and Y. COLSTP then tests the shell's screen X/Y against THAT box (RBARON.MAC:5806-5814). The box therefore SHRINKS WITH DISTANCE — a plane at spawn depth 0x1080 is a near-point target and one in your face is a wide one. Ours uses WINDOW_X = WINDOW_Y = 32 in screen-window units, constant at every depth (guns.ts:222): a plane at maximum range is exactly as easy to hit as one filling the windshield. Long-range shooting is systematically far too easy in our game.",
+    "reasoning": "This is a structural divergence that CANNOT be closed by tuning WINDOW_X/WINDOW_Y — no single constant reproduces a box whose size varies as ~1/depth. It needs the window scaled by the same projection factor the renderer already applies to the enemy's silhouette. Our rotation-into-the-banked-frame is the right IDEA (the ROM does rotate the collision frame by the plane's attitude before projecting), so the shape of collides() is salvageable; what is missing is the depth term. Sized m because our renderer already computes the enemy's projected extent — the fix is to feed that extent into the window rather than to build a new projector. Note the Z half of the test IS correct — see CB-014.",
+    "source": {
+      "file": "RBARON.MAC",
+      "line": 5537,
+      "verbatim": "\tJSR MINMAX\t\t;SET MIN,MAX OF X,Y"
+    },
+    "ours": {
+      "file": "src/core/guns.ts",
+      "line": 222,
+      "verbatim": "  return Math.abs(rx) <= WINDOW_X && Math.abs(ry) <= WINDOW_Y && Math.abs(dz) <= WINDOW_Z"
+    },
+    "recommendation": "fix",
+    "size": "m"
+  },
+  {
+    "id": "CB-014",
+    "class": "CONFIRMED",
+    "title": "Shell-Z collision tolerance is ±1 sub-step of travel",
+    "claim": "COLSTP's first gate rejects the shell outright unless |shell.Z - object.Z| is inside ±0x100 = ±256 — the source's own comment says ';OUTSIDE PLANE (+/- 256.)'. The shell's Z MSB advances exactly 1 per sub-step, i.e. 0x100 = 256 of full-precision Z per sub-step. So the Z window is exactly ±1 sub-step of travel, which is precisely the condition that makes successive sub-step windows abut with no gap — the ROM's own guarantee against a fast shell tunnelling through a target between sub-steps. Our WINDOW_Z = 1 with SHELL_SPEED = 1, in the same MSB units, is the identical ±1-step window, and our guns.ts comment derives the same no-tunnelling invariant (2 x WINDOW_Z >= SHELL_SPEED) independently.",
+    "reasoning": "A genuine match on the subtlest part of the hit test, and worth recording because it is the piece most likely to be 'fixed' into something wrong. Note the unit conversion: the ROM's ±256 is in full 16-bit Z, ours is ±1 in MSB units, and 1 MSB unit = 256 full-precision units — the SAME window in different units, which is a CONFIRMED, not a divergence. Only the X and Y halves of the window diverge (CB-013).",
+    "source": {
+      "file": "RBARON.MAC",
+      "line": 5786,
+      "verbatim": "\tBCS 30$\t\t\t;OUTSIDE PLANE (+/- 256.)"
+    },
+    "ours": {
+      "file": "src/core/guns.ts",
+      "line": 75,
+      "verbatim": "const WINDOW_Z = 1"
+    }
+  },
+  {
+    "id": "CB-015",
+    "class": "CONFIRMED",
+    "title": "Shells are sub-stepped 4x per calculation frame, with collision tested on every sub-step",
+    "claim": "SHLMOT calls the DSPSHL/PSTSHL pair FOUR times per invocation (RBARON.MAC:5192-5204: CLC/DSPSHL/PSTSHL, SEC/DSPSHL/PSTSHL, CLC/DSPSHL/PSTSHL, SEC/DSPSHL/JMP PSTSHL), and SHLMOT itself is called exactly once per calculation frame from MAIN (RBARON.MAC:814). PSTSHL advances the Z; DSPSHL calls SHCDCK (RBARON.MAC:5269) for every PLAYER shell — so collision is tested at all four sub-steps, not just at the frame boundary. Our SHELL_SUBSTEPS = 4 with firstHit() called inside the sub-step loop is the same structure and the same count.",
+    "reasoning": "Both the count (4) and the crucial placement of the collision test INSIDE the sub-step loop are right. DSPSHL alternates CLC/SEC, which sets FLAG to 0/-1 and suppresses the beam-position draw on the odd passes — so the 4 sub-steps produce 2 drawn dots and 4 collision tests per frame, which is a rendering nuance, not a simulation one, and does not affect our motion or hit model. The guns.ts comment correctly identifies this as 'the only ÷N that beats the calc cadence'.",
+    "source": {
+      "file": "RBARON.MAC",
+      "line": 5192,
+      "verbatim": "SHLMOT:\tJSR CDSSET\t\t;SET COLLISION DETECT FRAMES"
+    },
+    "ours": {
+      "file": "src/core/guns.ts",
+      "line": 44,
+      "verbatim": "export const SHELL_SUBSTEPS = 4"
+    }
+  },
+  {
+    "id": "CB-016",
+    "class": "CONFIRMED",
+    "title": "13 player shell slots, one shell spawned per calculation frame, alternating L/R muzzles",
+    "claim": "N.SHL = 12. x L.SHL = 12 x 8 = 96 bytes; NWSHL0 and PSTSHL walk the pool from offset N.SHL down to 0 in strides of L.SHL = 8, giving offsets 0,8,...,96 = THIRTEEN slots — exactly as the source's comment ';13 SHELLS' says. NEWSHL is called once per calculation frame (RBARON.MAC:779) and spawns at most one shell, so the maximum fire rate is 10.4167 shells/second (one per 96 ms tick). S.XFLG's D6 is toggled per trigger frame (RBARON.MAC:2155-2157, ';TOGGLE D6 (ALTERNATE BETWEEN LEFT & RIGHT GUNS)') and selects the muzzle side. Our SHELL_SLOTS = 13, one shell per fire() call, and a flipping nextGun all match.",
+    "reasoning": "The 13-from-12 off-by-one is the trap here and we cleared it: the byte count is 12 x 8 but the inclusive downward walk yields 13 slots, which is why the comment says 13. The same convention appears at NGRSHL = GRLSHL x 4 → ';5 GROUND SHELLS'. One nuance, cosmetic only: the ROM toggles the muzzle BEFORE the overheat check, so the side alternates even on a frame where the shot is blocked, whereas ours flips only on a successful spawn. That changes which side a tracer leaves from after a lockout and nothing else — no simulation consequence.",
+    "source": {
+      "file": "RBARON.MAC",
+      "line": 489,
+      "verbatim": "N.SHL\t=12.*L.SHL\t\t;13 SHELLS"
+    },
+    "ours": {
+      "file": "src/core/guns.ts",
+      "line": 38,
+      "verbatim": "export const SHELL_SLOTS = 13"
+    }
+  },
+  {
+    "id": "CB-017",
+    "class": "CONFIRMED",
+    "title": "Explosion lifecycle is 6 falling + 12 exploding = 18 calculation frames — frame-for-frame correct",
+    "claim": ".EXPL1 = 6 and .EXPL2 = 0x12 = 18 (hex region — see reasoning). UPPLEX increments ONE counter (PLSTAT+7) per calculation frame and compares it against BOTH: `CMP I,.EXPL1 / BCC 20$` (counter < 6 → still falling) then `CMP I,.EXPL2 / BCS UPPLX1` (counter >= 18 → done). So .EXPL2 is the TOTAL, exactly as its comment says, and the exploding window is .EXPL2 - .EXPL1 = 18 - 6 = 12 frames. Trace: counters 1-5 fall, counter 6 is the burst frame (explosion sound + PIECE picture start, RBARON.MAC:2973-2978), counters 6-17 explode, counter 18 is done. Total 18 x 96 ms = 1.728 s. Our stepWreck: steps 1-5 return 'falling', step 6 flips to 'exploding', steps 6-17 are 'exploding', step 18 is 'done'. IDENTICAL, frame for frame.",
+    "reasoning": "WARNING FOR WHOEVER TOUCHES THIS NEXT: our code reaches the right answer through a wrong reading, and a well-meaning 'fix' will break it. explosion.ts treats `.EXPL2 = 12` as a DECIMAL count of exploding frames layered on top of 6 falling frames. In truth `.EXPL2 = 12` is HEX (0x12 = 18) and is the TOTAL, not the exploding count. The two readings coincide only because 0x12 - 6 = 12. If anyone 'corrects' EXPL2_FRAMES to 18 to match the hex value, the wreck will run 6 + 18 = 24 frames instead of 18. The safe change is a comment, not a constant. Radix evidence: `.RADIX 16` is set at RBARON.MAC:74, the nearest decimal island starts at :6217, and the surrounding equates use an explicit trailing period whenever decimal is meant (L.OBJ =28., DRNPNT =30.) — `.EXPL2 =12` has none. The gravity accumulation and Z spin also run during the exploding phase in the ROM (the ADC at the top of UPPLEX is unconditional), which our stepWreck also does.",
+    "source": {
+      "file": "RBARON.MAC",
+      "line": 480,
+      "verbatim": ".EXPL2\t=12\t\t\t;12 FRAMES TOTAL SEQUENCE"
+    },
+    "ours": {
+      "file": "src/core/explosion.ts",
+      "line": 39,
+      "verbatim": "export const EXPL2_FRAMES = 12"
+    }
+  },
+  {
+    "id": "CB-018",
+    "class": "DIVERGENCE",
+    "title": "EX.ACY is -0x20 = -32 decimal, not -20 — our wreck falls at 62.5% of the ROM's gravity",
+    "claim": "`EX.ACY =-20` sits in the .RADIX 16 region, so it is -0x20 = -32 decimal. UPPLEX confirms the 16-bit interpretation directly: it adds the low byte (`ADC I,EX.ACY`) and then the high byte (`ADC I,EX.ACY&0FF00/100`), i.e. it adds the 16-bit constant -0x0020 = -32 to the wreck's Y velocity every calculation frame. Our EX_ACY = -20 is the typed literal read as decimal. Arithmetic: over the 6 falling frames the ROM's wreck accumulates a drop of 32 x (1+2+3+4+5+6) = 32 x 21 = 672 Y units; ours accumulates 20 x 21 = 420 units — 37.5% short. Our wreck hangs in the air.",
+    "reasoning": "Same radix slip as CB-011. The absence of a trailing period is decisive: the neighbouring decimal equates in this block all carry one (L.OBJ =28., DRNPNT =30.), and the assembler's default here is hex (`.RADIX 16`, RBARON.MAC:74). The fix is one constant. Note that the ROM applies this gravity on EVERY live frame — falling AND exploding — which our stepWreck already does correctly (the ADC at the head of UPPLEX is before any branch), so only the magnitude is wrong.",
+    "source": {
+      "file": "RBARON.MAC",
+      "line": 481,
+      "verbatim": "EX.ACY\t=-20\t\t\t;PLANE FALL ACCELERATE Y (GRAVITY)"
+    },
+    "ours": {
+      "file": "src/core/explosion.ts",
+      "line": 33,
+      "verbatim": "export const EX_ACY = -20"
+    },
+    "recommendation": "fix",
+    "size": "s"
+  },
+  {
+    "id": "CB-019",
+    "class": "DIVERGENCE",
+    "title": "Wreck Z spin is 0x180 = 67.5° per frame, not 45°",
+    "claim": "UPPLX0 adds 0x80 to the low byte of the wreck's 16-bit Z angle (PLSTAT+12) and 1 to the high byte with carry (`ADC I,80` then `ADC I,1`, RBARON.MAC:2997-3003), i.e. it adds 0x0180 = 384 angle units per calculation frame. The angle scale is fixed by `P.MAXR =1FF ;90 DEGREE MAX ROTATION` (RBARON.MAC:471): 0x200 = 512 units = 90°, so a full turn = 2048 units. Therefore the spin is 384/2048 = 0.1875 turn = 67.5° per frame = 3π/8 radians. Our SPIN_RATE = π/4 = 45° per frame — the wreck tumbles at 45/67.5 = 2/3 the ROM's rate, taking 8 frames per revolution where the arcade takes 5.33.",
+    "reasoning": "guns/explosion flagged SPIN_RATE as inferred ('The ROM spins the wreck about Z but does not pin the rate') — it does pin it, in the two-instruction 16-bit add, and the scale is pinned by P.MAXR. This is the 'operand you have not decoded' case again: `ADC I,80` alone is meaningless until you notice the paired `ADC I,1` that makes it a 16-bit 0x0180, and until you find the units. One constant: 3 * Math.PI / 8.",
+    "source": {
+      "file": "RBARON.MAC",
+      "line": 2999,
+      "verbatim": "\tADC I,80"
+    },
+    "ours": {
+      "file": "src/core/explosion.ts",
+      "line": 51,
+      "verbatim": "const SPIN_RATE = Math.PI / 4"
+    },
+    "recommendation": "fix",
+    "size": "s"
+  },
+  {
+    "id": "CB-020",
+    "class": "DIVERGENCE",
+    "title": "The end-of-life sequence HAS ROM-pinned durations — .TIME1 = 16 and .TIME2 = 28 frames — and we assert it does not",
+    "claim": "lives.ts's header states outright: 'the three death sub-stages have NO ROM-pinned durations (unlike WO.CNT=5), so DEATH_SEQUENCE is an ordered cursor advanced one stage per call ... No fabricated durations.' They ARE pinned. EOLSEQ drives EOGTMR, incremented once per calculation frame (RBARON.MAC:1115). `.TIME1 =10` is 0x10 = 16 decimal: at EOGTMR == 16 the STARFIELD begins (RBARON.MAC:1163, `CPX I,.TIME1 ;TIME FOR STARFIELD ?`). `.TIME2 =1C` is 0x1C = 28 decimal: at EOGTMR == 28 the sequence ends and the life is taken (RBARON.MAC:1124-1126, `CMP I,.TIME2 / BCC 45$ / JMP ENDLFE ;END OF LIFE SEQUENCE DONE`). And the bullet-hole sub-stage steps B.HOLE from 0 up to 0x0C = 12, one step per frame (RBARON.MAC:1101-1104). So a shot-down death is: bullet-hole/spiral for frames 0-15 (16 x 96 ms = 1.536 s), starfield for frames 16-27 (12 x 96 ms = 1.152 s), ENDLFE at frame 28 — 28 x 96 ms = 2.688 s total. Ours has no timing at all; the cursor advances one stage per call and the shell invents the durations.",
+    "reasoning": "The claim in our header is falsifiable and false, which matters more than the missing numbers: it told the next developer to stop looking. The three constants (.TIME1 = 16, .TIME2 = 28, B.HOLE cap = 12) are all in the equate block and in EOLSEQ, and all three are hex literals without trailing periods. Sized m because DEATH_SEQUENCE must gain per-stage frame counts and a tick function, and main.ts's death path has to drive it — but the values themselves are now known and need no invention.",
+    "source": {
+      "file": "RBARON.MAC",
+      "line": 505,
+      "verbatim": ".TIME1\t=10\t\t\t;EOL COUNTS"
+    },
+    "ours": {
+      "file": "src/core/lives.ts",
+      "line": 53,
+      "verbatim": "export const DEATH_SEQUENCE: readonly DeathPhase[] = Object.freeze(["
+    },
+    "recommendation": "fix",
+    "size": "m"
+  },
+  {
+    "id": "CB-021",
+    "class": "DIVERGENCE",
+    "title": "The two death channels have DIFFERENT end-of-life lengths; we model one undifferentiated sequence",
+    "claim": "GREND encodes WHICH death happened: bit 7 alone (GREND = 0x80, ';SHELL CD', RBARON.MAC:3759) means shot down by a shell; bits 7+6 (GREND = 0xC0, ';D6=GROUND COLLISION', RBARON.MAC:4645) means the player flew into the ground. EOLSEQ branches on bit 6 (RBARON.MAC:1059-1067) and seeds the EOL timer DIFFERENTLY: shot down → EOGTMR = 0 and GMEND1 = 0xC0, giving the full 28-frame sequence (2.688 s); ran into ground → EOGTMR = 0x0F = 15 (RBARON.MAC:1064, `LDA I,0F`) and GMEND1 = 0xA0, so only 28 - 15 = 13 frames remain (1.248 s) and the starfield fires almost immediately (15 → 16 = .TIME1 on the very next frame), with the mountain-crash scene (SCENE1/SCENE2, RBARON.MAC:1133-1137) in place of the bullet-hole/spiral. MAIN also aborts the entire flight update on GREND bit 6 (`BIT GREND / BVS 20$ ;PLAYER RAN INTO GROUND`, RBARON.MAC:783-784) — the world freezes on a ground crash and does not on a shoot-down. lives.ts has a single DEATH_SEQUENCE and a beginDeath(side) that records only the ENSIDE shoulder; there is no channel discriminator and no ground-crash path.",
+    "reasoning": "The pair brief asks specifically for 'the distinct DEATH CHANNELS (shot down vs flew into the ground)' — they are distinct in the ROM in three separate ways (EOL duration 28 vs 13 frames, visual sequence, and whether the world keeps moving), and undifferentiated in ours. Depends on CB-020 landing (the sequence needs durations before the channels can differ in duration). Sized m: DeathSequence gains a channel tag and the ground channel gains its own 13-frame timeline.",
+    "source": {
+      "file": "RBARON.MAC",
+      "line": 4645,
+      "verbatim": "\tSTA GREND\t\t;D6=GROUND COLLISION"
+    },
+    "ours": {
+      "file": "src/core/lives.ts",
+      "line": 83,
+      "verbatim": "  return { side: seq.side, phase: Math.min(seq.phase + 1, DEATH_SEQUENCE.length) }"
+    },
+    "recommendation": "fix",
+    "size": "m"
+  },
+  {
+    "id": "CB-022",
+    "class": "CONFIRMED",
+    "title": "INITLF = 2,3,4,5 initial lives, option-selected",
+    "claim": "INITLF is the four-byte table 2,3,4,5, indexed by the two option bits (OPTION & 0x30) >> 4 (RBARON.MAC:5950-5958: `LDA OPTION / AND I,30 / LSR / LSR / LSR / LSR / TAX / LDA AX,INITLF / STA LIVES`), matching OPT1's documented ';D5,D4=# OF LIVES/GAME' (RBARON.MAC:553). Our INITLF is the identical [2, 3, 4, 5] with an option index clamped into range.",
+    "reasoning": "Byte-for-byte match on the table and on the option-indexed selection. Recording it. Our livesIndex() clamp is a defensive addition with no ROM counterpart (the ROM's 2-bit shift cannot produce an out-of-range index), which is harmless.",
+    "source": {
+      "file": "RBARON.MAC",
+      "line": 5968,
+      "verbatim": "INITLF:\t.BYTE 2,3,4,5"
+    },
+    "ours": {
+      "file": "src/core/lives.ts",
+      "line": 39,
+      "verbatim": "export const INITLF: readonly number[] = Object.freeze([2, 3, 4, 5])"
+    }
+  },
+  {
+    "id": "CB-023",
+    "class": "CONFIRMED",
+    "title": "ENDLFE: decrement lives, respawn if any remain, game over at zero",
+    "claim": "ENDLFE does `DEC LIVES ;TAKE LIFE IN PLAY` then `LDA LIVES / BNE INITIAL` — respawn (jump to INITIAL) if the DECREMENTED count is non-zero, otherwise clear the start LED and `JMP NW.HSC` for high-score entry (RBARON.MAC:1207-1212). Our loseLife computes count = max(0, count - 1) and gameOver = (count === 0), respawning with grace re-armed otherwise. Identical semantics: the count includes the plane being flown, and the game ends exactly when the post-decrement count hits 0.",
+    "reasoning": "Our lives.ts flagged this encoding as INFERRED ('count is planes remaining incl. the one being flown; game over exactly when the post-DEC count hits 0'). The inference is exactly right — RBARON.MAC:1207-1209 is the DEC-then-test-for-zero it guessed. With INITLF = 3 the player flies three planes. Recording the confirmation so the 'inferred' caveat can be retired.",
+    "source": {
+      "file": "RBARON.MAC",
+      "line": 1207,
+      "verbatim": "\tDEC LIVES\t\t;TAKE LIFE IN PLAY"
+    },
+    "ours": {
+      "file": "src/core/lives.ts",
+      "line": 122,
+      "verbatim": "  return { lives: { count, grace: gameOver ? 0 : WO_CNT }, gameOver }"
+    }
+  },
+  {
+    "id": "CB-024",
+    "class": "CONFIRMED",
+    "title": "WO.CNT = 5 respawn spawn-grace = 480 ms, and the I4YPOS respawn altitude is 0x0210",
+    "claim": "INITIAL — the routine ENDLFE jumps to on every respawn — opens with `LDA I,WO.CNT / STA PLSTAT+7 ;DISABLE PLANE` (RBARON.MAC:1234-1235). WO.CNT = 5 (hex 5 = 5 decimal), and PLSTAT+7 is the plane's disable counter, so the enemy plane is suppressed for 5 calculation frames = 5 x 96 ms = 480 ms of spawn grace. INITIAL also resets the eye altitude to I4YPOS = 0x0210 (RBARON.MAC:1243-1246: `LDA I,10 / STA I4YPOS / LDA I,2 / STA I4YPOS+1`). Our WO_CNT = 5, re-armed on respawn and ticked down one per calculation frame, and RESPAWN_ALTITUDE = 0x0210, both match.",
+    "reasoning": "Correct in both value and units — 5 CALCULATION frames at 96 ms, not 5 display frames at 16 ms, and our tickGrace runs on the sim step. Worth stating the 480 ms explicitly because a 5-frame grace at the 62.5 Hz display rate would be 80 ms, six times shorter, and that misreading would have been easy to make. The one nuance: WO.CNT's equate comment says ';5 FRAMES BETWEEN MO' — it is a general motion-object spacing counter reused as the respawn grace at INITIAL, not a dedicated grace constant. Our doc comment describes it correctly for the respawn case.",
+    "source": {
+      "file": "RBARON.MAC",
+      "line": 1234,
+      "verbatim": "INITIAL:LDA I,WO.CNT\t"
+    },
+    "ours": {
+      "file": "src/core/lives.ts",
+      "line": 42,
+      "verbatim": "export const WO_CNT = 5"
+    }
+  },
+  {
+    "id": "CB-025",
+    "class": "NO_COUNTERPART",
+    "title": "The returning-ace death test — |PLDELX| >= 0x1C toward ENSIDE, first evasion free, 50/50 thereafter",
+    "claim": "The returning ace's kill is decided on ONE frame: at PLSTAT+7 == 0x0C = 12, EOLSEQ tests whether the player is turning toward the shoulder the ace came from and how hard (RBARON.MAC:1078-1094). `LDA ENSIDE / EOR PLDELX / BPL 20$ ;SORRY WRONG X` — if the sign of the player's roll rate does not oppose ENSIDE's sign bit, the player DIES. Then `LDA PLDELX / JSR SPABS / CMP I,1C / BCC 20$ ;PLAYER DIES` — the roll must also be at least 0x1C = 28 decimal in magnitude, or the player DIES. Even having passed both, `BIT BEFLAG / BPL 17$ ;FIRST TIME FREE` gives the evasion for free only the FIRST time per game; after BEFLAG is set it is `JSR RANDOM / BMI 20$ ;AFTER - ONLY 50/50` — a coin flip. Nothing in lives.ts models any of this: beginDeath(side) merely records ENSIDE after the fact.",
+    "reasoning": "This is the ROM's single most punishing mechanic and the whole reason ENSIDE exists — and our lives.ts stores ENSIDE (`side`) while implementing none of the test that produces it. Reported as NO_COUNTERPART rather than DIVERGENCE because there is no line in our combat spine that even attempts the check. Whether it belongs in lives.ts or in returning-ace.ts (another pair's file) is a design call, but the DEATH is this pair's scope and the threshold constants are recorded here: evasion window PLSTAT+7 == 12, roll direction must oppose ENSIDE, |PLDELX| >= 28, one free escape per game, 50/50 afterwards. Sized m: it needs the player's roll rate plumbed into the death check and a per-game BEFLAG.",
+    "source": {
+      "file": "RBARON.MAC",
+      "line": 1086,
+      "verbatim": "\tCMP I,1C"
+    },
+    "ours": null,
+    "recommendation": "fix",
+    "size": "m"
+  },
+  {
+    "id": "CB-026",
+    "class": "STRUCTURAL",
+    "title": "Our float/seconds explosion, grace and shell timers are the ROM's integer frame counts at 96 ms",
+    "claim": "Every timer in this pair is an integer count of CALCULATION frames in the ROM and an integer count of sim steps in ours, and main.ts drives those steps from a fixed-timestep accumulator — so the conversion is exact, not approximate. Converted: explosion 18 frames = 1.728 s; spawn grace WO.CNT 5 frames = 480 ms; shell lifetime 24 sub-steps = 6 frames = 576 ms; EOL sequence 28 frames = 2.688 s; gun cooldown 3 units/frame = 31.25 units/second. Each of these advances exactly once per 96 ms tick in both implementations. No timer in this pair is ticked at the 62.5 Hz display rate or at 60 Hz.",
+    "reasoning": "Recording the unit audit itself as a clean result, since a wrong timebase here would have silently manufactured agreement on every other finding. I verified the cadence at the call site rather than assuming it: NEWSHL (RBARON.MAC:779), SHLMOT (:814) and EOLSEQ (:825) are each called exactly ONCE per pass through MAIN, and MAIN blocks on INTWAIT for CALCNT = 0x18 = 24 NMIs at 250 Hz = 96 ms. Our fire(), step(), stepWreck() and tickGrace() are each called once per SIM_TIMESTEP_S in main.ts's accumulator. The float-vs-integer difference is representational only. Any residual divergence in this pair is therefore a genuine VALUE error, not a units artefact — which is what makes CB-001, CB-003, CB-008 and CB-011 safe to call.",
+    "source": {
+      "file": "RBARON.MAC",
+      "line": 621,
+      "verbatim": "CALCNT\t=18"
+    },
+    "ours": {
+      "file": "src/core/guns.ts",
+      "line": 187,
+      "verbatim": "    for (let s = 0; s < SHELL_SUBSTEPS; s++) {"
+    },
+    "recommendation": "accept"
+  }
+]

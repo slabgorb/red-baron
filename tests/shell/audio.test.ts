@@ -506,3 +506,70 @@ describe('post-gesture synthesis reaches the node graph', () => {
     expect(allGainValues()).toContain(expected)
   })
 })
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SH2-18 review round 2 — the free-running voices must survive a recovery
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The shared engine now recovers from a browser-closed context (SH2-18 round 1), and its
+// voice REGISTRY is cleared so `gun` rebuilds. But the engine hum and the approach whine
+// are not registry voices — their oscillators free-run and their GAIN is the switch, so
+// they live in local `humGain` / `whineOsc` slots built once behind an `=== null` gate.
+//
+// Those refs survive a recovery still pointing at nodes on the DEAD context, so without a
+// rebuild signal the gate never re-fires: the gun comes back, the hum and whine never do.
+// A HALF recovery is worse than none — it looks like it works. `onRebuild` closes it.
+
+describe('SH2-18 (round 2) — hum and whine come back after a context recovery', () => {
+  it('setEngine rebuilds the hum on the NEW context', async () => {
+    const m = await loadAudio()
+    const engine = m.createAudioEngine()
+    engine.resume()
+    engine.setEngine(true)
+
+    const ctxA = FakeAudioContext.instances[0]
+    expect(ctxA.oscillators.length, 'the detuned hum pair exists on the first context').toBeGreaterThan(0)
+
+    await ctxA.close()
+    engine.resume()
+    expect(FakeAudioContext.instances.length).toBe(2)
+
+    engine.setEngine(true)
+    const ctxB = FakeAudioContext.instances[1]
+    expect(
+      ctxB.oscillators.length,
+      'the hum MUST be rebuilt on the live context — otherwise the biplane flies in silence',
+    ).toBeGreaterThan(0)
+  })
+
+  it('setApproach rebuilds the whine on the NEW context', async () => {
+    const m = await loadAudio()
+    const engine = m.createAudioEngine()
+    engine.resume()
+    engine.setApproach(50)
+
+    await FakeAudioContext.instances[0].close()
+    engine.resume()
+
+    engine.setApproach(50)
+    const ctxB = FakeAudioContext.instances[1]
+    expect(
+      ctxB.oscillators.length,
+      'the approach whine MUST be rebuilt — it is the only warning an enemy is on you',
+    ).toBeGreaterThan(0)
+  })
+
+  it('the gun comes back too — the whole cabinet recovers, not half of it', async () => {
+    const m = await loadAudio()
+    const engine = m.createAudioEngine()
+    engine.resume()
+    engine.setGun(true)
+
+    await FakeAudioContext.instances[0].close()
+    engine.resume()
+
+    engine.setGun(true)
+    const ctxB = FakeAudioContext.instances[1]
+    expect(ctxB.sources.length, 'the rat-a-tat is rebuilt on the live context').toBeGreaterThan(0)
+  })
+})

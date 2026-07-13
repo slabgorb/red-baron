@@ -1,0 +1,126 @@
+[
+ {
+  "id": "SN-012",
+  "class": "DIVERGENCE",
+  "title": "The score tick is suppressed while the plane-announce, the 300-point jingle, or an explosion is sounding \u2014 we have no such gate",
+  "claim": "SCOREM refuses to tick at all while any of three things is live: `LDA A,POINT+4` (AUDF3 pointer non-zero = WP announce still playing), `ORA A,POINT+2` (AUDF2 = TH jingle still playing), `ORA EXCNTR` (an explosion is counting down) -> `BNE 30$` = return without scoring or sounding (RBARON.MAC:1541-1544). The score count-up therefore WAITS OUT those cues, and separately BNTIME = $0C = 12 holds it off after a bonus life (RBARON.MAC:1598-1599). Given WP is 1440 ms and TH is 1024 ms (SN-007/SN-008), that is a long, deliberate hold. Ours: `playEventSounds` fires whatever the event list contains, in order, unconditionally.",
+  "reasoning": "This is the ROM's cross-channel priority rule, and it is stronger than the per-channel exclusion of SN-011: it gates the SCORE ADVANCE itself, not just the sound, so the score literally stops counting up while a jingle plays. Also currently masked by SN-009. Filed so that the score-tick wiring, when it lands, lands with the gate.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 1541,
+   "verbatim": "\tLDA A,POINT+4\t\t;WAIT FOR OTHER SOUNDS (PLANE ENTRY)"
+  },
+  "ours": {
+   "file": "src/shell/audio-dispatch.ts",
+   "line": 59,
+   "verbatim": "        audio.playTone(event.size === 'small' ? 'TK' : 'TP')"
+  },
+  "recommendation": "fix",
+  "size": "m"
+ },
+ {
+  "id": "SN-013",
+  "class": "DIVERGENCE",
+  "title": "The engine hum's TIMBRE *is* in the source and we got it wrong: the ROM writes AUDC=$A1 = POKEY PURE TONE at volume 1/15; we render a sawtooth at gain 0.18",
+  "claim": "The hum is NOT on the discrete board \u2014 it is two direct POKEY register writes: `LDA I,0A1 / STA A,POKEY+5 / STA A,POKEY+7` sets AUDC3 = AUDC4 = $A1 (RBARON.MAC:1001-1003), and `LDX I,0F8 / STX A,POKEY+4 / DEX / STX A,POKEY+6` sets AUDF3 = $F8, AUDF4 = $F7 (RBARON.MAC:1039-1042). Decoding $A1 against the ACC table at RBSOUN.MAC:81 ('1 X 1 0 = PURE TONE / N / 2'): high nibble $A = 1010 = pure tone, low nibble 1 = volume 1 of 15 = 0.067. Divisors give 63920/(2 x 249) = 128.4 Hz and 63920/(2 x 248) = 128.9 Hz \u2014 a 0.5 Hz beat, which is the engine. Ours gets both FREQUENCIES exactly right (`audfToHz(0xf8), audfToHz(0xf7)`) and then renders them with `osc.type = 'sawtooth'` (audio.ts:355) at `gain: 0.18` \u2014 a harmonically rich waveform at 2.7x the ROM's volume, where the ROM specifies POKEY's pure tone (a square) at volume 1.",
+  "reasoning": "BOOK-ADJACENT: audio.ts:8-12 files the engine hum under '(B) The discrete analog board ... the analog TIMBRE ... is NOT in the source \u2014 so a port must SYNTHESISE', and that is simply false for the hum. The doc's \u00a76B heading invites the error ('Discrete analog board \u2014 gun, explosion, spiral, engine hum') even though its own body correctly says 'direct POKEY writes of detuned oscillators $F8/$F7 on ch3/ch4 (AUDC=$A1)'. The gun and the crash genuinely are off-CPU and un-auditable; the hum and the whine are POKEY and fully specified, waveform and volume included. We inherited the heading, not the body. Note the correct fix is a square wave, and it is one word \u2014 but the volume is a real mix decision (0.067 is very quiet, and POKEY's 4 channels sum in hardware).",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 1001,
+   "verbatim": "\tLDA I,0A1"
+  },
+  "ours": {
+   "file": "src/shell/audio.ts",
+   "line": 355,
+   "verbatim": "            osc.type = 'sawtooth'"
+  },
+  "recommendation": "fix",
+  "size": "s"
+ },
+ {
+  "id": "SN-014",
+  "class": "DIVERGENCE",
+  "title": "The approach whine is a PITCH ramp at constant volume on the hum's own two channels \u2014 not a separate voice that gets LOUDER as the plane closes",
+  "claim": "The whine and the hum are the SAME POKEY voices (ch3+ch4) \u2014 the hum is just the whine's idle state. In SOUNDS, AUDC3/AUDC4 are pinned at $A1 (volume 1) for BOTH (RBARON.MAC:1001-1003); the only thing that moves is the divisor. ATGVAL+1 is seeded to $F8 when a plane is set closing (RBARON.MAC:2464; PLNZND recomputes ATGDEL from the plane's Z-delta at RBARON.MAC:2458-2462), then SOUNDS adds ATGDEL to the 16-bit ATGVAL once per 96 ms calculation frame and writes ATGVAL+1 straight to AUDF3, with AUDF4 = AUDF3 x (1 + 1/32) - 8 to hold the detune (RBARON.MAC:1010-1024). When ATGVAL+1 falls below $30 the whine cuts out entirely (`CMP I,30 / BCS 70$`, RBARON.MAC:1032-1033). So the whine sweeps 63920/(2 x 249) = 128.4 Hz up to 63920/(2 x 49) = 652.2 Hz \u2014 a 5.1x pitch RISE \u2014 at a FLAT volume of 1/15, and it is the same oscillator pair that was humming. Ours: a SECOND, independent `triangle` oscillator (audio.ts:385) layered on top of the still-running hum, with `frequency: 400 + 600 * nearness` (400 -> 1000 Hz) and `gain: 0.35 * nearness` (0 -> 0.35). Wrong waveform, wrong band, and it adds a 0 -> 0.35 volume ramp the ROM does not have.",
+  "reasoning": "audio.ts:112-118 states the ROM fact as 'the closer the plane, the more it SINGS' and calls the ordering ROM and the curve inferred. The ordering is right; the AXIS is wrong. The cabinet says nearer = HIGHER, at a fixed loudness \u2014 a rising whine out of the engine drone itself, which is why $F8 is both the hum's divisor and the whine's start value. Modelling it as a separate voice that swells in volume also means our hum and whine sound SIMULTANEOUSLY, where the ROM has one voice pair that can only be in one state.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 1032,
+   "verbatim": "\tCMP I,30"
+  },
+  "ours": {
+   "file": "src/shell/audio.ts",
+   "line": 123,
+   "verbatim": "  return { frequency: 400 + 600 * nearness, gain: 0.35 * nearness }"
+  },
+  "recommendation": "fix",
+  "size": "m"
+ },
+ {
+  "id": "SN-015",
+  "class": "NO_COUNTERPART",
+  "title": "The SPIRAL sound (CRSHSN D1) is missing entirely \u2014 the shot-down plane's dive whine, and the cue that fills the ~576 ms before the wreck explodes",
+  "claim": "A plane hit by the player's shell sets `LDA I,2 / STA SPIRAL` (RBARON.MAC:5585-5586) \u2014 D1 of the $1808 CRSHSN latch, ORed into the byte the NMI composes every 4 ms (RBGRND.MAC:177,181). It is CLEARED (`LDX I,0 / STX SPIRAL`) only when the falling wreck's explosion counter reaches .EXPL1, at which point the crash sound starts (RBARON.MAC:2974-2978). It is also cleared at end-of-life (RBARON.MAC:1119,1170). So the kill sequence is: SPIRAL on at the hit -> the wreck spirals down for .EXPL1 = 6 calculation frames = 576 ms -> SPIRAL off, EXPVAL crash on. We have no spiral cue at all: `OneShot = 'explosion' | 'crash'`, and audio.ts:331-333 openly notes '\u00a76B also lists a D1 spiral/dive one-shot that this story does not implement'.",
+  "reasoning": "This is a genuinely absent sound, not a mis-tuned one, and it is load-bearing for SN-016: without it, the gap between the hit and the explosion is silent in our build. Its TIMBRE is off-CPU (the discrete PCB) and cannot be audited from this source \u2014 but its TRIGGER, its GATE and its 576 ms duration are all fully specified here, which is everything a port needs to place it.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 5586,
+   "verbatim": "\tSTA SPIRAL\t\t;SPIRAL SOUND"
+  },
+  "ours": null,
+  "recommendation": "fix",
+  "size": "m"
+ },
+ {
+  "id": "SN-016",
+  "class": "DIVERGENCE",
+  "title": "The explosion fires at the wrong MOMENT and for the wrong DURATION: the ROM starts it 576 ms after the hit and runs 7/8/10 calc-frames depending on what died; we fire it instantly and always run 12",
+  "claim": "The crash sound is EXPVAL's top nibble (CRSHSN D4-D7), loaded with $F0 and stepped -$10 once per 96 ms calculation frame by SOUNDS (`SEC / SBC I,10`, RBARON.MAC:991-994 \u2014 RADIX 16, so $10 = 16 = one nibble). EXCNTR sets how many frames it runs, and the ROM uses THREE different values: 8 for the player's own crash (RBARON.MAC:1177-1180: EXPVAL=$F0, EXCNTR=8 -> 768 ms, nibble $F down to $7), 10. for a plane wreck reaching .EXPL1 (RBARON.MAC:2975-2978), for a drone kill (RBARON.MAC:5653-5655) and for the blimp (RBARON.MAC:5701-5703) -> 960 ms, and 7 for a ground object (RBARON.MAC:3906-3908) -> 672 ms. Crucially, for a PLANE the explosion does not start at the hit at all \u2014 the hit starts the SPIRAL (SN-015), and EXCNTR/EXPVAL are only loaded when the falling wreck's counter hits .EXPL1, 6 frames = 576 ms later. Ours: `play('explosion')` fires the instant `enemy-destroyed` is emitted (audio-dispatch.ts:49), and `explosionLevel` ramps $F0 linearly to 0 over EXPL2_FRAMES = 12 frames = 1152 ms for BOTH the kill and the player's crash (audio.ts:105) \u2014 1.2x too long for a kill, 1.5x too long for a crash, identical for two cues the ROM gives different lengths, and 576 ms too early for a plane.",
+  "reasoning": "Three errors compounded. (a) The frame COUNT: our code borrows EXPL2_FRAMES (the 12-frame debris window from core/explosion.ts) because the doc says the level 'ramps down over .EXPL1..2 frames' \u2014 but the ROM's sound has its OWN counter, EXCNTR, which is not .EXPL1 or .EXPL2 and is not even the same number for different victims. (b) The FLOOR: the ROM's nibble stops at $7/$6/$8 and is then hard-zeroed when EXCNTR expires \u2014 it does NOT ramp to 0, so the cabinet's explosion cuts off while still at ~40% level, where ours fades smoothly to nothing. (c) The ONSET, above. The 96 ms step unit is right in both.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 1180,
+   "verbatim": "\tSTA EXCNTR\t\t;START EXPLOSION SOUND"
+  },
+  "ours": {
+   "file": "src/shell/audio.ts",
+   "line": 105,
+   "verbatim": "  return Math.round(0xf0 * (1 - f / EXPL2_FRAMES))"
+  },
+  "recommendation": "fix",
+  "size": "m"
+ },
+ {
+  "id": "SN-017",
+  "class": "DIVERGENCE",
+  "title": "The gun sound fires on EVERY shell \u2014 the enemy's as well as the player's \u2014 so enemy fire, which is audible in the cabinet, is silent in ours",
+  "claim": "The CRSHSN D2 'SHOT SOUND' bit is gated by S.VAL, and S.VAL is incremented in SETSHL \u2014 'INITIALIZE SHELL' \u2014 which is the common shell constructor for BOTH sides (TEMP4 carries the 'PLAYER/ENEMY FLAG (D7)' one instruction later): `BIT GAMODE / BPL 5$ ;SOUNDS ONLY IN PLAY / INC S.VAL` (RBARON.MAC:2182-2184). The enemy's spray path bumps it too: `INC S.VAL ;STROBE SOUND FOR ENEMY SPRAY` (RBARON.MAC:1479). S.VAL is decremented once per 96 ms calculation frame (RBARON.MAC:877), so each shell buys ~96 ms of gun noise and rapid fire accumulates a tail. Ours drives the rattle purely from the player's trigger: `audio.setGun(playing && world.gunFiring)` with `gunFiring: fireHeld && !guns.overheated` (main.ts:487) \u2014 an enemy shooting at you makes no sound whatsoever, and our gun is a continuous gate for as long as the trigger is held rather than a per-shell counter.",
+  "reasoning": "This is the mis-wired cue the audit was told to hunt for, and it is a cue OMISSION rather than a swap: the ROM gives the player an audible warning that he is being shot at (the same rattle, since both sides' shells drive the same D2 bit), and we removed it. Note the ROM makes no attempt to distinguish the two \u2014 one latch bit, one counter, both sides \u2014 so the fix is to bump the same gun timer when an enemy shell is created.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 2184,
+   "verbatim": "\tINC S.VAL"
+  },
+  "ours": {
+   "file": "src/shell/audio-dispatch.ts",
+   "line": 85,
+   "verbatim": "  audio.setGun(playing && world.gunFiring)"
+  },
+  "recommendation": "fix",
+  "size": "m"
+ },
+ {
+  "id": "SN-019",
+  "class": "NO_COUNTERPART",
+  "title": "SNDON is a hard no-op in attract mode \u2014 the cabinet's attract screen is SILENT on POKEY",
+  "claim": "SNDON's first two instructions are `BIT Z,GAMODE / BPL 10$` where 10$ is `RTS` (RBSOUN.MAC:205-206,222): if GAMODE's D7 (game-in-progress) is clear, the sound is discarded before the pointer table is even indexed. The same gate guards the discrete sounds (`BIT GAMODE / BPL 6$` in the NMI, RBGRND.MAC:166-167), the shell sound (`BPL 5$ ;SOUNDS ONLY IN PLAY`, RBARON.MAC:2183) and the engine hum (`BIT GAMODE / BPL 30$ ;NOT PLAY`, RBARON.MAC:995-996); GMINIT even shuts POKEY's random-number generator off in attract (RBARON.MAC:1233). We have no attract mode, so there is nothing to gate.",
+  "reasoning": "Recorded as a real absence rather than a defect: our build boots straight into play, and `updateContinuousSounds` already silences everything when `playing` is false. Filed so that whoever eventually adds an attract screen knows the ROM's answer is 'no sound at all, not even the hum'.",
+  "source": {
+   "file": "RBSOUN.MAC",
+   "line": 205,
+   "verbatim": "SNDON:\tBIT Z,GAMODE\t\t;ATTRACT MODE?"
+  },
+  "ours": null,
+  "recommendation": "wont_fix"
+ }
+]

@@ -1,0 +1,312 @@
+[
+ {
+  "id": "OB-001",
+  "class": "CONFIRMED",
+  "title": "Connect-list opcode arithmetic is exactly point*6 + pen, ENDDB = $FF",
+  "claim": "The picture ROM's own macro bodies emit: VSBLEV/VV .P -> .BYTE .P*6+1; BLANKV/BV .P -> .BYTE .P*6; SEGSTR .A,.B,.C,.D -> .BYTE .A*6+4,...; ENDDB -> .BYTE ^H0FF. Our POINT_STRIDE=6, OP_BLANK=0, OP_VISIBLE=1, OP_SEGMENT=4, ENDDB=0xff reproduce all four literally.",
+  "reasoning": "Everything else in this pair rests on this decode, so it was verified against the macro DEFINITIONS (037007.XXX:22-40) rather than against our doc's paraphrase. The four macro bodies are byte-for-byte what topology.ts:63-71 encodes. Note BV and BLANKV are two names for one body (.P*6) and VV and VSBLEV likewise (.P*6+1) \u2014 the ROM data uses the long names for the plane lists and the short names for the landscape/blimp lists, but they assemble identically, so topology.ts's single B/V builder pair is faithful. Because the stride 6 exceeds the largest flag 4, the encoding is reversible and decodeOp is well-defined.",
+  "source": {
+   "file": "037007.XXX",
+   "line": 23,
+   "verbatim": ".BYTE .P*6+1"
+  },
+  "ours": {
+   "file": "src/core/topology.ts",
+   "line": 67,
+   "verbatim": "export const OP_VISIBLE = 1"
+  }
+ },
+ {
+  "id": "OB-002",
+  "class": "CONFIRMED",
+  "title": "RADIX: the entire picture data base is DECIMAL, and our transcription used decimal",
+  "claim": "037007.XXX sets `.RADIX 16` at line 43 and `.RADIX 10` at line 80, and NEVER switches back (grep: those are the only two .RADIX directives in the file). Every vertex, index and count from line 80 to EOF (line 1247) is therefore a DECIMAL literal, and every value in topology.ts is the decimal reading. The radix of the transcription is RIGHT.",
+  "reasoning": "This was the central trap and it was cleared. Cross-check, not just eyeball: had the transcriber read the region as hex, `SEGSTR 3,6,9,15.` (line 88) would have produced 0x15=21 for the fourth field instead of 15, and `VSBLEV 29`/`VSBLEV 40` in DB.MAP would have become 41/64 \u2014 indices past the 42-vertex model, which would not have assembled coherently. topology.ts:427 records 15, and DB_MAP records 29 and 40. Separately, the plane point table in the PROGRAM ROM sits under its own `.RADIX 10` island (RBARON.MAC:6217, reverting to 16 at 6281), so DB.PLN/P.BACK/BLCOLL are decimal too \u2014 and biplane.ts's PLANE_POINTS are the decimal values. The trailing-period literals (15. 11. 13. 10. on 037007.XXX:88-91) are decimal-forcing suffixes that are no-ops inside an already-decimal region; topology.ts:427-430 stores them as 15/11/13/10, which is correct.",
+  "source": {
+   "file": "037007.XXX",
+   "line": 80,
+   "verbatim": "\t.RADIX 10"
+  },
+  "ours": {
+   "file": "src/core/topology.ts",
+   "line": 422,
+   "verbatim": "export const PFOPOS: readonly (readonly number[])[] = ["
+  }
+ },
+ {
+  "id": "OB-003",
+  "class": "CONFIRMED",
+  "title": "DB.MAP / DB.MAR / DB.LNS are byte-exact, and the ROM's own address equates prove the op COUNTS",
+  "claim": "DB.MAP = 24 ops (no ENDDB), DB.MAR = 43 ops + ENDDB, DB.LNS = 17 ops + ENDDB. Our DB_MAP/DB_MAR/DB_LNS hold exactly 24/43/17 ops with the same indices in the same order. The ROM's equates confirm the sizes independently: DB.MAR = DB.MAP+018 (hex 0x18 = 24 bytes = 24 ops, so DB.MAP carries NO terminator and falls through); DB.LNS = DB.MAR+02C (0x2C = 44 = 43 ops + 1 ENDDB); DBPROP = DB.LNS+12 (0x12 = 18 = 17 ops + 1 ENDDB).",
+  "reasoning": "The equates at RBARON.MAC:404-407 are in the `.RADIX 16` region, so they are hex byte-lengths \u2014 an independent arithmetic witness to the list lengths that does not depend on my reading the data lines correctly. All three match our arrays exactly. This also VERIFIES the fall-through our doc asserts: DB.MAP occupies exactly its 24 data bytes with no room for a $FF, so a decode that starts at DB.MAP runs straight into DB.MAR. topology.ts:93-99's LOD/fall-through note and its `near = [...DB_MAP, ...DB_MAR, ...DB_LNS]` composition are both confirmed against RBARON.MAC:5026-5040 (PLDECD decodes DB.MAP, then DB.LNS). The final op BLANKV 41 (037007.XXX:419, ';POSITION FOR PROP') is a dark move that parks the pen at the prop mount, correctly kept as B(41) at topology.ts:129.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 405,
+   "verbatim": "DB.MAR\t=DB.MAP+018\t\t;PLANE DECODE LIST (FRONT FACES)"
+  },
+  "ours": {
+   "file": "src/core/topology.ts",
+   "line": 103,
+   "verbatim": "export const DB_MAP: readonly ConnectOp[] = ["
+  }
+ },
+ {
+  "id": "OB-004",
+  "class": "CONFIRMED",
+  "title": "The biplane really does have 42 vertices \u2014 29 front (DB.PLN) + 13 back (P.BACK)",
+  "claim": "DB.PLN runs RBARON.MAC:6221-6249 (indices 0-28, 29 points) and P.BACK runs 6253-6265 (indices 29-41, 13 points) = 42 vertices, indices 0-41. `.PLPNT = .-DB.PLN` = 126 bytes = 42 x 3; `.DRPNT = P.BACK-DB.PLN` = 87 bytes = 29 x 3. All 42 coordinate triples in biplane.ts PLANE_POINTS match the source line-for-line, and DRONE_POINTS = the first 29.",
+  "reasoning": "Our doc's '42 authentic vertices' claim is TRUE. Checked every triple: 0-28 (tails, fuselage front, top/lower wing, tail joint, wing struts, wheels) and 29-41 (upper/lower back wing, back struts, wheel struts, back wheels, prop mount [0,0,-36]). The index space is consistent with the connect-lists audited in OB-003: DB.MAP's highest index is 40, DB.LNS's is 41, DB.MAR's is 28 \u2014 so DB.MAR alone never touches a back-face vertex, exactly as the 29-point drone set requires. Note `.DRPNT` is a BYTE count (87), not a point count; the ROM uses `.DRPNT-3` and `.DRPNT*2` as loop bounds, and biplane.ts's slice(0, 29) is the right point-space equivalent.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 6268,
+   "verbatim": ".DRPNT\t=P.BACK-DB.PLN"
+  },
+  "ours": {
+   "file": "src/core/biplane.ts",
+   "line": 41,
+   "verbatim": "/** `.PLPNT` \u2014 the full 42-vertex biplane model (RBARON.MAC:6212-6256). */"
+  }
+ },
+ {
+  "id": "OB-005",
+  "class": "CONFIRMED",
+  "title": "Explosion pieces PIECE0-3 and decode-lists PCDEC0-2 are byte-exact, corroborated by the size equates",
+  "claim": "PIECE0=14 points, PIECE1=23, PIECE2=9, PIECE3=9; PCDEC0=27 ops, PCDEC1=40 ops, PCDEC2=13 ops (each + ENDDB); PLPCDE maps piece 0->PCDEC0, 1->PCDEC1, 2->PCDEC2, 3->PCDEC2. Our PIECE0..3_POINTS, PCDEC0/1/2 and PLPCDE reproduce all of it exactly.",
+  "reasoning": "Independent arithmetic witness from the hex equates: PIECE1=PIECE0+2A (0x2A=42=14x3 points), PIECE2=PIECE1+45 (0x45=69=23x3), PIECE3=PIECE2+1B (0x1B=27=9x3), PLPCDE=PIECE3+6E (0x6E=110 = PIECE3's 27 bytes + PCDEC0's 28 + PCDEC1's 41 + PCDEC2's 14). That 110 closes only if the three decode-lists are exactly 27/40/13 ops long \u2014 which is what topology.ts:195-211 holds. The trailing [0,0,0] on each piece (the last POINTP of each block) is a real ROM vertex used as the piece centroid, and PCDEC0's final BLANKV 13 / PCDEC2's final BLANKV 8 address it; topology.ts keeps it. PIECE1's point 7 is `POINTP 6,8,-3` (037007.XXX:635) \u2014 positive X where point 0 is -6 \u2014 an asymmetry in the original that our transcription faithfully preserves rather than 'fixing'.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 415,
+   "verbatim": "PLPCDE\t=PIECE3+6E\t\t;PLANE EXPL PIECE DECODE POINTERS"
+  },
+  "ours": {
+   "file": "src/core/topology.ts",
+   "line": 214,
+   "verbatim": "export const PLPCDE: readonly (readonly ConnectOp[])[] = [PCDEC0, PCDEC1, PCDEC2, PCDEC2]"
+  }
+ },
+ {
+  "id": "OB-006",
+  "class": "CONFIRMED",
+  "title": "BLIMP (36 vertices) and DBLIMP (78 ops) are byte-exact",
+  "claim": "BLIMP holds 36 POINTP vertices (indices 0-35; 34 and 35 are the gondola gun barrel) and DBLIMP holds 78 connect ops + ENDDB. The ROM equates give DBLIMP = BLIMP+6C (0x6C = 108 = 36 x 3) and PFODEC = DBLIMP+4F (0x4F = 79 = 78 ops + 1 ENDDB). Our BLIMP_POINTS has 36 entries and DBLIMP has 78 ops.",
+  "reasoning": "Counted both sides. The envelope is 4 longitudinal rings of 8 (the BV 1 / BV 2 / BV 3 girth loops at 037007.XXX:1085,1094,1103), the gondola box is 26-33, and 34-35 is the barrel; every index in the connect-list is <= 35. The two equates pin the exact byte lengths of the point-set and the decode-list independently of my reading the data lines, and both close. topology.ts:261-282 matches op-for-op, including the odd tail `V(26), V(29)` (a re-draw of the gondola diagonal) and the four BV/VV pairs that close the gondola box.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 429,
+   "verbatim": "DBLIMP\t=BLIMP+6C"
+  },
+  "ours": {
+   "file": "src/core/topology.ts",
+   "line": 272,
+   "verbatim": "export const DBLIMP: readonly ConnectOp[] = ["
+  }
+ },
+ {
+  "id": "OB-007",
+  "class": "CONFIRMED",
+  "title": "STAR0/STAR1 and DESTR0/DESTR1 star-burst debris are byte-exact",
+  "claim": "STAR0 = 10 vertices (5-point star), STAR1 = 12 vertices (6-point star); DESTR0 = 11 ops + ENDDB, DESTR1 = 13 ops + ENDDB. Equates: STAR1=STAR0+1E (0x1E=30=10x3), DESTR0=STAR1+24 (0x24=36=12x3), DESTR1=DESTR0+0C (0x0C=12=11+1), BLIMP=DESTR1+0E (0x0E=14=13+1). Our STAR0_POINTS/STAR1_POINTS/DESTR0/DESTR1 match all four counts and every coordinate.",
+  "reasoning": "Four consecutive equates chain through the whole star block and each one closes against our arrays, so the star data is confirmed by construction as well as by direct line comparison. Both DESTR lists are a single closed polyline (BV 0, then VV through the last vertex, then VV 0), which is what topology.ts:241-247 encodes.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 426,
+   "verbatim": "DESTR0\t=STAR1+24"
+  },
+  "ours": {
+   "file": "src/core/topology.ts",
+   "line": 230,
+   "verbatim": "export const STAR0_POINTS: readonly Point3[] = ["
+  }
+ },
+ {
+  "id": "OB-008",
+  "class": "CONFIRMED",
+  "title": "COLLD \u2014 the plane collision window \u2014 is 4 points and matches",
+  "claim": "COLLD (037007.XXX:602-605) is four POINTP vertices: 12,20,-40 / 12,-16,-40 / -12,20,-40 / -12,-16,-40, and PIECE0 = COLLD+0C (0x0C = 12 bytes = 4 x 3) confirms the count is exactly four. Our COLLD_POINTS holds those four triples in that order.",
+  "reasoning": "Direct comparison plus the equate. The box is asymmetric in Y (+20 above, -16 below) and symmetric in X (+/-12), at a single Z plane of -40 \u2014 the plane's front face. topology.ts:133-135 keeps the asymmetry rather than rounding it to a symmetric box.",
+  "source": {
+   "file": "037007.XXX",
+   "line": 602,
+   "verbatim": "COLLD:\tPOINTP 12,20,-40\t;FRONT FACE"
+  },
+  "ours": {
+   "file": "src/core/topology.ts",
+   "line": 133,
+   "verbatim": "export const COLLD_POINTS: readonly Point3[] = ["
+  }
+ },
+ {
+  "id": "OB-009",
+  "class": "CONFIRMED",
+  "title": "DBPROP (14 vertices) and PPROPA/B/C (7 ops each) are byte-exact",
+  "claim": "DBPROP holds 14 POINTP vertices (shaft 0-1, then three blade pairs at 2-5, 6-9, 10-13) and each of PPROPA/PPROPB/PPROPC is exactly 7 VSBLEV ops + ENDDB: [1,2,3,1,4,5,1], [1,6,7,1,8,9,1], [1,10,11,1,12,13,1]. Our DBPROP_POINTS and PPROPA/B/C reproduce all of it.",
+  "reasoning": "Direct comparison of 037007.XXX:426-470 against topology.ts:143-158. Every blade list is all-visible (no BV), pivoting back to vertex 1 (the shaft tip) between the two blades of a pair. Data is right; how the three lists are USED is not \u2014 see OB-011.",
+  "source": {
+   "file": "037007.XXX",
+   "line": 445,
+   "verbatim": "PPROPA:\tVSBLEV 1"
+  },
+  "ours": {
+   "file": "src/core/topology.ts",
+   "line": 154,
+   "verbatim": "export const PPROPA: readonly ConnectOp[] = [V(1), V(2), V(3), V(1), V(4), V(5), V(1)]"
+  }
+ },
+ {
+  "id": "OB-010",
+  "class": "CONFIRMED",
+  "title": "PFOPOS and all 16 forward SMAP** lists are byte-exact in the correct (decimal) radix",
+  "claim": "PFOPOS is 8 SEGSTR rows: 0,3,6,9 / 0,2,3,6 / 0,2,5,9 / 0,3,5,7 (L to R) and 3,6,9,15. / 2,3,6,11. / 2,5,9,13. / 3,5,7,10. (R to L). All 16 SMAP00..SMAP33 lists match op-for-op, including the three that carry a mid-list BV: SMAP03 (BV 13), SMAP13 (BV 9), SMAP23 (BV 11). Our PFOPOS and MOUNTAIN_SEGMAPS hold exactly these values.",
+  "reasoning": "This is the region most exposed to the radix trap (the trailing-period literals), and it survives: 15./11./13./10. are stored as 15/11/13/10, not 0x15/0x11/0x13/0x10. Every SMAP list was compared against 037007.XXX:93-172 line by line; all 16 are present, none truncated, none invented. (Landscape scope, but it lives in my file, so it was checked.)",
+  "source": {
+   "file": "037007.XXX",
+   "line": 88,
+   "verbatim": "\tSEGSTR\t3,6,9,15.\t;R TO L"
+  },
+  "ours": {
+   "file": "src/core/topology.ts",
+   "line": 439,
+   "verbatim": "export const MOUNTAIN_SEGMAPS: readonly (readonly (readonly ConnectOp[])[])[] = ["
+  }
+ },
+ {
+  "id": "OB-011",
+  "class": "DIVERGENCE",
+  "title": "PROPS is not a rotation-frame selector \u2014 the ROM draws ALL THREE blade pairs every frame",
+  "claim": "topology.ts:161 documents PROPS as 'the three prop-blade frames, indexed by prop rotation'. The ROM's PLNPRP loop does the opposite: it sets Y=4, calls DECMAP on PROPS[Y], resets the pen origin, then DEY/DEY and BPL back \u2014 three iterations (Y=4,2,0), commented ';DO ALL THREE BLADE PAIRS'. PPROPA, PPROPB and PPROPC are all decoded into the SAME picture on EVERY frame, producing a static 6-spoke blur, not a 3-frame animation.",
+  "reasoning": "RBARON.MAC:5052-5066. The spin illusion for the enemy plane's prop does not come from cycling PROPS; the prop POINT-SET is re-rotated each frame by PLTEST (LDX I,1 selects DBPROP in the PPNTS table) and all three blade pairs are always drawn. The animated PLAYER prop is a different asset entirely \u2014 the six JMPL pictures behind `.PROPS`/LNEPRP (037007.XXX:70-75). Our data is correct (OB-009); only the semantics attached to it are wrong, and any consumer that reads PROPS as a frame index will animate a prop the original never animated. PROPS currently has no consumer in src/, so this is a comment + usage-contract fix before it acquires one.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 5066,
+   "verbatim": "\tBPL 10$\t\t\t;DO ALL THREE BLADE PAIRS"
+  },
+  "ours": {
+   "file": "src/core/topology.ts",
+   "line": 161,
+   "verbatim": "export const PROPS: readonly (readonly ConnectOp[])[] = [PPROPA, PPROPB, PPROPC]"
+  },
+  "recommendation": "wont_fix",
+  "verdict": "REFUTED",
+  "coverage_review": "REFUTED (Phase 3, the dangerous kind). Misread ';DO ALL THREE BLADE PAIRS' as 'draw all three' when it means CONSTRUCT all three: .PROPS is a SIX-entry JMPL table (3 pictures x 2 VG buffers, 037007.XXX:70-75), each blade pair is closed by its own JSR VGRTSL (RBARON.MAC:5057) with the pen origin reset between them, and PLPROP patches ONE of the three into the display list per VG frame (RBARON.MAC:882-895, PROP.F = 0,2,4). It IS a 3-frame animation. topology.ts's docstring is CORRECT. Acting on this would delete a correct comment and invite a real regression."
+ },
+ {
+  "id": "OB-012",
+  "class": "DIVERGENCE",
+  "title": "The LOD switch is an orientation STATE BIT, not a camera distance \u2014 LOD_DISTANCE = 1500 is invented",
+  "claim": "biplane.ts selects the 42-vertex model vs. the 29-vertex drone with `depth < LOD_DISTANCE` where LOD_DISTANCE = 1500 (a number that appears nowhere in the ROM). The ROM's DRNPIC selects on bit $10 (D4) of PLSTAT+6: `LDA PLSTAT+6 ;PLANE ROTATED / AND I,10 / BEQ 20$`. D4=0 ('PLANE FACING AWAY', set at RBARON.MAC:2650-2652) takes branch 20$ -> `.DRPNT` (29 points), PLNABZ only (';2-D DRONE POINTS', Z-axis rotation alone) -> decode DB.MAR. D4=1 falls through -> DROFFZ scale-down + DRNTST -> decode DB.MAP (the full 42-vertex list, falling through into DB.MAR).",
+  "reasoning": "RBARON.MAC:4961-4979. The criterion is whether the plane needs a 3-D rotation at all: a drone flying directly away from the player is rendered by a cheap 2-D (Z-only) transform of the front 29 points; a drone that has rotated out of that pose gets the full 42-point 3-D path. Distance never enters the branch. Our threshold therefore switches LOD at the wrong times: a near plane facing away keeps its back faces (the ROM drops them), and a far plane mid-turn loses them (the ROM keeps them). Fix: drive biplaneLOD from the enemy's facing/rotation state rather than from projected depth. Size m because the LOD entry point and every caller's argument change (enemy.ts supplies depth today), and the tests that pin LOD_DISTANCE move with it.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 4961,
+   "verbatim": "DRNPIC:\tLDA PLSTAT+6\t\t;PLANE ROTATED"
+  },
+  "ours": {
+   "file": "src/core/biplane.ts",
+   "line": 131,
+   "verbatim": "  return depth < LOD_DISTANCE ? NEAR_MODEL : FAR_MODEL"
+  },
+  "recommendation": "fix",
+  "size": "m"
+ },
+ {
+  "id": "OB-013",
+  "class": "BOOK_WAS_WRONG",
+  "title": "findings.md calls the LOD a 'distance LOD'; the ROM has no distance test",
+  "claim": "docs/red-baron-1980-source-findings.md:321 asserts a 'Built-in distance LOD'. There is no distance comparison anywhere in the plane/drone picture path. The selector is PLSTAT+6 bit $10 (see OB-012). The doc's split itself (42 pts + DB.MAP + DB.LNS near; 29 pts + DB.MAR far) is correct \u2014 only the word 'distance' is fabricated, and biplane.ts inherited it as LOD_DISTANCE = 1500.",
+  "reasoning": "This is the secondary-source trap doing exactly what it does: our code cites the doc as authority (biplane.ts:106-110 even says 'the ROM pins the near-full/far-drone SPLIT but not the switch distance'), when in fact the ROM pins the switch CRITERION precisely \u2014 it is simply not a distance. The doc should say 'orientation LOD (PLSTAT+6 D4, PLANE FACING AWAY)'. Correcting the prose is what unblocks OB-012 from recurring.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 4972,
+   "verbatim": "20$:\tLDY I,.DRPNT-3"
+  },
+  "ours": {
+   "file": "docs/red-baron-1980-source-findings.md",
+   "line": 321,
+   "verbatim": "distance LOD:** the *full* plane = 42 pts (`.PLPNT`); the *drone / distant* plane = **29 pts** (`.DRPNT`,"
+  },
+  "recommendation": "fix",
+  "size": "s"
+ },
+ {
+  "id": "OB-014",
+  "class": "DIVERGENCE",
+  "title": "The wing struts (DB.LNS) are drawn DIMMER than the airframe; renderModel has no intensity at all",
+  "claim": "PLDECD decodes DB.MAP (-> DB.MAR) at the full brightness V.BRIT, then drops the intensity by $60 (floored at 0) via `SBC I,60` / `BCS 10$` / `LDA I,0` and issues a VGSTAT before decoding DB.LNS \u2014 the comment is ';ADD LIGHTER LINES'. Our renderModel emits a flat readonly SceneSegment[] of {x1,y1,x2,y2} with no intensity field, so all 84 ops of [...DB_MAP, ...DB_MAR, ...DB_LNS] render at one brightness.",
+  "reasoning": "RBARON.MAC:5026-5040. On a real vector monitor the inter-plane bracing wires are visibly fainter than the fuselage and wings \u2014 that two-tier brightness is a large part of why the original biplane reads as a biplane and not a wireframe blob. We have the correct 17 strut ops (OB-003) but throw away the intensity that distinguishes them. Size m: SceneSegment (src/core/scene.ts:21-26) has no intensity member, so the field, projectSegment's construction of it, and the shell renderer that consumes it all move together.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 5038,
+   "verbatim": "\tLDX I,DB.LNS&0FF"
+  },
+  "ours": {
+   "file": "src/core/biplane.ts",
+   "line": 160,
+   "verbatim": "export function renderModel(model: BiplaneModel, mvp: Mat4): readonly SceneSegment[] {"
+  },
+  "recommendation": "fix",
+  "size": "m"
+ },
+ {
+  "id": "OB-015",
+  "class": "DIVERGENCE",
+  "title": "Every RBARON.MAC line citation in biplane.ts points at the wrong line",
+  "claim": "biplane.ts cites the plane point table as 'RBARON.MAC:6206-6259' (line 10) and 'RBARON.MAC:6212-6256' (lines 36, 41); DB.PLN..P.BACK actually spans RBARON.MAC:6221-6265. It cites `.PLPNT` at :6258 (line 14) and `.DRPNT` at :6259 (line 90); they are at :6267 and :6268. It cites the POINTP macro at 'RBARON.MAC:57' (line 11); it is at :29. The findings doc's ':6207-6279' (line 320) is likewise off.",
+  "reasoning": "The VALUES transcribed are all correct (OB-004) \u2014 this is anchor drift, not data drift, and it is uniformly 5-9 lines short, which is what you get when line numbers are copied from a differently-lineated file rather than re-read from RBARON.MAC. It still matters: these anchors are the only audit trail a future maintainer has for a 42-line hand-copied table, and a citation that lands on the wrong line is a citation nobody can check. Re-anchor to 6221/6253/6267/6268/29.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 6221,
+   "verbatim": "DB.PLN:\tPOINTP 0,0,40\t\t;0 BACK TAILS"
+  },
+  "ours": {
+   "file": "src/core/biplane.ts",
+   "line": 36,
+   "verbatim": "// PLANE POINTS DB \u2014 the 42 biplane vertices (RBARON.MAC:6212-6256)."
+  },
+  "recommendation": "fix",
+  "size": "s"
+ },
+ {
+  "id": "OB-016",
+  "class": "NO_COUNTERPART",
+  "title": "BLCOLL \u2014 the blimp's 8-vertex collision box \u2014 is never transcribed",
+  "claim": "BLCOLL (RBARON.MAC:6270-6277) is 8 POINTP vertices: (16,16,-40) (16,-16,-40) (-16,16,-40) (-16,-16,-40) (16,16,40) (16,-16,40) (-16,16,40) (-16,-16,40) \u2014 a +/-16, +/-16, +/-40 box \u2014 with `.BLCL = .-BLCOLL-3` = 21. CDSSET uses it for the blimp hit test (`BIT BLOBJ+18 ;BLIMP ?` ... `LDY I,.BLCL` ... `JSR MNMX0 ;DETERMINE MIN/MAX OF X,Y&Z`). It appears in the PLNDB master table (RBARON.MAC:6285-6287) alongside DB.PLN/DBPROP/COLLD/PIECE0-3/BLIMP/STAR0/STAR1 \u2014 every other member of which IS in topology.ts. BLCOLL is the only omission.",
+  "reasoning": "topology.ts transcribes COLLD (the plane's collision window) but not BLCOLL (the blimp's). Our findings doc even names BLCOLL at line 323 and describes it correctly \u2014 it just never landed in code, so blimp.ts has no ROM-derived hit volume. The ROM rotates the 8 corners (PLNABZ + YAXIS) and takes their min/max, i.e. it is an ORIENTED box reduced to an AABB per frame, not a static AABB. Size s: 8 triples plus an export.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 6270,
+   "verbatim": "BLCOLL:\tPOINTP 16,16,-40\t;POINT CD'S"
+  },
+  "ours": null,
+  "recommendation": "fix",
+  "size": "s"
+ },
+ {
+  "id": "OB-017",
+  "class": "NO_COUNTERPART",
+  "title": "The four ground-target vector objects (pyramid, house, tank, pill box) are entirely absent",
+  "claim": "037007.XXX:1132-1230 defines a complete, self-contained object set that topology.ts does not contain at all: point-sets PFPYRM (4 PFPNTS), PFHOME (7), PFTANK (10), PFPBOX (16); decode-lists DEPFPY (5 ops), DEPFHS (8), DEPFTK (11), DEPFPB (18); the PFODEC pointer table (`.WORD DEPFPY,DEPFHS,DEPFTK,DEPFPB`), the PFLOB point-set table (`.WORD PFPYRM,PFHOME,PFTANK,PFPBOX`), the `.PFLOB` length table, and the PFOFFS table of 12 PFCOL screen offsets (037007.XXX:1232-1246).",
+  "reasoning": "These are vector OBJECT data in the same POINTP/BV/VV vocabulary as everything else in this pair, and they are the ground targets the player strafes \u2014 the objects PFOCOL's collision boxes (already in topology.ts:371-384) exist to hit. We shipped the collision boxes without the things they collide with. Note the point macro here is PFPNTS, which emits only two bytes (.X/2, .Y*2) and DISCARDS its third argument \u2014 so these are planar billboards, and the constant 32/24/28/34 third column in the source is inert (topology.ts:296-302 already documents PFPNTS correctly for the SCAPEs). Size m: four point-sets, four decode-lists, two pointer tables, plus tests.",
+  "source": {
+   "file": "037007.XXX",
+   "line": 1186,
+   "verbatim": "PFPYRM:\tPFPNTS -8,-4,32\t\t;PYRAMID"
+  },
+  "ours": null,
+  "recommendation": "fix",
+  "size": "m"
+ },
+ {
+  "id": "OB-018",
+  "class": "NO_COUNTERPART",
+  "title": "The SLAP** mountain-highlight lists and the SCLMAP table are absent and unmentioned",
+  "claim": "037007.XXX:258-307 defines ten SLAP** connect-lists (SLAP01, SLAP02, SLAP03, SLAP11, SLAP13, SLAP20, SLAP21, SLAP22, SLAP30, SLAP32) and 037007.XXX:321-324 defines SCLMAP, a 16-entry pointer table into them with -1 in the six empty slots (RBARON.MAC:403 names it ';PF OBJECT HIGHLIGHT DECODE POINTERS'). topology.ts contains neither, and no comment in the repo acknowledges they exist. Separately, the 16 reverse-scroll SMP** lists (037007.XXX:175-256) are absent but ARE acknowledged as deferred (topology.ts:412).",
+  "reasoning": "topology.ts:399-414 presents the mountain render data as 'PFOPOS transcribed in full + the 16 forward SMAP lists', with only the SMP** reverse set called out as deferred. That inventory is incomplete: a THIRD list family (SLAP**, the highlight/second-intensity pass over the same SCAPE points, reached via SCMAP+40) is missing without acknowledgement, so the file reads as complete when it is not. SMP** is a known deferral; SLAP**/SCLMAP is an unknown one, which is the more dangerous kind. Landscape-adjacent, but it lives in my file, so it is reported here.",
+  "source": {
+   "file": "037007.XXX",
+   "line": 321,
+   "verbatim": "SCLMAP:\t.WORD -1,SLAP01,SLAP02,SLAP03"
+  },
+  "ours": null,
+  "recommendation": "accept"
+ }
+]

@@ -1,0 +1,54 @@
+[
+ {
+  "id": "OB-011",
+  "verdict": "CONFIRMED",
+  "reasoning": "Controller re-read RBARON.MAC:5060-5067. `DEY / DEY / BPL 10$ ;DO ALL THREE BLADE PAIRS` \u2014 the loop decodes all three blade-pair pictures every frame. PROPS is not a rotation-frame selector. Holds.",
+  "refuted_by": "controller (no agent slot available \u2014 see audit limitations)",
+  "corrections": "None. The topology data is right; only topology.ts:161's DOC COMMENT ('indexed by prop rotation') is wrong. Fix is a comment + the renderer drawing all three, not a data change."
+ },
+ {
+  "id": "OB-012",
+  "verdict": "CONFIRMED",
+  "reasoning": "Controller re-read RBARON.MAC:4961-4975. `DRNPIC: LDA PLSTAT+6 / AND I,10 / BEQ 20$` is a STATUS-BIT test on D4; there is no distance comparison anywhere in the picture path. LOD_DISTANCE=1500 appears nowhere in the ROM. Holds.",
+  "refuted_by": "controller (no agent slot available \u2014 see audit limitations)",
+  "corrections": "Depends on the plane's ROTATED status bit existing in our sim at all \u2014 we do not track it, so the fix is larger than swapping a constant: size m is right, but it is blocked on modelling PLSTAT+6 D4."
+ },
+ {
+  "id": "OB-013",
+  "verdict": "CONFIRMED",
+  "reasoning": "The doc (findings \u00a77) does say 'distance LOD'; the ROM has no distance test (see OB-012). BOOK_WAS_WRONG is the correct class \u2014 and this is the doc error that PRODUCED the invented constant.",
+  "refuted_by": "controller (no agent slot available \u2014 see audit limitations)"
+ },
+ {
+  "id": "OB-014",
+  "verdict": "CONFIRMED",
+  "reasoning": "Controller re-read RBARON.MAC:5030-5040: `SBC I,60 / BCS 10$ / LDA I,0 / TAY ;ADD LIGHTER LINES / LDA I,4 / JSR VGSTAT` before DECMAP of DB.LNS. The struts ARE decoded at an intensity 0x60 lower. Holds.",
+  "refuted_by": "controller (no agent slot available \u2014 see audit limitations)",
+  "corrections": "Duplicate of the same underlying gap as RD-002/RD-006 (no intensity channel at all in SceneSegment). Should be CLUSTERED with them, not fixed separately."
+ },
+ {
+  "id": "OB-015",
+  "verdict": "CONFIRMED",
+  "reasoning": "Citation-accuracy finding; the checker independently confirms the auditor's own line numbers resolve. Low value but true.",
+  "refuted_by": "controller (no agent slot available \u2014 see audit limitations)",
+  "corrections": "Cosmetic \u2014 comment/citation hygiene only. Size s is right; this is not a behaviour fix."
+ },
+ {
+  "id": "OB-016",
+  "verdict": "CONFIRMED",
+  "reasoning": "Controller grepped src/: 0 hits for BLCOLL/blimpCollision. The absence is real.",
+  "refuted_by": "controller (no agent slot available \u2014 see audit limitations)"
+ },
+ {
+  "id": "OB-017",
+  "verdict": "CONFIRMED",
+  "reasoning": "Controller grepped src/: 0 hits for PFPYRM/PFHOME/PFTANK/PFPBOX/pyramid/tank/pillbox/house. The four ground-target objects are genuinely absent. 037007.XXX:1186 is in the .RADIX 10 region, so the auditor's decimal reading of the point data is CORRECT.",
+  "refuted_by": "controller (no agent slot available \u2014 see audit limitations)"
+ },
+ {
+  "id": "OB-018",
+  "verdict": "CONFIRMED",
+  "reasoning": "Controller grepped src/: absent. Correctly filed `accept` \u2014 the mountain-highlight lists are cosmetic and the auditor did not overstate them.",
+  "refuted_by": "controller (no agent slot available \u2014 see audit limitations)"
+ }
+]

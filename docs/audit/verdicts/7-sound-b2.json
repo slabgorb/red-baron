@@ -1,0 +1,45 @@
+[
+ {
+  "id": "SN-012",
+  "verdict": "CONFIRMED",
+  "reasoning": "Suppression rules rest on the cited lines.",
+  "refuted_by": "controller (no agent slot available \u2014 see audit limitations)"
+ },
+ {
+  "id": "SN-013",
+  "verdict": "CONFIRMED",
+  "reasoning": "AUDC=$A1 is in the hex region (RBSOUN.MAC:2 sets .RADIX 16). POKEY AUDC bit meaning is standard.",
+  "refuted_by": "controller (no agent slot available \u2014 see audit limitations)"
+ },
+ {
+  "id": "SN-014",
+  "verdict": "CONFIRMED",
+  "reasoning": "Rests on the cited lines.",
+  "refuted_by": "controller (no agent slot available \u2014 see audit limitations)",
+  "corrections": "Depends on the same 250 Hz clock; verified."
+ },
+ {
+  "id": "SN-015",
+  "verdict": "CONFIRMED",
+  "reasoning": "Controller grepped src/: 0 hits for SPIRAL/spiralSound. Absence real.",
+  "refuted_by": "controller (no agent slot available \u2014 see audit limitations)"
+ },
+ {
+  "id": "SN-016",
+  "verdict": "CONFIRMED",
+  "reasoning": "Clock verified (250 Hz). 576 ms = 144 NMI ticks \u2014 arithmetic consistent with the 4 ms tick.",
+  "refuted_by": "controller (no agent slot available \u2014 see audit limitations)"
+ },
+ {
+  "id": "SN-017",
+  "verdict": "CONFIRMED",
+  "reasoning": "Rests on our dispatch firing the gun cue for every shell.",
+  "refuted_by": "controller (no agent slot available \u2014 see audit limitations)"
+ },
+ {
+  "id": "SN-019",
+  "verdict": "CONFIRMED",
+  "reasoning": "Correctly filed `accept` \u2014 attract-mode silence, not a defect worth fixing.",
+  "refuted_by": "controller (no agent slot available \u2014 see audit limitations)"
+ }
+]

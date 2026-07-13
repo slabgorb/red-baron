@@ -1,0 +1,78 @@
+[
+ {
+  "id": "RD-008",
+  "class": "DIVERGENCE",
+  "title": "The HUD's live PLVALU readout \u2014 the current worth of the plane in your sights \u2014 is missing; we show only SCORE",
+  "claim": "ALPHAS (RBARON.MAC:5280-5333) draws, every frame: the score at beam (-316, 320); then, when not in a ground wave, it steps the beam +160 in X and displays PLVALU \u2014 the running value of the enemy plane, which is depth-scaled so it counts down as the plane recedes (RBARON.MAC:5296-5306, with a flat 0x30 substituted for a bonus plane) \u2014 then the HIGH SCORE at (204, 336) drawn at SCAL 2, then the high-score initials, then a series of MESSAGE strings. Our HUD is one `ctx.fillText(\\`SCORE ${score}\\`, 16, 12)`.",
+  "reasoning": "The PLVALU readout is not decoration: it is the feedback loop for Red Baron's central risk/reward rule \u2014 hold fire until the plane is close and its displayed value is high. Removing it removes the player's only view of the mechanic the scoring is built on. The score position we DO have is roughly right (top-left, matching -316,320), which is why I class this as a missing element rather than a wrong one. The high score and the vector glyph font are separate, already-known gaps (our code comments them as such at src/main.ts:231-233); this finding is about PLVALU specifically.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 5296,
+   "verbatim": "\tLDA PLVALU"
+  },
+  "ours": {
+   "file": "src/main.ts",
+   "line": 240,
+   "verbatim": "  ctx.fillText(`SCORE ${score}`, 16, 12)"
+  },
+  "recommendation": "fix",
+  "size": "s"
+ },
+ {
+  "id": "RD-009",
+  "class": "DIVERGENCE",
+  "title": "The 'GUNS HOT' banner is an invented widget in an invented second colour the hardware could not produce",
+  "claim": "The ROM's overheat cue is MESSAGE 16 (decimal \u2014 the `16.` is an explicit decimal literal inside a .RADIX 16 region), emitted by ALPHAS through the SAME monochrome vector glyph routine, at the same message position, as every other string, gated on `BIT GUN.ST / BVC` (RBARON.MAC:5334-5337). We instead draw a centred bold 24px monospace 'GUNS HOT' at 16% screen height in `#ff5533` with a matching orange glow \u2014 a second hue on a display that has no colour channel at all (see RD-011).",
+  "reasoning": "Two separate divergences in one block. (a) Colour: the AVG's only per-vector modulation is 3-bit intensity; there is no colour field anywhere in the vector word (VGMC.MAC:64 and :110-127 \u2014 STAT carries Z plus window HI/LOW and IN/OUT bits, VCTR carries dx, dy, ZZ). An orange element is therefore not merely unfaithful, it is unrepresentable on the real machine. (b) Form: the ROM's cue is a text string in the ordinary HUD font at the ordinary message slot, not a large centred banner. The cheap correct fix is to render the overheat message in the same colour and font as the rest of the HUD, at the HUD's message position \u2014 which also stops it competing with the world for the player's eye.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 5336,
+   "verbatim": "\tLDA I,16.\t\t;ELSE DISPLAY MESSAGE"
+  },
+  "ours": {
+   "file": "src/main.ts",
+   "line": 221,
+   "verbatim": "    ctx.fillStyle = '#ff5533'"
+  },
+  "recommendation": "fix",
+  "size": "s"
+ },
+ {
+  "id": "RD-010",
+  "class": "DIVERGENCE",
+  "title": "Windscreen bullet holes accumulate on the ROM's screen as the returning ace shoots you down; we draw none",
+  "claim": "WNDSHD (RBARON.MAC:1484-1498) runs every frame in play mode (it is called unconditionally from EOLSEQ, RBARON.MAC:1090). It masks the B.HOLE counter with 0x0E and LOADRAMs that many bytes of a JSRL list \u2014 SEQUNA (holes to the right, 037007.XXX:882-888) or SEQUNB (holes to the left, :909-914) chosen by ENSIDE, i.e. by which side the enemy attacked from \u2014 into the display list. Each entry is a blank positioning VCTR plus a JMPL to B.HOLE, a 10-vector ragged circle at intensity .BULL=4 (037007.XXX:849-862). B.HOLE steps up to 0x0C (RBARON.MAC:1101-1104) as the returning ace's shells connect: up to six holes, appearing one at a time, on the glass in front of you.",
+  "reasoning": "I could not find any read of BULLT0/BULLT1/BULLDE in the windscreen path \u2014 those are the GROUND shell's in-world bullet picture (DSPGRS, RBARON.MAC:4356-4377), a different thing from the windscreen holes, and our findings doc conflates them under one 'bullet holes' bullet. The windscreen effect is bounded (six holes, one picture, one counter) and it is the game's only damage feedback before death. Not the reason the game 'seems way off', but a real absent screen element and cheap to add.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 1498,
+   "verbatim": "10$:\tJMP LOADRAM\t\t;WIND SCREEN BULLET HOLES"
+  },
+  "ours": {
+   "file": "src/main.ts",
+   "line": 490,
+   "verbatim": "  draw(toAttitude(flight), enemies, blimp, mountains, wrecks, guns.shells, guns.overheated, score)"
+  },
+  "recommendation": "fix",
+  "size": "s"
+ },
+ {
+  "id": "RD-016",
+  "class": "BOOK_WAS_WRONG",
+  "title": "docs/red-baron-1980-source-findings.md prints HORZ=1000 without its radix \u2014 the value is 0x1000 = 4096 \u2014 and files it under the wrong module",
+  "claim": "The findings doc's \u00a77 lists 'Horizon/altitude constants `HORZ=1000`, `HORIZN=$40`' under a heading sourced to RBGRND.MAC. Both constants are actually defined in RBARON.MAC, inside the .RADIX 16 region that opens at RBARON.MAC:74: `HORZ =1000 ;HORIZON DEPTH` (RBARON.MAC:451) is 0x1000 = 4096, not decimal 1000. The doc marks HORIZN as `$40` but leaves HORZ unmarked, so a reader takes it for decimal \u2014 and src/core/scene.ts:32 did exactly that: 'Far clip: past the horizon distance (findings \u00a77 HORZ = 1000, with headroom)'.",
+  "reasoning": "The doc is our code's cited authority, so a radix that silently drops is a live hazard. It happens not to have broken us \u2014 FAR = 20000 clears 4096 as comfortably as it clears 1000 \u2014 but the same mis-read of the same region is what produced the S.MAXZ=19-as-decimal bug in guns.ts (RBARON.MAC:492 is also 0x19 = 25), so this is a pattern, not a one-off. Fix the doc: `HORZ=$1000` (4096), attribute both constants to RBARON.MAC:451/456, and correct scene.ts's comment. The doc's \u00a78 also names the AVG module as the consumer of the vector words; the shipped display path is VGUT.MAC + VGMC.MAC, and those are the modules a reader should be sent to.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 451,
+   "verbatim": "HORZ\t=1000\t\t\t;HORIZON DEPTH"
+  },
+  "ours": {
+   "file": "docs/red-baron-1980-source-findings.md",
+   "line": 344,
+   "verbatim": "`BULLDE`); 24 `PFCOL` collision boxes (`PFOCOL`). Horizon/altitude constants `HORZ=1000`, `HORIZN=$40`,"
+  },
+  "recommendation": "fix",
+  "size": "s"
+ }
+]

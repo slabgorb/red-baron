@@ -1,0 +1,306 @@
+[
+ {
+  "id": "CD-001",
+  "class": "CONFIRMED",
+  "title": "MASTER_NMI_HZ = 250 matches the hardware NMI (4 ms)",
+  "claim": "timing.ts:16 MASTER_NMI_HZ = 250. The hardware NMI fires every 4 ms; 1/0.004 = 250 Hz. The ROM proves the value twice: the header comment \"INTERRUPT OCCURS EVERY 4 MS. [FROM HARDWARE]\" (RBGRND.MAC:102) and the seconds counter, which rolls INTCNT at the literal decimal 250 with the author's own arithmetic in the comment: 250. * .004 = 1 second (RBGRND.MAC:189). The trailing period on \"250.\" makes it decimal inside the .RADIX 16 region opened at RBGRND.MAC:6. Our value is exact.",
+  "reasoning": "The whole cadence chain hangs off this number, so it is worth pinning to the line where the ROM itself does the arithmetic rather than to the prose comment alone. INTCNT is INC-ed once per NMI (RBGRND.MAC:187) and compared against 250. to tick SECCNT \u2014 the ROM is telling us, in its own hand, that 250 NMIs are one second.",
+  "source": {
+   "file": "RBGRND.MAC",
+   "line": 189,
+   "verbatim": "\tCMP I,250.\t\t;250.*.004=1"
+  },
+  "ours": {
+   "file": "src/core/timing.ts",
+   "line": 16,
+   "verbatim": "export const MASTER_NMI_HZ = 250"
+  }
+ },
+ {
+  "id": "CD-002",
+  "class": "CONFIRMED",
+  "title": "DISPLAY_FRAME_NMIS = 4 matches the shipped FRMECNT (62.5 Hz), not the R2 decoy (50 Hz)",
+  "claim": "timing.ts:22 DISPLAY_FRAME_NMIS = 4, giving DISPLAY_HZ = 250/4 = 62.5 Hz. The shipped RBGRND.MAC:61 equates FRMECNT=4; F.CNTR is DEC-ed per NMI (RBGRND.MAC:231), reloaded with FRMECNT (RBGRND.MAC:233-234) and sets INTFLG \"FRAME SYNC [EVERY FRMECNT:4 MS]\" (RBGRND.MAC:235). 4 NMI x 4 ms = 16 ms = 62.5 Hz. Correct \u2014 and correctly taken from RBGRND, not from the R2GRND decoy where FRMECNT=5 would have yielded 50 Hz.",
+  "reasoning": "This is the one constant with a plausible wrong answer sitting in the same source directory. We have the shipped value. DISPLAY_HZ is currently exported but not consumed by main.ts (we redraw on rAF instead) \u2014 see CD-013.",
+  "source": {
+   "file": "RBGRND.MAC",
+   "line": 61,
+   "verbatim": "\tFRMECNT=4"
+  },
+  "ours": {
+   "file": "src/core/timing.ts",
+   "line": 22,
+   "verbatim": "export const DISPLAY_FRAME_NMIS = 4"
+  }
+ },
+ {
+  "id": "CD-003",
+  "class": "CONFIRMED",
+  "title": "CALC_FRAME_NMIS = 24 matches CALCNT = 18 hex; SIM_TIMESTEP_S = 96 ms exactly",
+  "claim": "timing.ts:19 CALC_FRAME_NMIS = 24. RBARON.MAC:621 equates CALCNT = 18. RBARON.MAC:74 opens .RADIX 16 and the region does not return to decimal until RBARON.MAC:6217, so 18 is HEX = 24 decimal. The sibling equate two lines down, BNRCNT = 0C (RBARON.MAC:622), is hex-spelled with a leading zero and confirms the region. C.CNTR is DEC-ed once per NMI (RBGRND.MAC:221), reloaded with CALCNT (RBGRND.MAC:223,228) and INC-s CALFLG (RBGRND.MAC:229). So: 24 NMI x 4 ms = 96 ms; SIM_TIMESTEP_S = 24/250 = 0.096 s exactly; SIM_HZ = 250/24 = 10.41666... Hz. Ratio to the display frame = 24/4 = 6:1 exactly. All four numbers in timing.ts are right.",
+  "reasoning": "If CALCNT had been read as decimal 18 the sim would run at 250/18 = 13.9 Hz \u2014 33% too fast. We got the radix right. One defect, harmless but worth correcting: the doc-comment on timing.ts:18 cites \"RBARON.MAC:620\", and line 620 is a blank line containing a single tab. The equate is on line 621. Same off-by-one in the findings doc (see CD-012).",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 621,
+   "verbatim": "CALCNT\t=18"
+  },
+  "ours": {
+   "file": "src/core/timing.ts",
+   "line": 19,
+   "verbatim": "export const CALC_FRAME_NMIS = 24"
+  }
+ },
+ {
+  "id": "CD-004",
+  "class": "CONFIRMED",
+  "title": "Every MAIN-loop motion routine has its counterpart INSIDE our 96 ms accumulator",
+  "claim": "MAIN calls its motion routines once per pass and then blocks on INTWAIT (RBARON.MAC:853), so each runs exactly once per 96 ms calc frame: POTSCL :778, NEWSHL :779, PFMOTN :785, NWPLNE :788, PLMOTN :789. Walking every state mutation in our frame(): flight step (main.ts:374), gun fire/NEWSHL (:375), wreck step (:377), mountain scroll/PFMOTN (:384), enemy step/PLMOTN (:395), blimp drift+fire (:404-409), the shared shell/collision pass SHLMOT (:417), the wave schedule NWPLNE (:452-474) and simFrame (:476) are ALL between `while (accumulator >= SIM_TIMESTEP_S) {` (main.ts:373) and `accumulator -= SIM_TIMESTEP_S` (main.ts:477). Count of game-state mutations outside the accumulator: ZERO. The reported \"way off\" feel is NOT a 6x-14x overspeed leak.",
+  "reasoning": "This was the headline hypothesis and it is refuted. I read every assignment in frame(): the only writes outside the while-block are `accumulator`, `lastMs`, and the pure local `input`/`fireHeld`/`events`. draw() (main.ts:490) is a pure reader; playEventSounds/updateContinuousSounds (main.ts:483-488) touch only the audio surface. No simulation state advances per rAF.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 789,
+   "verbatim": "10$:\tJSR PLMOTN\t\t;UPDATE MOTION OBJECTS (PLANES & DRONES)"
+  },
+  "ours": {
+   "file": "src/main.ts",
+   "line": 373,
+   "verbatim": "  while (accumulator >= SIM_TIMESTEP_S) {"
+  }
+ },
+ {
+  "id": "CD-005",
+  "class": "DIVERGENCE",
+  "title": "Our simFrame IS the ROM's FRAME \u2014 so the blimp's divide-by-2 fire cadence is 192 ms, not 32 ms",
+  "claim": "The ROM's FRAME counter is INC-ed at RBARON.MAC:870, inside MAIN AFTER INTWAIT \u2014 i.e. once per 96 ms calc frame, NOT per 16 ms display frame. RBARON.MAC:877 removes all doubt: `DEC S.VAL ;DEC ONCE PER FRAME`, in the same post-INTWAIT stretch. So every ROM cadence expressed in \"FRAMES\" is a multiple of 96 ms. Our simFrame is incremented at main.ts:476, the last statement inside the accumulator block \u2014 one per calc step. blimpFires(simFrame) (main.ts:405, blimp.ts:145 `(frame & 1) === 0`) therefore fires every 2nd calc frame = 192 ms, matching the PLNSHL divide-by-2. Had \"FRAME\" been read as the display frame, the blimp would fire every 32 ms \u2014 6x too often.",
+  "reasoning": "This is the trap that a careless port falls into, because \"FRAME\" reads like \"display frame\". The ROM author uses FRAME to mean one iteration of MAIN. We resolved it correctly and wired simFrame to the calc step rather than to rAF.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 870,
+   "verbatim": "\tINC FRAME"
+  },
+  "ours": {
+   "file": "src/main.ts",
+   "line": 476,
+   "verbatim": "    simFrame += 1"
+  },
+  "coverage_review": "FALSE CONFIRMED (Phase 3). Borrowed the PLANE's div-by-2 (PLNSHL) for the BLIMP, which uses SHLAUN's div-by-4 plus a GMLEVL>=2 gate. Our blimp fires 2x too fast. EN-024 is correct and contradicts this. Reclassed DIVERGENCE.",
+  "recommendation": "fix",
+  "size": "s"
+ },
+ {
+  "id": "CD-006",
+  "class": "CONFIRMED",
+  "title": "Player shells sub-step 4x WITHIN one calc frame \u2014 SHLMOT unrolled, guns.ts SHELL_SUBSTEPS = 4",
+  "claim": "SHLMOT (RBARON.MAC:5192) is a hand-unrolled 4x sub-step: JSR PSTSHL at :5195, :5198, :5201 and JMP PSTSHL at :5204 \u2014 four \"UPDATE SHELL POSITION\" calls, each preceded by a DSPSHL (:5194, :5197, :5200, :5203) that displays AND collision-tests. Four positions and four collision tests per calc frame. guns.ts:44 SHELL_SUBSTEPS = 4 and guns.ts:187 loops `for (let s = 0; s < SHELL_SUBSTEPS; s++)` testing collision at each sub-step; main.ts:417 calls it ONCE per calc frame. The nesting is right: 4 sub-steps inside the 96 ms step, not 4 calc frames.",
+  "reasoning": "Sub-stepping is the ROM's anti-tunnelling device \u2014 a shell fast enough to cross a thin target in one 96 ms step would otherwise pass through it. Getting this wrong in either direction (no sub-step, or promoting the sub-step to a real calc frame) breaks hit detection. We match. Note the findings doc cites this as RBARON.MAC:5186-5198; 5186 is the CHKSM6 checksum byte and the routine actually spans 5192-5204 (see CD-012).",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 5204,
+   "verbatim": "\tJMP PSTSHL"
+  },
+  "ours": {
+   "file": "src/core/guns.ts",
+   "line": 44,
+   "verbatim": "export const SHELL_SUBSTEPS = 4"
+  }
+ },
+ {
+  "id": "CD-007",
+  "class": "CONFIRMED",
+  "title": "No render interpolation \u2014 and that is the FAITHFUL choice, because the VG re-strokes an unchanged display list",
+  "claim": "Between calc frames the 6502 writes nothing to VGRAM; the NMI simply restarts the vector generator on the SAME display list every VG frame (`STA A,VGON ;ELSE - AUTO RESTART & CLR FLAG`, RBGRND.MAC:245, reached only when INTFLG says end-of-VG-frame). The picture is therefore re-STROKED at 62.5 Hz but does not MOVE: objects hold still for all 6 display frames of a 96 ms calc frame and then jump. Our draw() (main.ts:490) is handed the raw stepped state \u2014 toAttitude(flight), enemies, blimp, mountains, wrecks, guns.shells \u2014 with no alpha and no lerp; drawWreck/shellSegments/renderModel read state fields only, and nothing in draw() reads a clock. We reproduce the 10.4 Hz stutter exactly. Adding interpolation would look smoother and be WRONG.",
+  "reasoning": "Worth stating explicitly because \"the game seems way off\" plus \"10 updates a second\" invites someone to add interpolation as a fix. That would be a divergence, not a fix. The only thing the real machine animates BETWEEN calc frames is the propeller \u2014 see CD-016.",
+  "source": {
+   "file": "RBGRND.MAC",
+   "line": 245,
+   "verbatim": "\tSTA A,VGON\t\t;ELSE - AUTO RESTART & CLR FLAG"
+  },
+  "ours": {
+   "file": "src/main.ts",
+   "line": 490,
+   "verbatim": "  draw(toAttitude(flight), enemies, blimp, mountains, wrecks, guns.shells, guns.overheated, score)"
+  }
+ },
+ {
+  "id": "CD-008",
+  "class": "CONFIRMED",
+  "title": "Our pause reproduces the ROM's GAMODE FREEZE, and the accumulator modulo cannot burst-replay",
+  "claim": "The ROM has a freeze: MAIN does `LDA GAMODE / LSR / BCS 20$ ;FREEZE` (RBARON.MAC:780-782), branching PAST PFMOTN, NWPLNE and PLMOTN to 20$ (:790) \u2014 motion is skipped, but the display list is still built, INTWAIT still runs and the VG still strokes. No backlog accrues, because CALFLG is consumed by INTWAIT every pass regardless. Ours: `if (paused) accumulator %= SIM_TIMESTEP_S` (main.ts:372) runs AFTER the dt add, so a paused accumulator is forced below 0.096 s every rAF and the while-block never executes \u2014 while draw() (main.ts:490) and the overlay still run. Pause for 10 s and the banked time is 10 s mod 0.096 s < 0.096 s: on resume, at most ONE step fires. No burst. Same semantics.",
+  "reasoning": "The modulo (rather than a reset to 0) also preserves sub-step phase, so resuming does not systematically shorten the first frame. Combined with the dt clamp at main.ts:356 (`Math.min(..., 0.25)`), a backgrounded tab \u2014 where rAF stops firing entirely \u2014 likewise cannot spiral: 0.25 / 0.096 = 2.6, so at most 2 catch-up steps ever run in one rAF. Spiral-of-death is impossible.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 782,
+   "verbatim": "\tBCS 20$\t\t\t;FREEZE"
+  },
+  "ours": {
+   "file": "src/main.ts",
+   "line": 372,
+   "verbatim": "  if (paused) accumulator %= SIM_TIMESTEP_S"
+  }
+ },
+ {
+  "id": "CD-009",
+  "class": "DIVERGENCE",
+  "title": "The wave clock is correctly gated on a clear sky \u2014 NWPLNE returns early while a plane is in FLIGHT or EXPLOSION",
+  "claim": "NWPLNE is called every calc frame (RBARON.MAC:788), but its first act is to bail out: `LDA PLSTAT+6 / AND I,0C0 / BNE 17$ ;FLIGHT/EXPLOSION` (RBARON.MAC:2241-2243) \u2014 if plane #0's D7|D6 status bits show it flying or exploding, the routine RTS-es at :2257 and the inter-wave countdown `DEC NEWCT ;MODE COUNT?` (:2258) is NOT reached. The countdown therefore only runs while the sky is clear of both live planes AND explosions. Ours: `if (enemies.length === 0 && wrecks.length === 0)` (main.ts:452) gates stepWaveClock identically \u2014 enemies.length maps to FLIGHT, wrecks.length to EXPLOSION (our wrecks cover both the falling and the exploding phase). The mapping is exact.",
+  "reasoning": "I went looking for the opposite error here \u2014 a wave clock ticking only when the sky is clear, where the ROM ticks it unconditionally, would stretch every inter-wave gap and would feel exactly like \"way off\". It is not the bug: the ROM gates it too, and on the same two conditions.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 2243,
+   "verbatim": "\tBNE 17$\t\t\t;FLIGHT/EXPLOSION"
+  },
+  "ours": {
+   "file": "src/main.ts",
+   "line": 452,
+   "verbatim": "    if (enemies.length === 0 && wrecks.length === 0) {"
+  },
+  "coverage_review": "FALSE CONFIRMED (Phase 3). Claimed our wave-clock gate maps 'exactly' to NWPLNE; NWPLNE has THREE gates before DEC NEWCT and this saw one. MI-004 is correct. Reclassed DIVERGENCE.",
+  "recommendation": "fix",
+  "size": "s"
+ },
+ {
+  "id": "CD-010",
+  "class": "DIVERGENCE",
+  "title": "THE RETURNING ACE IS ON NO CLOCK AT ALL \u2014 returning-ace.ts is never imported by main.ts",
+  "claim": "The signature mechanic advances once per 96 ms in the ROM: inside NWPLNE, after the plane DB is cleared, `BIT GMEND0 ;RETURNING PLANE / BPL 15$ / JMP NWENME ;ELSE - INITIALIZE` (RBARON.MAC:2250-2252) re-enters the ace, and MAIN calls NWPLNE every calc frame (RBARON.MAC:788). Ours advances ZERO times per 96 ms \u2014 and zero times per second, ever. src/core/returning-ace.ts exists, is fully implemented (beginPass, evadeCheck, closesPast) and is covered by tests/core/returning-ace.test.ts, but grep over src/ finds NO import of it outside its own file: main.ts's import block (lines 26-52) does not include it and the accumulator block (main.ts:373-478) never calls it. Expected calls per minute of play: ROM 625 NWPLNE passes, each able to re-enter the ace; ours 0. The plane closes to enemy.ts's MIN_DEPTH = 140 floor (= P.MNDP), the trigger condition returning-ace.ts is written to detect, and then nothing happens.",
+  "reasoning": "This is the most consequential finding in my scope and the best single explanation for \"seems way off\". Red Baron's defining loop is: an ace flies past you, comes back on your six, you break-turn hard to shake him. In our build he never comes back. The subsystem is not broken \u2014 it is UNWIRED. Two ROM signals feed it and neither is read: GMEND0 (returning-plane armed) and ENSIDE (which shoulder). Nothing in main.ts holds a ReturningAce value, so beginPass/evadeCheck can never be reached. Its own header even says \"No main.ts wiring here\" \u2014 a scope note from rb2-8 that was never closed out. The fix is a wiring job inside the existing accumulator block, not new physics: hold an ace state alongside `enemies`, call closesPast on each stepped enemy, beginPass on the trigger, and evadeCheck against the flight model's bank on the ace's attack calc-frame \u2014 routing the 'hit' verdict into the loseLife channel that CD-011 also needs.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 2250,
+   "verbatim": "\tBIT GMEND0\t\t;RETURNING PLANE"
+  },
+  "ours": {
+   "file": "src/main.ts",
+   "line": 373,
+   "verbatim": "  while (accumulator >= SIM_TIMESTEP_S) {"
+  },
+  "recommendation": "fix",
+  "size": "m"
+ },
+ {
+  "id": "CD-011",
+  "class": "DIVERGENCE",
+  "title": "End-of-life is on no clock either \u2014 `lives` is written and never read, so the player cannot die",
+  "claim": "MAIN tests end-of-life every calc frame, before any motion: `LDA GMEND1 / BMI 10$ ;END OF LIFE` (RBARON.MAC:774-775) branches past POTSCL and NEWSHL to 10$ (:789), i.e. a dead player still watches the planes move but has no controls and no guns; the death/respawn sequence then runs. Ours: main.ts:342 declares `let lives`, main.ts:406 writes `lives = loseLife(lives).lives` on a blimp hit, and grep over main.ts finds NO other reference \u2014 lives is never compared, never rendered, never gates the loop. The blimp can shoot you an unbounded number of times and the game neither respawns nor ends. Lives reaching 0 has exactly zero effect on the calc frame.",
+  "reasoning": "Strictly a loop-gating defect: the ROM's per-calc-frame MAIN has three early-out gates \u2014 GMEND1 (end of life, :775), the GAMODE freeze bit (:782) and GREND (`;PLAYER RAN INTO GROUND`, :784). We implement exactly one of the three (the freeze, as pause \u2014 CD-008). Consequence in play: the damage channel that both the blimp AND the returning ace (CD-010) are supposed to feed terminates in a dead store, so nothing the enemy does to you can ever matter. That is a large part of \"seems way off\": the game has no stakes.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 775,
+   "verbatim": "\tBMI 10$\t\t\t;END OF LIFE"
+  },
+  "ours": {
+   "file": "src/main.ts",
+   "line": 406,
+   "verbatim": "        lives = loseLife(lives).lives"
+  },
+  "recommendation": "fix",
+  "size": "m"
+ },
+ {
+  "id": "CD-012",
+  "class": "DIVERGENCE",
+  "title": "On overrun the ROM DROPS the missed calc frame; our accumulator REPLAYS it (up to 2 catch-up steps)",
+  "claim": "INTWAIT is `INTWAIT:LSR CALFLG ;WAIT FOR FRAME TIME` / `BCC INTWAIT` (RBARON.MAC:926-927). LSR is destructive: if MAIN overran and the NMI had INC-ed CALFLG to 2, the first LSR yields 1 with C=0 (loop), the second yields 0 with C=1 (exit) \u2014 the backlog is DRAINED and MAIN proceeds to exactly ONE more motion update. The ROM never double-steps; an overrun simply makes the game run SLOWER in wall-clock, and the missed frame is gone. (Overrun past CALFLG >= 3 is not tolerated at all \u2014 see CD-013.) So the 96 ms period is a FLOOR that degrades to a longer period under load, never a catch-up. Ours: `while (accumulator >= SIM_TIMESTEP_S)` (main.ts:373) is a catch-up loop \u2014 after a hitch it replays the missed frames to stay in real time. The dt clamp `Math.min((nowMs - lastMs) / 1000, 0.25)` (main.ts:356) bounds it: 0.25 / 0.096 = 2.6, so at most 2 steps run in one rAF. ROM would run 1.",
+  "reasoning": "A real behavioural divergence, but narrow. At any normal refresh rate dt is 6.9-16.7 ms, far below 96 ms, so the accumulator fires 0 or 1 step per rAF and NEVER double-steps in steady state \u2014 the divergence is unreachable except immediately after a stall (tab restore, GC pause, first frame after a heavy load). The faithful alternative is one line \u2014 clamp the accumulator to a single step rather than banking it \u2014 and it would make the sim drift behind wall-clock exactly as the 6502 did. My recommendation is accept: the ROM's behaviour here is an artefact of a machine that could miss its deadline, not a design intent, and replaying at most 2 steps after a stall is visually preferable and cannot affect steady-state play. Recording it so the choice is deliberate rather than accidental.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 926,
+   "verbatim": "INTWAIT:LSR CALFLG\t\t;WAIT FOR FRAME TIME"
+  },
+  "ours": {
+   "file": "src/main.ts",
+   "line": 373,
+   "verbatim": "  while (accumulator >= SIM_TIMESTEP_S) {"
+  },
+  "recommendation": "accept"
+ },
+ {
+  "id": "CD-013",
+  "class": "BOOK_WAS_WRONG",
+  "title": "findings doc: the watchdog trips at CALFLG >= 3, not \"CALFLG >= 0x40 ~ 64 missed frames\" \u2014 a 21x error",
+  "claim": "docs/red-baron-1980-source-findings.md:113 states: \"watchdog only trips after `CALFLG >= 0x40` ~ 64 missed frames, `RBGRND.MAC:196-202`\". The cited lines say the opposite. RBGRND.MAC:196-198 is `12$: LDA CALFLG ;CHK FRAME(S)` / `CMP I,3` / `BCS 15$ ;3*CALCULATION LOOP TIME W/O FRAME`, and 15$ (RBGRND.MAC:202) is `15$:\tJMP 15$\t\t\t;WAIT FOR WATCHDOG TO RESTART` \u2014 a deliberate infinite loop that stops petting the watchdog (the pet is `STA A,WATCH ;CLR WATCHDOG` at :204, reached only on the non-taken branch). Threshold: CALFLG >= 3, i.e. THREE missed calc frames = 288 ms, not 0x40 = 64 frames = 6.1 seconds. The doc's figure is 21x too permissive. The same block also hard-resets if the stack is too low (`CPX I,90 / BCS 20$ ;NO`, :200-201).",
+  "reasoning": "This matters beyond pedantry: the doc uses the bogus 64-frame figure to argue that \"96 ms is the designed MINIMUM period\" and that the loop could comfortably run long. The real ROM tolerates a 2-frame backlog and RESETS THE MACHINE on the third \u2014 which means the 96 ms budget was hard, and MAIN was expected to finish comfortably inside it. That strengthens rather than weakens the case for treating 96 ms as a fixed timestep (the doc's own conclusion, reached for the wrong reason). Fix the number and the inference in the doc; no code change follows, since our accumulator already treats 96 ms as fixed.",
+  "source": {
+   "file": "RBGRND.MAC",
+   "line": 197,
+   "verbatim": "\tCMP I,3"
+  },
+  "ours": {
+   "file": "docs/red-baron-1980-source-findings.md",
+   "line": 113,
+   "verbatim": "period \u2014 if 6502 compute overran it the loop slowed (watchdog only trips after `CALFLG \u2265 0x40` \u2248"
+  },
+  "recommendation": "fix",
+  "size": "s"
+ },
+ {
+  "id": "CD-014",
+  "class": "BOOK_WAS_WRONG",
+  "title": "findings doc \u00a71 cadence table: three line citations are off (CALCNT, BNRCNT, SHLMOT) \u2014 and one is copied into timing.ts",
+  "claim": "The \u00a71 frame-cadence table mis-cites three of its rows. (1) Row \"Game-logic / calc frame (CALCNT)\" (doc:100) cites `RBARON.MAC:620`; line 620 is blank (a lone tab) and the equate `CALCNT\t=18` is on RBARON.MAC:621. This off-by-one is copied verbatim into our code at src/core/timing.ts:18 (\"(RBARON.MAC:620)\"). (2) Row \"Calc frame, attract (BNRCNT)\" (doc:101) cites `RBARON.MAC:621` \u2014 that is CALCNT; BNRCNT is on RBARON.MAC:622. (3) Row \"Player shell sub-stepping (SHLMOT)\" (doc:104) cites `RBARON.MAC:5186-5198`; 5186 is `CHKSM6:\t.BYTE 6C`, a checksum byte, and SHLMOT actually runs 5192-5204 \u2014 the cited range also truncates the routine, hiding the 4th sub-step (`JMP PSTSHL`, :5204) and making it look like a 3x sub-step. guns.ts:43 repeats the bad range.",
+  "reasoning": "Every VALUE in the table is correct (24, 12, 4x) \u2014 only the line numbers slipped, most likely by one when the table was assembled. But the doc is the authority our code cites in its own comments, and the errors have already propagated (timing.ts:18, guns.ts:43). Left alone, the SHLMOT one is actively misleading: the truncated range shows three PSTSHL calls, so a future reader \"correcting\" SHELL_SUBSTEPS to 3 would be doing so from the doc in good faith and would break anti-tunnelling. Cheap to fix; correct the three ranges in the doc and the two comments that quote them.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 5186,
+   "verbatim": "CHKSM6:\t.BYTE 6C"
+  },
+  "ours": {
+   "file": "docs/red-baron-1980-source-findings.md",
+   "line": 104,
+   "verbatim": "| Player shell sub-stepping (`SHLMOT`) | **4\u00d7** per calc-frame | \u2014 | `RBARON.MAC:5186-5198` |"
+  },
+  "recommendation": "fix",
+  "size": "s"
+ },
+ {
+  "id": "CD-015",
+  "class": "STRUCTURAL",
+  "title": "Sound and score belong to the 250 Hz NMI, not the calc frame \u2014 we run them per-rAF, which is the right CLASS of clock",
+  "claim": "The NMI epilogue runs two subsystems unconditionally, on EVERY 4 ms tick: `NMEXIT:\tJSR SCOREM` (RBGRND.MAC:236) and `\tJSR MODSND\t\t;UPDATE SOUNDS` (RBGRND.MAC:237). Both are therefore 250 Hz, NOT 10.4 Hz \u2014 MODSND is an envelope stepper (`DEC X,FRAMES ;CHANGE THIS FRAME`, RBSOUN.MAC:231, per channel, per NMI), and the shot sound is modulated straight off the NMI counter (`LDA INTCNT / AND I,8`, RBGRND.MAC:171-172 \u2014 a 32 ms half-cycle). Ours: playEventSounds/updateContinuousSounds (main.ts:483-488) run once per rAF (60-144 Hz) OUTSIDE the accumulator, and the score is drawn inside draw() per rAF. So we are 2-4x slower than the ROM's 250 Hz \u2014 but critically NOT on the 10.4 Hz calc clock, which would have been the real error.",
+  "reasoning": "Judged as correct-by-class rather than exact-by-rate. updateContinuousSounds (audio-dispatch.ts:82-87) is a set of idempotent LEVEL setters \u2014 setEngine/setGun/setApproach \u2014 over WebAudio nodes that synthesise continuously in the audio thread at 44.1 kHz. The ROM had to rewrite POKEY registers by hand at 250 Hz because nothing else would; we do not, so the parameter-update rate is a control-plane rate, not a synthesis rate, and 60-144 Hz is ample. Calling these per-rAF rather than per-calc-frame is a deliberate and correct clock assignment. No fix; recorded so that a future \"tidy-up\" does not sweep them into the accumulator, which WOULD be a 6x-24x error.",
+  "source": {
+   "file": "RBGRND.MAC",
+   "line": 237,
+   "verbatim": "\tJSR MODSND\t\t;UPDATE SOUNDS"
+  },
+  "ours": {
+   "file": "src/main.ts",
+   "line": 484,
+   "verbatim": "  updateContinuousSounds(audio, {"
+  },
+  "recommendation": "accept"
+ },
+ {
+  "id": "CD-016",
+  "class": "DIVERGENCE",
+  "title": "PLPROP: the propeller is the ONE thing the ROM animates BETWEEN calc frames (62.5 Hz) \u2014 we transcribed its geometry and animate it at 0 Hz",
+  "claim": "The propeller runs on the DISPLAY clock, not the calc clock. It is called from the NMI at RBGRND.MAC:244 (`\tJSR PLPROP`), behind the guards `BIT S.FLAG ;PROGRAM CALCULATING?` (:238) and `LDA INTFLG ;EOF (VG) ?` (:240) \u2014 so once per VG frame, 62.5 Hz \u2014 and again from MAIN at RBARON.MAC:857 for the pass in which INTWAIT has just cleared S.FLAG (:928). PLPROP (RBARON.MAC:882-889) advances PROP.F by two (`INY`/`INY`, :884-885), wraps at 6 (`CPY I,6` / `LDY I,0`, :886-888) \u2014 offsets 0, 2, 4, a THREE-phase cycle \u2014 and pokes the picture JSRL directly into VGRAM (:894-895, :899-900), patching the display list the VG is about to re-stroke. Rate: 62.5 / 3 = 20.8 prop revolutions/sec. Ours: the geometry is fully transcribed \u2014 topology.ts:142 DBPROP_POINTS, topology.ts:153-157 PPROPA/PPROPB/PPROPC, topology.ts:160 `PROPS` with exactly the ROM's three frames \u2014 but grep across src/main.ts, src/core/biplane.ts and src/shell/ finds ZERO references to PROPS/DBPROP/PPROPA. draw() (main.ts:490) never strokes it. The prop is advanced 0 times per second against the ROM's 20.8.",
+  "reasoning": "This is the exception that proves CD-007, and the reason it is worth a separate finding. The correct answer to \"should the picture move between sim steps?\" is NO for every object in the world \u2014 and YES for exactly one thing, which is precisely why Atari paid to poke VGRAM from the interrupt handler rather than from MAIN. So the fidelity-correct way to make a 10.4 Hz cockpit stop reading as a slideshow is not interpolation (which would be a divergence) but the one animation the arcade actually had. Everything needed is already in the repo and byte-checked against the picture ROM: PROPS is a 3-element table and PROP.F cycles through exactly 3 states. The wiring belongs in draw() on the rAF/display clock \u2014 a phase counter driven by elapsed time, NOT by simFrame. Putting a 3-phase cycle on the 10.4 Hz calc clock would give 3.5 rev/sec instead of 20.8, a 6x error, and would be the natural mistake for whoever picks this up.",
+  "source": {
+   "file": "RBGRND.MAC",
+   "line": 244,
+   "verbatim": "\tJSR PLPROP"
+  },
+  "ours": {
+   "file": "src/main.ts",
+   "line": 490,
+   "verbatim": "  draw(toAttitude(flight), enemies, blimp, mountains, wrecks, guns.shells, guns.overheated, score)"
+  },
+  "recommendation": "fix",
+  "size": "s"
+ },
+ {
+  "id": "CD-017",
+  "class": "NO_COUNTERPART",
+  "title": "BNRCNT = 0C \u2014 the ROM has a SECOND calc rate (48 ms / 20.8 Hz) for attract/banner mode; timing.ts models only one",
+  "claim": "The calc-frame divider is not a constant \u2014 the NMI picks it per mode: `DEC C.CNTR ;CALCULATION FRAME CNTR` (RBGRND.MAC:221), then `LDX I,CALCNT` (:223), then `LDA GAMODE / AND I,BNRBIT / BEQ 35$ / LDX I,BNRCNT` (:224-227) \u2014 if the banner bit (BNRBIT=10 hex, RBARON.MAC:610) is set in GAMODE, C.CNTR reloads with BNRCNT instead. BNRCNT = 0C (RBARON.MAC:622) = 12 decimal = 12 x 4 ms = 48 ms = 20.83 Hz, exactly DOUBLE the gameplay rate. timing.ts exports MASTER_NMI_HZ, CALC_FRAME_NMIS = 24, DISPLAY_FRAME_NMIS = 4, SIM_HZ, DISPLAY_HZ and SIM_TIMESTEP_S \u2014 there is no BNRCNT / banner constant, and main.ts has no attract mode to run one in.",
+  "reasoning": "Correctly absent, not a bug \u2014 we have no attract mode, no banner, no high-score entry, so there is nothing to clock at 48 ms. Recorded for two reasons. First, it is the strongest independent proof that CALCNT is HEX: BNRCNT is spelled `0C` with the leading zero the ROM uses for hex literals, sits two lines below CALCNT in the same equate block, and the doc's own 20.83 Hz only works if 0C = 12 and 18 = 24. Second, if an attract mode is ever added it must NOT reuse SIM_TIMESTEP_S \u2014 the banner animates at twice the gameplay rate, and getting that wrong would make the attract loop crawl at half speed.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 622,
+   "verbatim": "BNRCNT\t=0C\t\t\t;BANNER DISPLAY CALCULATION COUNT"
+  },
+  "ours": null,
+  "recommendation": "wont_fix"
+ }
+]
