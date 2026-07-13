@@ -207,12 +207,17 @@ describe('enemy — P.OLIM / P.ILIM window tables (findings §3, R2BRON.MAC:2935
 // AC-2 — ROM spawn/steer constants
 // ───────────────────────────────────────────────────────────────────────────
 describe('enemy — ROM constants P.INDP / ACCEL / lone-plane roll (findings §3)', () => {
-  it('P_INDP spawn depth is 1080 (NWPLNE, R2BRON.MAC:2237)', () => {
-    expect(need(m.P_INDP, 'P_INDP')).toBe(1080)
+  // rb4-1 RE-BASELINE. These two asserted the DECIMAL misreading and cited the DECOY
+  // build (R2BRON.MAC — never shipped). RBARON.MAC is `.RADIX 16` from :74, so the
+  // literals are HEX. Derivation is audited in tests/audit/radix-transcription.test.ts.
+  it('P_INDP spawn depth is 0x1080 = 4224 (P.INDP, RBARON.MAC:464, .RADIX 16)', () => {
+    expect(need(m.P_INDP, 'P_INDP')).toBe(0x1080)
+    expect(need(m.P_INDP, 'P_INDP')).not.toBe(1080) // the decimal misreading we shipped
   })
 
-  it('ACCEL — the ΔX weave acceleration per calc frame — is 30 (findings §3)', () => {
-    expect(need(m.ACCEL, 'ACCEL')).toBe(30)
+  it('ACCEL — the ΔX weave acceleration per calc frame — is 0x30 = 48 (RBARON.MAC:465, .RADIX 16)', () => {
+    expect(need(m.ACCEL, 'ACCEL')).toBe(0x30)
+    expect(need(m.ACCEL, 'ACCEL')).not.toBe(30) // the decimal misreading we shipped
   })
 
   it('LONE_PLANE_CHANCE is the 25 % RANDOM roll (findings §3)', () => {
