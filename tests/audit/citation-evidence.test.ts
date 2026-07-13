@@ -76,6 +76,27 @@ function toFinding(raw: unknown, where: string): Finding {
   return { id: o.id, class: o.class, ours: { file: u.file, line: u.line, verbatim: u.verbatim } }
 }
 
+/**
+ * The findings EXACTLY as they sit on disk — every key, nothing dropped.
+ *
+ * rb4-1 REWORK 2. This exists because `toFinding()` below does NOT return the findings:
+ * it returns a projection of them. Validation and tamper-detection are different jobs and
+ * they must not share a projection — a validator's job is to throw away what it does not
+ * understand, and a tamper-detector's job is to NOTICE it. Routing the opt-out canary
+ * through the validator is what made the canary vacuous (see the block at the foot of this
+ * file). Anything hunting for keys that should not be there must read from HERE.
+ */
+function allRawFindings(): readonly Record<string, unknown>[] {
+  if (!existsSync(findingsDir)) return []
+  return readdirSync(findingsDir)
+    .filter((f) => f.endsWith('.json'))
+    .flatMap((f) => {
+      const parsed: unknown = JSON.parse(readFileSync(join(findingsDir, f), 'utf8'))
+      if (!Array.isArray(parsed)) throw new Error(`${f}: expected an array of findings`)
+      return parsed as Record<string, unknown>[]
+    })
+}
+
 function allFindings(): readonly Finding[] {
   if (!existsSync(findingsDir)) return []
   return readdirSync(findingsDir)
@@ -85,6 +106,45 @@ function allFindings(): readonly Finding[] {
       if (!Array.isArray(parsed)) throw new Error(`${f}: expected an array of findings`)
       return parsed.map((raw) => toFinding(raw, f))
     })
+}
+
+/**
+ * The audit finding SCHEMA — every key a finding is permitted to carry.
+ *
+ * This is an ALLOWLIST, and that is deliberate. The check it replaces was a denylist of six
+ * words (`skip`, `skipOurs`, `stale`, `ignore`, `fixed`, `obsolete`), which asks the auditor
+ * to have guessed the vocabulary of whoever eventually wants to dodge the gate. They will
+ * pick a seventh word. An allowlist does not care what the word is: a finding may say the
+ * eleven things a finding says, and anything else is a finding trying to tell the gate what
+ * to do, which is not a finding's job.
+ *
+ * Adding a key here is a deliberate schema change. That friction is the feature.
+ */
+const SCHEMA_KEYS: ReadonlySet<string> = new Set([
+  'id',
+  'class',
+  'title',
+  'claim',
+  'reasoning',
+  'source',
+  'ours',
+  'coverage_review',
+  'recommendation',
+  'size',
+  'verdict',
+])
+
+/**
+ * The escape-hatch detector: keys present on a RAW finding that the schema does not permit.
+ *
+ * Takes raw parsed JSON — NEVER a validated/narrowed projection. `toFinding()` above rebuilds
+ * each finding as a clean {id, class, ours} literal, which is correct for validation and fatal
+ * for detection: you cannot notice a key you have already thrown away. Keeping this a pure
+ * function of its input is what lets the test below prove it works, on a finding that exists
+ * only in memory, without laying a finger on the evidence.
+ */
+function optOutKeys(raws: readonly Record<string, unknown>[]): readonly string[] {
+  return raws.flatMap((raw) => Object.keys(raw).filter((k) => !SCHEMA_KEYS.has(k)))
 }
 
 /** A file's contents at the audit commit. `null` when the commit is not in this clone. */
@@ -144,6 +204,20 @@ describe('the audit evidence is frozen at the commit it was taken against', () =
   })
 
   it('EVERY `ours` citation still matches the code AS AUDITED — the evidence is not laundered', () => {
+    // rb4-1 REWORK 2 (Reviewer finding 3). Its neighbour above preflights the audit commit;
+    // this one did not, so on a shallow clone it buried the ONE useful diagnostic ("your
+    // clone is shallow") under ~154 identical "did not exist at the audit commit" lines —
+    // the same flood the rework had just killed in check-citations.mjs, surviving next door.
+    // CI carries fetch-depth: 0 so it cannot hit this; a developer on a shallow clone can.
+    if (!auditCommitPresent()) {
+      throw new Error(
+        `the audit commit ${AUDIT_COMMIT.slice(0, 7)} is not in this clone — the evidence lock ` +
+          `cannot run. This is a SHALLOW CLONE, not a clean bill of health. Run ` +
+          `\`git fetch --unshallow\`. (Reported once, deliberately: 154 "missing file" errors ` +
+          `would all be pointing at the wrong thing.)`,
+      )
+    }
+
     const findings = allFindings().filter((f) => f.ours !== null)
     expect(findings.length, 'the audit should have findings to check').toBeGreaterThan(100)
 
@@ -188,11 +262,65 @@ describe('the citation gate still means something after the sweep', () => {
   it('no finding has been given an opt-out flag to dodge the gate', () => {
     // The other cheap escape: add `"skip": true` / `"stale": true` to the findings that
     // break. The gate is worth nothing if a finding can excuse itself from it.
-    for (const f of allFindings()) {
-      const keys = Object.keys(f)
-      for (const escape of ['skip', 'skipOurs', 'stale', 'ignore', 'fixed', 'obsolete']) {
-        expect(keys, `${f.id} must not carry an \`${escape}\` opt-out`).not.toContain(escape)
-      }
+    //
+    // Read RAW (see `allRawFindings`). This test used to run over `allFindings()`, whose
+    // every element has been rebuilt by `toFinding()` as a fresh {id, class, ours} literal —
+    // so `Object.keys` could only ever return those three, and the assertion below was
+    // STRUCTURALLY INCAPABLE OF FAILING while reporting green. The proof it has teeth now is
+    // the test immediately after this one, and that is not decoration: it is the only reason
+    // you may believe this line.
+    const escapes = optOutKeys(allRawFindings())
+    expect(
+      escapes,
+      'a finding is carrying a key that is not part of the audit schema. The cheap way to make ' +
+        'this gate green is to excuse a finding from it; that is what this catches.',
+    ).toEqual([])
+  })
+
+  it('…and the opt-out check CAN ACTUALLY FAIL — the canary is alive [the lock on the lock]', () => {
+    // ─── WHY THIS TEST EXISTS ────────────────────────────────────────────────────────
+    //
+    // The guard above was vacuous for an entire review cycle and the suite stayed green over
+    // it, because nothing ever asked the only question that matters about a guard:
+    //
+    //     "if the thing you are guarding against HAPPENED, would you notice?"
+    //
+    // A guard is a claim about a case that must not occur. If the case never occurs in the
+    // fixture, the guard's passing tells you NOTHING — it is indistinguishable from a guard
+    // that has quietly stopped working. So we manufacture the case.
+    //
+    // The Thought Police's instruction was to re-prove the lock by laundering a real finding
+    // on disk and watching it go red. That works, but it is a RITUAL — a human must remember
+    // to perform it, it mutates real evidence (one crashed process from leaving the audit
+    // dirty), and it cannot run in CI. This does the same job on a SYNTHETIC finding: it
+    // never touches docs/audit/findings/, it runs on every commit, and it fails the moment
+    // the detector loses its teeth again.
+    const real = allRawFindings()[0]
+    expect(real, 'there must be real findings to model the tamper on').toBeDefined()
+
+    // Every escape the old denylist named…
+    for (const escape of ['skip', 'skipOurs', 'stale', 'ignore', 'fixed', 'obsolete']) {
+      const tampered = { ...real, [escape]: true }
+      expect(
+        optOutKeys([tampered]),
+        `a finding carrying \`"${escape}": true\` MUST be caught. If this passes, the gate can ` +
+          `be dodged by writing one word into a JSON file.`,
+      ).toContain(escape)
     }
+
+    // …and — because an allowlist is strictly stronger than a denylist — escapes nobody
+    // thought to name. The old check enumerated six words; a tamperer picks a seventh.
+    for (const unnamed of ['waived', 'exempt', 'wontfix', 'accepted', 'suppress']) {
+      const tampered = { ...real, [unnamed]: true }
+      expect(
+        optOutKeys([tampered]),
+        `an opt-out named \`${unnamed}\` must be caught too — the gate must not depend on the ` +
+          `auditor having guessed the tamperer's vocabulary.`,
+      ).toContain(unnamed)
+    }
+
+    // And the negative: a clean finding must NOT be flagged, or the guard is a smoke alarm
+    // that screams at toast and gets unplugged.
+    expect(optOutKeys([real])).toEqual([])
   })
 })

@@ -466,6 +466,44 @@ describe('AC-2 — the files this story rewrites no longer cite the DECOY build'
   })
 })
 
+describe("AC-2 — the story's own doc comments do not restate the bug they exist to kill", () => {
+  // rb4-1 REWORK 2 (Reviewer finding 6). This story is about a decimal being read as hex.
+  // The doc comment the story ADDED at returning-ace.ts:67-68 describes the PLPOSZ ramp as
+  // reaching "-0x80" — but that is PLPOSZ[8] = -128, which GMLEVL can never index
+  // (MAX_GMLEVL = max(PLNLVL) = 5). The ramp's real top is PLPOSZ[5] = -0x50 = -80 decimal.
+  //
+  // Somebody wrote DECIMAL 80 as HEX 0x80. In the file this story wrote. In prose explaining
+  // the radix fix. It is the identical error Dev correctly caught and rejected in TEA's own
+  // `t[5] = -0x80` assertion, reproduced one file over — which is exactly how the original
+  // bug propagated: through a document that everyone trusted and nobody re-derived.
+  //
+  // A comment cannot be type-checked, so the suite checks it.
+  it('returning-ace.ts does not claim the GMLEVL ramp reaches -0x80 (that is PLPOSZ[8], unreachable)', () => {
+    const src = coreSource('returning-ace')
+    const comments = src.match(/\/\*[\s\S]*?\*\/|\/\/.*/g)?.join('\n') ?? ''
+    expect(
+      comments,
+      'PLPOSZ[8] = -0x80 = -128 would be a 32x ramp and GMLEVL cannot reach index 8. The ' +
+        'reachable top is PLPOSZ[5] = -0x50 = -80 decimal — a 20x ramp, which is what the ' +
+        'comment means and not what it says. Writing decimal 80 as hex 0x80 is THIS STORY\'S ' +
+        'OWN BUG.',
+    ).not.toMatch(/-0x80/i)
+  })
+
+  it('…and the 20x ramp the comment claims is the one the TABLE actually delivers', async () => {
+    // Derive it rather than assert it: the comment must be TRUE of the real data. GMLEVL is
+    // bounded by MAX_GMLEVL = max(PLNLVL) = 5, so PLPOSZ[5] is the fastest the plane can ever
+    // close — index 8 is unreachable and its -0x80 is a number from nowhere.
+    const plposz = exportedValue('returning-ace', 'PLPOSZ') as readonly number[]
+    const { MAX_GMLEVL } = await import('../../src/core/scoring')
+    const slowest = Math.abs(plposz[0])
+    const fastest = Math.abs(plposz[MAX_GMLEVL])
+    expect(fastest / slowest).toBe(20) // -0x50 / -0x04 — the ramp the comment describes
+    expect(fastest).toBe(0x50)
+    expect(fastest).not.toBe(0x80) // the value the comment CLAIMS. It is not in reach.
+  })
+})
+
 describe('AC-2 — every corrected constant cites its ROM line AND its radix region', () => {
   it.each(MANIFEST.filter((t) => t.module !== 'topology'))(
     '$ours carries its $romFile citation and names its radix region',
