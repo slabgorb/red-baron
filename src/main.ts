@@ -39,7 +39,7 @@ import { initialLives, loseLife, type Lives } from './core/lives'
 import { initialMountains, stepMountain, mountainSegments, type Mountain } from './core/landscape'
 import { sceneProjection, projectSegment, type SceneSegment } from './core/scene'
 import { SIM_TIMESTEP_S } from './core/timing'
-import { INITIAL_GUNS, fire, step as stepGuns, S_MAXZ, type Guns, type Shell } from './core/guns'
+import { INITIAL_GUNS, fire, step as stepGuns, shellDepth, type Guns, type Shell } from './core/guns'
 import { explode, stepWreck, EXPL2_FRAMES, type Wreck } from './core/explosion'
 import { scoreKill, gmlevlForKills } from './core/scoring'
 import { EXPLOSION_PIECES, BLIMP_PICTURE } from './core/topology'
@@ -54,11 +54,14 @@ import { drawEscOverlay } from '@arcade/shared/esc-overlay'
 const canvas = document.getElementById('game') as HTMLCanvasElement
 const ctx = canvas.getContext('2d')
 
-/**
- * World depth a shell at z = S.MAXZ is drawn at — mirrors guns.ts's internal
- * SHELL_RANGE_DEPTH so a tracer appears at the same depth as the enemy it will hit.
- */
-const SHELL_DRAW_FAR = 800
+// rb4-1 REWORK 2: a hand-copied mirror of the gun's reach used to live here, and its own
+// comment promised it would track the real one in core/guns. It didn't — copies don't track
+// anything. When the reach was corrected against the ROM this stayed behind, and the tracer
+// was drawn at an EIGHTH of the depth the same shell killed at. The conversion is now
+// `guns.shellDepth`, the very function the collision test uses, so the picture and the hit
+// cannot disagree. DO NOT reintroduce a local depth constant in this file: it is unreachable
+// from the test suite (main.ts touches `document` at module scope, vitest runs under node),
+// which is exactly why the last one rotted here unnoticed. See tests/core/tracer-seam.ts.
 
 /** Each of the four PIECE0-3 debris fragments flies out along a distinct diagonal. Inferred. */
 const DEBRIS_DIRS: readonly (readonly [number, number])[] = [
@@ -117,13 +120,15 @@ function strokeSegments(segs: readonly SceneSegment[], width: number, height: nu
 }
 
 /**
- * Project a player shell to a short glowing tracer streak. The shell's z (0..S.MAXZ)
- * maps to a world depth; the streak trails one z-unit behind so it reads as motion.
- * The shell's (x, y) are world-window units — the same space the enemy lives in.
+ * Project a player shell to a short glowing tracer streak. The shell's z (0..S.MAXZ) maps to
+ * a world depth THROUGH THE GUN'S OWN CONVERSION (`shellDepth`) — the same one `collides`
+ * uses — so the tracer is drawn at the depth the bullet would actually hit at. The streak
+ * trails one z-unit behind so it reads as motion. The shell's (x, y) are world-window units,
+ * the same space the enemy lives in.
  */
 function shellSegments(shell: Shell, viewProj: Mat4): readonly SceneSegment[] {
-  const wd = (shell.z / S_MAXZ) * SHELL_DRAW_FAR
-  const wdBack = (Math.max(0, shell.z - 1) / S_MAXZ) * SHELL_DRAW_FAR
+  const wd = shellDepth(shell.z)
+  const wdBack = shellDepth(Math.max(0, shell.z - 1))
   const front: Vec3 = [shell.x, shell.y, -wd]
   const back: Vec3 = [shell.x, shell.y, -wdBack]
   const seg = projectSegment(front, back, viewProj)

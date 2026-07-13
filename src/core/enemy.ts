@@ -28,7 +28,7 @@
 import { type Rng, nextFloat } from '@arcade/shared/rng'
 import { biplaneBank } from './biplane'
 import type { ProximityBand } from './flight'
-import { P_MNDP, closeSpeed } from './returning-ace'
+import { P_MNDP, P_INDP, closeSpeed } from './returning-ace'
 
 // ─── ROM-exact data (RBARON.MAC, `.RADIX 16` region — HEX) ───────────────────
 //
@@ -43,13 +43,6 @@ export const P_OLIM: readonly number[] = Object.freeze([0x40, 0x80, 0x120, 0x1a0
 
 /** P.ILIM — inner weave-window limit, GMLEVL-indexed (RBARON.MAC:2945, .RADIX 16 region). */
 export const P_ILIM: readonly number[] = Object.freeze([0x20, 0x30, 0x80, 0x120, 0x160])
-
-/**
- * P.INDP — the depth a plane enters at, far from the eye (STPLNE).
- * RBARON.MAC:464 `P.INDP =1080`, .RADIX 16 region (set at :74) → 0x1080 = 4224.
- * Read as decimal 1080 we spawned every plane 3.9× too close.
- */
-export const P_INDP = 0x1080
 
 /**
  * ACCEL — the per-calc-frame ΔX weave acceleration (P.WCHK).
@@ -70,8 +63,13 @@ export const ACCEL = 0x30
  * landscape.ts's own `MIN_DEPTH` — the mountain recycle threshold, 0x01C0 = 448. One
  * identifier, two unrelated ROM equates, two values: exactly the bug class this story
  * exists to kill, recreated in the act of killing it. The ROM name is unambiguous.
+ *
+ * P.INDP (RBARON.MAC:464, 0x1080 = 4224 — the depth a plane ENTERS at, STPLNE) rides
+ * back out through here too. It now lives beside P.MNDP in returning-ace.ts, which
+ * imports nothing: the two ends of the depth axis belong in the one module every other
+ * module can reach without a cycle. enemy.ts's public surface is unchanged.
  */
-export { P_MNDP }
+export { P_MNDP, P_INDP }
 
 /** The RANDOM roll: 25 % chance of a lone plane (findings §3). rb2-7 branches on it. */
 export const LONE_PLANE_CHANCE = 0.25

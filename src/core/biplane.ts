@@ -28,6 +28,7 @@
 // PURE and deterministic. No DOM, no time, no randomness.
 
 import { type Point3, type ConnectOp, DB_MAP, DB_MAR, DB_LNS } from './topology'
+import { P_INDP } from './returning-ace'
 import { type SceneSegment, projectSegment } from './scene'
 import { toAttitude } from './flight'
 import type { Mat4 } from '@arcade/shared/math3d'
@@ -103,11 +104,23 @@ export interface BiplaneModel {
 }
 
 /**
- * Camera depth (world units) at/beyond which the far drone LOD is used. The ROM
- * pins the near-full/far-drone SPLIT but not the switch distance (findings §7,
- * "LOD reading inferred"), so this is a tunable threshold, not a ROM constant.
+ * Camera depth at/beyond which the far drone LOD is used. The ROM pins the near-full /
+ * far-drone SPLIT but not the switch distance (findings §7, "LOD reading inferred"), so the
+ * FRACTION is a tunable — but it is a fraction OF THE DEPTH AXIS, not a bare number.
+ *
+ * rb4-1 REWORK 2. This was `1500`, and it was quietly dead. Under the misread axis the plane
+ * spawned at 1080 — INSIDE the switch — so `biplaneLOD` returned the 42-vertex near model for
+ * the plane's entire flight and the 29-vertex drone had never once rendered in the shipped
+ * game. Correcting P.INDP to 4224 switched it on by accident: nobody chose it, nobody tested
+ * it, and the switch distance was still calibrated against a world that no longer existed.
+ *
+ * 3/8 of the spawn depth = 1584, which is deliberately within a hair of the shipped 1500: the
+ * ROM's near/far split is real (findings §7) and rb4-1's job is to DENOMINATE this number, not
+ * to re-tune it. Whether 3/8 is the authentic fraction is a fidelity question this story does
+ * not own — but it can no longer silently fall outside the plane's flight band, because the
+ * band and the switch are now measured with the same ruler.
  */
-export const LOD_DISTANCE = 1500
+export const LOD_DISTANCE = (P_INDP * 3) / 8 // 1584
 
 /** Near/full plane: all 42 vertices, back faces (DB.MAP→DB.MAR fall-through) + struts. */
 const NEAR_MODEL: BiplaneModel = {

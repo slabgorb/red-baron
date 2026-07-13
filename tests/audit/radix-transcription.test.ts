@@ -112,7 +112,15 @@ type ModuleName = 'enemy' | 'guns' | 'explosion' | 'landscape' | 'waves' | 'retu
 
 const MANIFEST: readonly Transcription[] = [
   // The enemy — the machine that felt wrong.
-  { ours: 'P_INDP', module: 'enemy', symbol: 'P.INDP', romFile: 'RBARON.MAC', romLine: 464, literal: '1080', decimalMisread: 1080 },
+  // DEV EDITED THIS LINE (rb4-1 rework 2) — `module` only: 'enemy' → 'returning-ace'.
+  // P.INDP now lives beside P.MNDP in returning-ace.ts, the one core module that imports
+  // nothing, because enemy.ts imports biplane.ts and biplane.ts must denominate LOD_DISTANCE
+  // against the axis — a circular import whose top-level `const` would throw on load (TDZ).
+  // enemy.ts re-exports it, so its public surface is unchanged and every other test still
+  // reads `enemy.P_INDP`. The AUDITED FACTS are untouched: same value, same ROM line, same
+  // radix region, same decimal refutation. Only the home moved, so the manifest follows it —
+  // a manifest that names the wrong module is an audit asserting something false.
+  { ours: 'P_INDP', module: 'returning-ace', symbol: 'P.INDP', romFile: 'RBARON.MAC', romLine: 464, literal: '1080', decimalMisread: 1080 },
   { ours: 'ACCEL', module: 'enemy', symbol: 'ACCEL', romFile: 'RBARON.MAC', romLine: 465, literal: '30', decimalMisread: 30 },
   { ours: 'P_MNDP', module: 'returning-ace', symbol: 'P.MNDP', romFile: 'RBARON.MAC', romLine: 469, literal: '140', decimalMisread: 140 },
 

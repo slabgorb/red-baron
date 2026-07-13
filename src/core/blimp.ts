@@ -38,6 +38,7 @@
 // of randomness is the seeded Rng handed to `spawn`.
 
 import { type Rng, nextFloat } from '@arcade/shared/rng'
+import { P_INDP } from './returning-ace'
 
 // ─── ROM-exact data (findings §3, BLMOTN) ────────────────────────────────────
 
@@ -50,8 +51,17 @@ export const BLIMP_SPAWN_CHANCE = 0.25
 
 // ─── tuning within the tested invariants (inferred — BLMOTN not byte-transcribed) ─
 
-/** Cruise depth the airship drifts across at — a visible mid-field distance. Inferred. */
-const CRUISE_DEPTH = 600
+/**
+ * Cruise depth the airship drifts across at — a visible mid-field distance. Inferred
+ * (BLMOTN does not byte-pin it), but DENOMINATED IN THE AXIS rather than typed as a number.
+ *
+ * rb4-1 REWORK 2. This was a bare `600`, and "mid-field" was true of it only in the world we
+ * misread: against the old 1080 spawn, 600 was 56% of the way out. Against the real P.INDP =
+ * 4224 it is 14% — the airship was cruising in the player's face, and its own comment was the
+ * only thing still claiming otherwise. Half the plane's spawn depth IS the mid-field, at any
+ * scale, so the two can never drift apart again.
+ */
+const CRUISE_DEPTH = P_INDP / 2 // 2112
 
 /** Per-calc-frame lateral drift — the airship is slow and steady. Inferred. */
 const DRIFT_SPEED = 12

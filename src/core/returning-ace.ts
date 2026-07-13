@@ -43,8 +43,29 @@
 // These digits are HEX. They were transcribed as decimal from a doc citing the DECOY
 // BUILD — an image that never shipped.
 
+// ─── THE DEPTH AXIS ──────────────────────────────────────────────────────────
+//
+// P.INDP and P.MNDP are the two ends of the axis the plane flies down: where it
+// appears, and the closest it can ever get. EVERY other depth-denominated number in
+// the game is a statement about this interval, so both live HERE, in the one core
+// module that imports nothing — any module can reach the axis without a cycle.
+//
+// (P.INDP was in enemy.ts, but enemy.ts imports biplane.ts, so biplane.ts could not
+// denominate its LOD switch against it without a circular import — the top-level
+// `const` would have hit the TDZ and thrown at load. enemy.ts re-exports it, so its
+// public surface is unchanged.)
+
+/**
+ * P.INDP — the depth the plane APPEARS at. The far end of the axis.
+ * RBARON.MAC:464 `P.INDP =1080`, .RADIX 16 region (set at :74) → 0x1080 = 4224.
+ * Read as decimal 1080 the whole world was 3.91× too shallow — which is the bug that
+ * invalidated every constant measured in depth (see tests/core/depth-scale.test.ts).
+ */
+export const P_INDP = 0x1080
+
 /**
  * P.MNDP — the close distance past which the fly-by becomes a returning attack (P.UPD0).
+ * Also the plane's depth FLOOR: the near end of the axis, the closest it can ever get.
  * RBARON.MAC:469 `P.MNDP =140`, .RADIX 16 region (set at :74) → 0x140 = 320.
  * Read as decimal 140 the plane had to get 2.3× closer before the ace pass triggered.
  */
@@ -65,9 +86,16 @@ export const HARD_TURN = 0x1c
  *   MAGNITUDE they are HEX: -4, -16, -32, … -128. We read the digits as decimal.
  *   LENGTH    NINE entries. We shipped five.
  *   RAMP      GMLEVL 0..5 is all PLNZD ever indexes (RBARON.MAC:2409-2411), i.e.
- *             -0x04 .. -0x80 — a 20× acceleration in closing rate across the game.
- *             We shipped 8 → 20, a 2.5× ramp: level 0 twice too fast, level 5 four
- *             times too slow.
+ *             PLPOSZ[0..5] = -0x04 .. -0x50 — a 20× acceleration across the game
+ *             (0x50 / 0x04 = 80 / 4 = 20). We shipped 8 → 20, a 2.5× ramp: level 0
+ *             twice too fast, level 5 four times too slow.
+ *
+ *             This line ONCE named PLPOSZ[8] as the top of the ramp. It is not: GMLEVL
+ *             cannot reach index 8 (MAX_GMLEVL = max(PLNLVL) = 5), and that entry is
+ *             -128, which would be a 32× ramp. The slip was writing the DECIMAL top of
+ *             the ramp (80) as though it were hex — this story's own bug, in prose, in
+ *             the file the story wrote. Indices 6..8 are transcribed because the ROM
+ *             has nine bytes; they are simply never indexed.
  */
 export const PLPOSZ: readonly number[] = Object.freeze([
   -0x04, -0x10, -0x20, -0x30, -0x40, -0x50, -0x60, -0x70, -0x80,

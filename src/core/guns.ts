@@ -177,6 +177,29 @@ const muzzleX = (g: Gun): number => (g === 'left' ? -MUZZLE_X : MUZZLE_X)
  */
 const depthToShellZ = (depth: number): number => depth / S_DPTH
 
+/**
+ * …and the way back: the world depth a shell at range-progress `z` actually occupies.
+ *
+ * `z * S_DPTH` — the shell's Z counter IS the high byte of its 16-bit depth, which is what
+ * `PSTSHL` increments (`INC AX,SHELLS+5`, the Z MSB), and `S.MAXZ`'s own comment spells the
+ * unit out: ";SHELL MAX Z (* 100)". So one Z count is 0x100 of depth, exactly.
+ *
+ * rb4-1 REWORK 2. This is EXPORTED, and that is the whole point. The player's trigger runs
+ * into a fork — one arm decides what the shell HITS (`collides`, via depthToShellZ above),
+ * the other decides where it is DRAWN (main.ts's `shellSegments`). Both convert between z
+ * and depth, and they must agree, because they are describing the same bullet.
+ *
+ * They didn't. main.ts kept its own copy of the gun's reach (`SHELL_DRAW_FAR = 800`) whose
+ * comment promised it would track `SHELL_RANGE_DEPTH`. When the reach moved 800 → 6400 the
+ * copy stayed put, and a shell that killed the plane at depth 4224 was drawn at 528 — an 8×
+ * divergence, the exact 6400/800 ratio. Tracers died in the foreground while the plane
+ * exploded untouched.
+ *
+ * A copy cannot track anything. So there is no copy now: both arms call into this module,
+ * and the seam is closed BY CONSTRUCTION rather than by two constants agreeing to.
+ */
+export const shellDepth = (z: number): number => z * S_DPTH
+
 // ─── firing: NEWSHL / GUN.ST (one calc-frame of the trigger — findings §5) ────
 
 /**
