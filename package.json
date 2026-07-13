@@ -4,7 +4,7 @@
   "version": "0.0.11",
   "type": "module",
   "dependencies": {
-    "@arcade/shared": "github:slabgorb/arcade-shared#v0.12.0"
+    "@arcade/shared": "github:slabgorb/arcade-shared#feat/SH2-18-shared-synth"
   },
   "scripts": {
     "dev": "vite",

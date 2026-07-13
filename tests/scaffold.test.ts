@@ -155,12 +155,38 @@ describe('scaffold — first native @arcade/shared consumer (proves the dependen
     ).toBe(false)
   })
 
-  it('pins @arcade/shared as a git-URL dependency at v0.12.0', () => {
-    // SH2-14 (AC-4) bumped red-baron off the pre-font v0.5.0 to v0.12.0 — the tag
-    // that adds /font, /pause and /esc-overlay (the Escape-pause adoption). v0.12.0
-    // still carries math3d/rng/highscore/loop, so rb1-1's runtime proof below holds.
+  it('pins @arcade/shared as a git-URL dependency', () => {
+    // The invariant rb1-1 actually cares about: the dependency pipe is a git-URL pin at
+    // an explicit ref, never a floating range.
+    //
+    // SH2-18: this used to hard-code `#v0.12.0`, which made it a tripwire on every pin
+    // bump rather than a guard (SH2-14 already had to rewrite it once). Worse, a shared
+    // extraction pins the FEATURE BRANCH during the dev inner-loop and only moves to the
+    // `vX.Y.Z` tag at release — so an exact-tag match would have to be edited twice per
+    // story. So the shape is pinned here, and what the code actually NEEDS (a resolved
+    // package new enough to carry /synth) is proven below, which is the stronger check.
     expect(read('package.json')).toMatch(
-      /"@arcade\/shared":\s*"github:slabgorb\/arcade-shared#v0\.12\.0"/,
+      /"@arcade\/shared":\s*"github:slabgorb\/arcade-shared#[^"]+"/,
+    )
+  })
+
+  it('resolves an @arcade/shared new enough to carry /synth (SH2-18)', async () => {
+    // The honest version guard: not "which tag is written in package.json" but "does the
+    // installed package actually have the code red-baron imports". A stale lockfile (the
+    // classic git-dep trap: editing the #ref and running a bare `npm install` keeps the
+    // OLD commit) fails right here.
+    const installed = JSON.parse(
+      readFileSync(path('node_modules/@arcade/shared/package.json'), 'utf8'),
+    ) as { version: string }
+    const [maj, min] = installed.version.split('.').map((n) => Number.parseInt(n, 10))
+    expect(
+      maj > 0 || min >= 14,
+      `@arcade/shared ${installed.version} is too old — /synth landed in 0.14.0 (stale lockfile?)`,
+    ).toBe(true)
+
+    const synth = await import('@arcade/shared/synth')
+    expect(typeof synth.createSynthEngine, '@arcade/shared/synth must export createSynthEngine').toBe(
+      'function',
     )
   })
 
