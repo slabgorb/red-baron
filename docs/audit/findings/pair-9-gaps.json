@@ -1,0 +1,53 @@
+[
+ {
+  "id": "GP-001",
+  "class": "NO_COUNTERPART",
+  "title": "PERCENT \u2014 the EAROM-backed adaptive difficulty system \u2014 is absent. The arcade retunes its own closing speeds to hit an operator-set game duration.",
+  "claim": "At end of game the ROM computes the running AVERAGE game time (PRCTIM/DIV32, RBARON.MAC:1831-1836), subtracts the operator's expected game time from GTOPTS (RBARON.MAC:1847; GTOPTS = 90.,75.,60.,45. / 105.,90.,75.,60. / 120.,105.,90.,75. / 135.,120.,105.,90. SECONDS, RBARON.MAC:1638-1656 \u2014 note the trailing periods, decimal literals in a hex region), halves the difference (ROR, :1852-1853), clamps it to [-0x10,+0x20] = [-16,+32] (:1857-1867) and stores it as PRPDEL (:1868-1869). PRMDEL = PRPDEL x 4 (ASL/ASL, :1871-1874) = [-64,+128]. Those deltas are then ADDED to the closing rates every calc frame: the plane's (ADC A,PRPDEL, :2419), the free mountain's (:3342) and the horizon mountain's (ADC A,PRMDEL, :3384). The plane's BASE closing rate is 0x20+0x20 = 64/frame (:2416-2418), so PRPDEL alone swings it by -25% to +50%. It is EAROM-persistent ACROSS games: a cabinet whose players last longer than the operator's target gets progressively harder. Our clone has no counterpart \u2014 0 hits in src/ for PERCENT/PRPDEL/PRMDEL/percentag.",
+  "reasoning": "Found by the Phase-3 coverage reviewer as a scope hole: PERCENT sits in MAIN's per-calc-frame call list (RBARON.MAC:852) and no auditor pair owned it. It is significant because it modulates EXACTLY the closing rates that EN-002/EN-003/EN-014/MI-015 already flag as wrong, so it compounds them. BUT note what the mechanism IS: difficulty auto-tuned to make the average game last a target number of seconds. That is a coin-throughput device \u2014 it exists to regulate how long a quarter buys. This repo has an explicit standing rule against replicating quarter-extracting mechanics, so this is a strong candidate for a DELIBERATE DESCOPE rather than a fix. Recorded as a finding so the decision is made consciously, not by omission.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 2419,
+   "verbatim": "\tADC A,PRPDEL\t\t;CARRY CLR (ADD PERCENTAGE DELTA)"
+  },
+  "ours": null,
+  "recommendation": "wont_fix",
+  "size": null
+ },
+ {
+  "id": "GP-002",
+  "class": "CONFIRMED",
+  "title": "GTOPTS's expected game times are correctly DECIMAL (trailing period) inside the hex region \u2014 a radix trap the ROM author defused himself",
+  "claim": "GTOPTS (RBARON.MAC:1638-1656) is written `.BYTE 90.` etc. RBARON.MAC is .RADIX 16 from line 74, so a bare `90` would be 0x90 = 144. The trailing period forces decimal: the expected game times really are 45..135 SECONDS, not 69..309. Recorded as a CONFIRMED because it is the one place the radix trap does NOT bite, and it demonstrates the author's own convention.",
+  "reasoning": "Included so the audit records where the radix discipline holds, not only where it fails.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 1638,
+   "verbatim": "GTOPTS:\t.BYTE 90.\t\t;NORM GAME TIME"
+  },
+  "ours": {
+   "file": "src/core/timing.ts",
+   "line": 16,
+   "verbatim": "export const MASTER_NMI_HZ = 250"
+  }
+ },
+ {
+  "id": "GP-003",
+  "class": "DIVERGENCE",
+  "title": "Our RNG is seeded from the WALL CLOCK inside the sim step; the ROM's RANDOM is a deterministic LFSR. Same-seed replay is impossible.",
+  "claim": "main.ts:467 calls `createRng((Date.now() + kills) >>> 0)` to spawn every wave \u2014 inside the sim-step path \u2014 and main.ts:349 seeds the blimp RNG with `(Date.now() ^ 0x5e_ed)`. The ROM's RANDOM is a pure software LFSR (RBARON.MAC:6193, `RANDOM:\tJSR RAND2\t\t;4 TIMES`) with no clock input at all. Two consequences: (1) the sim is NON-DETERMINISTIC \u2014 the same inputs cannot reproduce the same game, so replay and same-seed regression tests are impossible; (2) it violates this repo's core/shell boundary, which forbids the deterministic sim from reading wall-clock time. The fix is to thread one seeded Rng through the sim and let the shell own the seed.",
+  "reasoning": "Found by the Phase-3 coverage reviewer as a scope hole \u2014 no pair was assigned the RNG. Verified by direct grep of src/: Date.now() appears at main.ts:349 and main.ts:467, both feeding createRng. This is a correctness/architecture defect independent of arcade fidelity, and it is cheap to fix.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 6193,
+   "verbatim": "RANDOM:\tJSR RAND2\t\t;4 TIMES"
+  },
+  "ours": {
+   "file": "src/main.ts",
+   "line": 467,
+   "verbatim": "        enemies = spawnWave(createRng((Date.now() + kills) >>> 0), score, gmlevlForKills(kills))"
+  },
+  "recommendation": "fix",
+  "size": "s"
+ }
+]

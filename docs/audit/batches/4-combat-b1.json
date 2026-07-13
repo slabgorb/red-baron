@@ -1,0 +1,131 @@
+[
+ {
+  "id": "CB-001",
+  "class": "DIVERGENCE",
+  "title": "GMLEVL is indexed by OBJKLD >> 1 \u2014 our difficulty ramps exactly twice as fast",
+  "claim": "PLNZD0 loads OBJKLD, shifts it RIGHT ONE BIT (`LSR`), clamps the result to 0x10 = 16, and uses THAT as the index into PLNLVL. The table index is therefore floor(kills / 2), not kills. Ours indexes PLNLVL by the raw kill count. Arithmetic: at 8 kills the ROM index is 8>>1 = 4 \u2192 PLNLVL[4] = GMLEVL 1; ours is PLNLVL[8] = GMLEVL 3. To reach the top rung GMLEVL 5 the ROM needs index 16 \u2192 OBJKLD >= 32 kills; ours needs only 16 kills. Every difficulty knob GMLEVL drives arrives at half the kill count it should.",
+  "reasoning": "RBARON.MAC:2399-2408 reads: `PLNZD0: LDX I,10` (default index = 0x10 = 16, the last PLNLVL entry) / `LDA OBJKLD+1` / `BNE 2$` (kill count >= 256 \u2192 saturate) / `LDA OBJKLD` / `LSR` (>>1) / `CMP I,10` / `BCS 2$` (>= 16 \u2192 saturate) / `TAX` / `2$: LDA AX,PLNLVL` / `STA GMLEVL`. The LSR at :2403 is the divide-by-two; it is unmissable in the ROM and absent from ours. GMLEVL is not cosmetic: it selects the enemy weave limits P.OLIM/P.ILIM (RBARON.MAC:2756-2759), it decides whether a promoted drone gets the SHOOTS bit (UPPLX1, RBARON.MAC:3024-3028 \u2014 `LDX GMLEVL / CPX I,5 / BCC 10$` \u2192 PLSTAT+6 = 0xA8 instead of 0xA0), and it aims the ground fire (RBARON.MAC:4038). Doubling the ramp rate makes the whole sky aggressive twice as early. This is the strongest single explanation for the player's 'seems way off' on difficulty. The fix is one shift: index by `objkld >> 1`. Note the PLNLVL table itself is byte-for-byte correct (see CB-002) \u2014 only the index is wrong.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 2403,
+   "verbatim": "\tLSR"
+  },
+  "ours": {
+   "file": "src/core/scoring.ts",
+   "line": 91,
+   "verbatim": "  const index = Math.max(0, Math.min(Math.floor(objkld), PLNLVL.length - 1))"
+  },
+  "recommendation": "fix",
+  "size": "s"
+ },
+ {
+  "id": "CB-003",
+  "class": "BOOK_WAS_WRONG",
+  "title": "The lead plane's value COUNTS DOWN as it closes and is capped at 300 \u2014 ours counts UP to 1056",
+  "claim": "The ROM pays a FLAT 300 for a far/dim plane and a SMALL, SHRINKING PLVALU for a close one. PLNSCR: `LDX PLSTAT+5` (plane depth MSB) / `CPX I,10` / `BCC NWSCRE` \u2014 if the depth MSB is BELOW 0x10 the plane scores PLVALU; otherwise it falls through into DRNSCR and scores the flat DRNPNT = 30. = 300 points, commented ';XTRA POINTS IF DIM'. PLVALU itself (RBARON.MAC:2710-2721) = (depth_MSB x VALFRC) / 16, floored at VALMIN. Because depth SHRINKS as the plane approaches, PLVALU SHRINKS with it. Arithmetic with the initial VALFRC = 7: a plane just inside bonus depth (MSB = 0x0F = 15) is worth 15 x 7 / 16 = 6 \u2192 60 points; nose-to-nose (MSB = 1) it is worth 1 x 7 / 16 = 0 \u2192 floored to VALMIN \u2192 as little as 10 points. So the ROM's plane is worth 300 far, 60 near, ~10 point-blank \u2014 ALWAYS <= a drone. Ours (scoring.ts:65) computes DRONE_SCORE + (P_INDP - depth) x 0.7, which starts at 300 far and RISES to 300 + 1080 x 0.7 = 1056 up close. The direction is inverted and the ceiling is 3.5x too high.",
+  "reasoning": "Our scoring.ts header states the design intent explicitly: 'a lit/close LEAD plane is worth MORE the closer it is when killed (\"closer kills are worth more\")' and 'We honour the doc's stated behaviour, not its literal arithmetic'. It is citing docs/red-baron-1980-source-findings.md \u00a74, which says 'a lit/close plane scores PLVALU = depth x VALFRC ... closer kills are worth more'. The doc's ARITHMETIC is right (PLVALU is proportional to depth) but its CONCLUSION is backwards, because depth shrinks as the plane closes \u2014 proportional-to-depth means proportional-to-FAR. Our code detected the contradiction and resolved it by discarding the arithmetic and keeping the wrong conclusion, inverting the ROM. The ROM's design is coherent and is confirmed by the comment at RBARON.MAC:3044 ';XTRA POINTS IF DIM' and by DSPSHL's intensity ramp (RBARON.MAC:5241-5247 EOR 0F0 \u2192 greater depth = dimmer), which together establish DIM = FAR = the bonus. Red Baron rewards the long shot, not the knife fight. Fix is a rewrite of leadScore: score = 300 when depth >= the bonus-depth threshold, else max(depth x VALFRC / 16 x 10, VALMIN x 10). The secondary source must be corrected too.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 3041,
+   "verbatim": "\tBCC NWSCRE\t\t;PLANE PAST BONUS DEPTH"
+  },
+  "ours": {
+   "file": "src/core/scoring.ts",
+   "line": 65,
+   "verbatim": "const leadScore = (depth: number): number => DRONE_SCORE + Math.round(Math.max(0, P_INDP - depth) * VALFRC)"
+  },
+  "recommendation": "fix",
+  "size": "m"
+ },
+ {
+  "id": "CB-004",
+  "class": "NO_COUNTERPART",
+  "title": "Extra lives (BONUSL) do not exist in our game \u2014 the player can never earn a plane back",
+  "claim": "SCOREM checks for a bonus life after EVERY score increment (RBARON.MAC:1582-1602): X = ((OPTION & 0x0C) >> 2) + EXLIFE; if SCORE+1 >= BONUSL[X] then EXLIFE += 4, the bonus-life sound and message fire, and `INC LIVES` (RBARON.MAC:1602) hands the player another plane. BONUSL is a 16-byte table walked in strides of 4 from the option index, so each option gets three thresholds and then 0FF (none). SCORE is 16-bit BCD holding score/10 (implicit trailing zero), so SCORE+1 is the BCD digit-pair above the tens \u2014 SCORE+1 >= 0x02 means a displayed score >= 2000. Decoding the table: option 0 \u2192 BONUSL[0],[4],[8] = 0x02, 0x10, 0x30 \u2192 extra planes at 2,000 / 10,000 / 30,000. Option 1 \u2192 [1],[5],[9] = 0x04, 0x15, 0x40 \u2192 4,000 / 15,000 / 40,000. Option 2 \u2192 [2],[6],[10] = 0x06, 0x20, 0x50 \u2192 6,000 / 20,000 / 50,000. Option 3 \u2192 [3],[7],[11] = all 0FF \u2192 never. Maximum three extra planes. lives.ts has NO award path at all: `count` only ever decreases, via loseLife.",
+  "reasoning": "The BONUSL rows as written are `.BYTE 2,4,6,0FF` / `10,15,20,0FF` / `30,40,50,0FF` / `0FF,0FF,0FF,0FF`. The indexing at RBARON.MAC:1587-1590 (`ADC EXLIFE / TAX / LDA SCORE+1 / CMP AX,BONUSL`) combined with EXLIFE stepping by 4 (RBARON.MAC:1593-1595) reads the table in COLUMNS, not rows \u2014 which is why the flat-array decode above (index, index+4, index+8, index+12) is the correct one and a naive row read would be wrong. The BCD-with-implicit-trailing-zero encoding is established independently by DRNPNT = 30. meaning 300 points (CB-005) and by SCOREM's BCD adds (SED at RBARON.MAC:1565). Missing extra lives is a first-order difficulty error in its own right: the arcade hands back up to three planes over a good game and ours hands back none, so our run length is materially shorter than the original at identical player skill. It compounds with CB-001 (difficulty ramping twice as fast) and CB-003 (scoring inverted) \u2014 the player earns the wrong points, on a sky that got hard too early, and never gets a plane back for it.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 1605,
+   "verbatim": "BONUSL:\t.BYTE 2,4,6,0FF\t\t;BONUS LIFE LEVELS (0FF=NONE)"
+  },
+  "ours": null,
+  "recommendation": "fix",
+  "size": "m"
+ },
+ {
+  "id": "CB-007",
+  "class": "DIVERGENCE",
+  "title": "VALFRC is a fixed 0.7 for us; the ROM ramps VALFRC 7\u219224 AND VALMIN 0\u219224, one step per plane wave",
+  "claim": "STPLNE increments BOTH bytes of the VALFRC word on every plane wave in play mode, capping each at 0x18 = 24 decimal: `LDY I,1 / 5$: LDX ZY,VALFRC / INX / CPX I,19 / BCC 10$ / LDX I,18 / 10$: STX ZY,VALFRC / DEY / BPL 5$` (RBARON.MAC:2277-2285 \u2014 Y=1 addresses VALMIN = VALFRC+1, Y=0 addresses VALFRC). VALFRC starts at 7 (RBARON.MAC:5965, ';INITIALLY 7/10*DEPTH PLANE SCORE') and VALMIN starts at 0. Over a game the plane-value multiplier climbs 7/16 \u2192 24/16 of depth_MSB and the FLOOR climbs from 0 to 24 \u2192 240 points. Late game the floor dominates: at VALMIN = 24 the maximum PLVALU from depth is 15 x 24 / 16 = 22 < 24, so every close plane pays exactly VALMIN x 10 = 240. We have a single fixed float VALFRC = 0.7 and no VALMIN and no per-wave ramp at all, so our plane values never scale with game progress.",
+  "reasoning": "The `CPX I,19` is a hex-region literal = 25 decimal; the store-back on overflow is `LDX I,18` = 24 decimal \u2014 so the cap is 24, not 25 and not 0x19. VALMIN's existence is established at RBARON.MAC:131 (`VALMIN =VALFRC+1 ;PLANE VALUE MINIMUM`) and its use as a floor at RBARON.MAC:2718-2720 (`CMP VALMIN / BCS 55$ / LDA VALMIN`). This is the ROM's score-progression mechanic \u2014 a wave-count-driven ramp entirely independent of the OBJKLD/GMLEVL ramp \u2014 and it is the reason a long Red Baron game's plane values creep upward. Ours cannot express it at any constant setting: VALFRC must become a pair of mutable per-game counters stepped by the wave spawner. Fix depends on CB-003 landing first (the ramp is meaningless while the scoring direction is inverted).",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 2280,
+   "verbatim": "\tCPX I,19"
+  },
+  "ours": {
+   "file": "src/core/scoring.ts",
+   "line": 48,
+   "verbatim": "const VALFRC = 0.7"
+  },
+  "recommendation": "fix",
+  "size": "m"
+ },
+ {
+  "id": "CB-008",
+  "class": "DIVERGENCE",
+  "title": "Gun overheat threshold is bit 6 of GUN.ST = 64 shots, not 30",
+  "claim": "NEWSHL gates firing with `BIT GUN.ST` / `BVC 10$` (RBARON.MAC:2158-2160): the 6502 BIT instruction copies bit 6 of the operand into V, and BVC skips the RTS. So the gun is locked out EXACTLY when GUN.ST bit 6 is set \u2014 i.e. when GUN.ST reaches 0x40 = 64 decimal. GUN.ST is INC'd by 1 per shot (RBARON.MAC:2161) and at most one shot is fired per calculation frame, so continuous fire overheats after 64 shots = 64 x 96 ms = 6.144 seconds. Our GUN_OVERHEAT_LIMIT = 30 overheats after 30 x 96 ms = 2.88 s \u2014 the player loses their guns in less than half the time the arcade allows. The same bit-6 test drives the on-screen OVERHEAT message (RBARON.MAC:5334-5336, `BIT GUN.ST / BVC 25$`), which independently confirms 0x40 is the threshold and not merely a status flag set elsewhere.",
+  "reasoning": "Our guns.ts admits the limit is inferred ('the findings doc pins the +1/x3 rates but not the limit'). It is in fact pinned, and pinned unusually \u2014 not by an equate but by the choice of the BIT/BVC idiom, which IS the constant. This is exactly the 'operand you have not decoded' case: BIT+BVC reads as a generic flag check unless you know BIT loads V from bit 6. The value is 0x40 = 64. Our 30 also happens to sit awkwardly close to SHELL_SLOTS = 13, but that is coincidence, not derivation.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 2158,
+   "verbatim": "\tBIT GUN.ST"
+  },
+  "ours": {
+   "file": "src/core/guns.ts",
+   "line": 59,
+   "verbatim": "const GUN_OVERHEAT_LIMIT = 30"
+  },
+  "recommendation": "fix",
+  "size": "s"
+ },
+ {
+  "id": "CB-009",
+  "class": "DIVERGENCE",
+  "title": "Overheat is a level test on bit 6, not a latch \u2014 the ROM's lockout clears in ONE frame, ours takes ten",
+  "claim": "The ROM re-evaluates `BIT GUN.ST` / `BVC` every frame; there is no latched 'overheated' state. Cooling subtracts 3 per frame while the trigger is released (RBARON.MAC:2172-2177). Arithmetic: GUN.ST maxes at exactly 0x40 = 64 (INC is skipped once bit 6 is set), so ONE released frame drops it to 64 - 3 = 61 = 0x3D \u2014 bit 6 is clear and the gun fires again on the very next frame, 96 ms later. Sustained fire therefore settles into a duty cycle of roughly three shots per one released frame. Ours latches `overheated: true` and clears it only when heat reaches 0 (guns.ts:148), which from 30 takes ceil(30/3) = 10 released frames = 960 ms. Our lockout is TEN TIMES longer than the arcade's, on top of triggering at less than half the shot count (CB-008).",
+  "reasoning": "Read together with CB-008 these two produce the compounding error the player is most likely to feel as 'the guns keep dying': we overheat after 2.88 s instead of 6.14 s, and then we take 0.96 s to recover instead of 0.096 s. The ROM's design is a soft rate-limiter \u2014 hold the trigger and you jam permanently (GUN.ST stays pinned at 64 because NEWSHL RTSs before the INC), tap it and you fire almost freely. Our design is a hard punitive lockout. Fixing this properly means dropping the boolean latch and deriving overheat from `heat >= 64` at read time. Note the cooling RATE itself is correct \u2014 see CB-010.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 2174,
+   "verbatim": "\tSBC I,3\t\t\t;GUNS COOL 3 TIMES AS FAST AS HEAT"
+  },
+  "ours": {
+   "file": "src/core/guns.ts",
+   "line": 148,
+   "verbatim": "    return { ...guns, heat, overheated: heat > 0 ? guns.overheated : false }"
+  },
+  "recommendation": "fix",
+  "size": "s"
+ },
+ {
+  "id": "CB-011",
+  "class": "DIVERGENCE",
+  "title": "S.MAXZ is 0x19 = 25, not 19 \u2014 a radix misread that costs the shell 21% of its range",
+  "claim": "`S.MAXZ =19` sits in the .RADIX 16 region (`.RADIX 16` is set at RBARON.MAC:74 and there is no decimal island before line 700), so it is 0x19 = 25 decimal, NOT 19. The companion `S.DPTH =100` (RBARON.MAC:493) is likewise 0x100, so a shell is born with its Z MSB = 1 (`LDA I,S.DPTH&0FF00/100`, RBARON.MAC:2235). PSTSHL increments the Z MSB once per sub-step (`INC AX,SHELLS+5`) and clears the shell when the MSB reaches S.MAXZ (`CMP I,S.MAXZ&0FF / BCC 20$`, RBARON.MAC:5216-5221). Range = 25 - 1 = 24 sub-steps = 24/4 = 6 calculation frames = 6 x 96 ms = 576 ms of flight. Ours starts z at 0, advances 1 per sub-step, and expires at z >= 19 \u2192 19 sub-steps = 4.75 \u2192 5 calc frames = 480 ms. Our shells travel 19/24 = 79% as far and die 96 ms early.",
+  "reasoning": "Our S_MAXZ = 19 is the literal typed in the source read as decimal. The equate block around it uses an explicit trailing period whenever decimal is meant (L.OBJ =28., N.SHL =12.*L.SHL, DRNPNT =30.) \u2014 S.MAXZ has no period, so it is hex. The '(* 100)' in its comment is the scale note: the compared byte is the Z MSB, so the full-precision max Z is 0x19 x 0x100 = 0x1900 = 6400. This same radix slip is what makes our gun's reach too short (CB-012). Fix is the constant: 25, with the shell born at z = 1.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 492,
+   "verbatim": "S.MAXZ\t=19\t\t\t;SHELL MAX Z (* 100)"
+  },
+  "ours": {
+   "file": "src/core/guns.ts",
+   "line": 41,
+   "verbatim": "export const S_MAXZ = 19"
+  },
+  "recommendation": "fix",
+  "size": "s"
+ }
+]

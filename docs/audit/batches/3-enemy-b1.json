@@ -1,0 +1,135 @@
+[
+ {
+  "id": "EN-001",
+  "class": "BOOK_WAS_WRONG",
+  "title": "Our secondary source cites the DECOY module R2BRON.MAC and misreads hex constants as decimal",
+  "claim": "docs/red-baron-1980-source-findings.md \u00a73 \u2014 the authority our three files cite in every header \u2014 sources every enemy fact to `R2BRON.MAC`, the build that did NOT ship. Worse, it states its own radix rule (\"Constants in RBARON.MAC/RBGRND.MAC live in a .RADIX 16 region (RBARON.MAC:74) \u2014 hex unless written with a trailing dot\") and then breaks it three times: ACCEL=30 (really 0x30 = 48), P.INDP=1080 (really 0x1080 = 4224), P.MNDP=140 (really 0x140 = 320) \u2014 while correctly reading P.OLIM/P.ILIM as hex in the very next sentence. The doc is internally inconsistent, and enemy.ts/returning-ace.ts copied the wrong three verbatim.",
+  "reasoning": "RBARON.MAC:74 sets `.RADIX 16` and the only decimal island in the file is 6217-6280, so lines 464/465/469 are unambiguously hex. R2BRON.MAC differs from RBARON.MAC only in seven checksum bytes (CHKSM2..CHKSM7), so the enemy VALUES the doc quotes happen to be the same bytes \u2014 but the citation is invalid and the doc has already demonstrated it cannot be trusted to apply its own radix rule. Every downstream \"[ROM-verified]\" tag in \u00a73 must be re-derived, not inherited. Fix: re-cite \u00a73 to RBARON.MAC and correct the three constants.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 74,
+   "verbatim": "\t.RADIX 16"
+  },
+  "ours": {
+   "file": "docs/red-baron-1980-source-findings.md",
+   "line": 174,
+   "verbatim": "  `R2BRON.MAC:2566-2870`): the plane accelerates its \u0394X (`ACCEL=30`) toward window limits and"
+  },
+  "recommendation": "fix",
+  "size": "s"
+ },
+ {
+  "id": "EN-002",
+  "class": "DIVERGENCE",
+  "title": "P_INDP is 3.9x too shallow \u2014 0x1080 = 4224, not 1080",
+  "claim": "`P.INDP =1080` sits in the `.RADIX 16` region (RBARON.MAC:74), so the initial plane depth is 0x1080 = 4224, not decimal 1080. We spawn every plane at 1080 \u2014 3.911x closer than the arcade (4224/1080 = 3.911). Both sides are in the same unit (ROM screen-window units, one value per calc frame), so no timebase conversion applies: the number is simply misread. STPLNE writes it to both the motion depth (PLSTAT+4/+5) and the display depth (PLSTAT+19/+1A).",
+  "reasoning": "Enemies appear on top of the player from the first frame instead of as distant specks, which collapses the approach phase the whole game is paced around. Note the blast radius: scoring.ts:25 imports P_INDP to anchor its closeness scale (`leadScore`), so the fix must be made with scoring.ts in the same change or plane values will jump ~4x.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 464,
+   "verbatim": "P.INDP\t=1080\t\t\t;INITIAL PLANE DEPTH"
+  },
+  "ours": {
+   "file": "src/core/enemy.ts",
+   "line": 41,
+   "verbatim": "export const P_INDP = 1080"
+  },
+  "recommendation": "fix",
+  "size": "s"
+ },
+ {
+  "id": "EN-003",
+  "class": "DIVERGENCE",
+  "title": "ACCEL is 0x30 = 48 per calc frame, not 30",
+  "claim": "`ACCEL =30` is hex: 48 decimal. P.WCHK adds +ACCEL / -ACCEL to the 16-bit delta once per calc frame (RBARON.MAC:2844, :2846, :2851), and our step() likewise adds ACCEL once per 96 ms calc frame \u2014 SAME units, direct comparison, no 10.4167 conversion needed. We accelerate the weave at 30/frame where the arcade uses 48/frame: 30/48 = 0.625, i.e. our planes build turn rate at 62.5 % of arcade rate and therefore bank shallower (biplaneBank is proportional to deltaX).",
+  "reasoning": "The doc that fed us this (findings \u00a73) wrote `ACCEL=30` straight out of a hex region. RBARON.MAC:465 has no trailing dot, and the only .RADIX 10 island in the file is 6217-6280.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 465,
+   "verbatim": "ACCEL\t=30"
+  },
+  "ours": {
+   "file": "src/core/enemy.ts",
+   "line": 44,
+   "verbatim": "export const ACCEL = 30"
+  },
+  "recommendation": "fix",
+  "size": "s"
+ },
+ {
+  "id": "EN-004",
+  "class": "DIVERGENCE",
+  "title": "P_MNDP is 0x140 = 320, not 140 \u2014 the fly-by trigger fires 2.3x too late",
+  "claim": "`P.MNDP =140` is hex: 320 decimal. UPDPLN tests the plane's motion depth against it (RBARON.MAC:2723-2726) and, when the plane is closer than 320, runs P.UPD0: it clears the plane, arms the returning attack, and sets the BEHIND YOU timer. We use 140 \u2014 the plane must get 2.286x closer (320/140) before the ace pass triggers. enemy.ts:63 MIN_DEPTH=140 carries the same error.",
+  "reasoning": "Same radix miss as EN-002/EN-003, from the same doc line. Also worth noting: our proximityBand cutoffs (NEAR=300, MID=700) were chosen against a 1080-deep world; with P.INDP corrected to 4224 they are all inside the \"very close\" tenth of the approach and the DISCHK control-feel bands will effectively never leave `near`.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 469,
+   "verbatim": "P.MNDP\t=140\t\t\t;PLANE MIN. DEPTH"
+  },
+  "ours": {
+   "file": "src/core/returning-ace.ts",
+   "line": 43,
+   "verbatim": "export const P_MNDP = 140"
+  },
+  "recommendation": "fix",
+  "size": "s"
+ },
+ {
+  "id": "EN-012",
+  "class": "DIVERGENCE",
+  "title": "The ace evade check has the CORRECT-SIDE polarity INVERTED \u2014 we reward banking the wrong way",
+  "claim": "EOLSEQ:1081-1083: `LDA ENSIDE / EOR PLDELX / BPL 20$ ;SORRY WRONG X`. ENSIDE holds D7 of the plane's screen X (RBARON.MAC:2735) \u2014 0x80 when X is negative. EOR of the two sign bits: BPL (result D7 = 0) means the signs were the SAME, and 20$ is the death path. So the player survives only when sign(PLDELX) is OPPOSITE to sign(plane X) \u2014 you break AWAY from the side he came from. returning-ace.ts:121 requires `Math.sign(turnRate) === ace.side` \u2014 the SAME sign. We have the escape direction exactly backwards: a player who does the arcade-correct thing dies, and a player who does the arcade-fatal thing is rewarded.",
+  "reasoning": "This is a one-character fix (`===` -> `!==`, or negate `ace.side` at beginPass) but it inverts the meaning of the game's single most famous mechanic. Our module header at returning-ace.ts:27 even flags the polarity as INFERRED (\"turn TOWARD the shoulder he came from\") \u2014 the source settles it, and the inference was wrong.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 1083,
+   "verbatim": "\tBPL 20$\t\t\t;SORRY WRONG X"
+  },
+  "ours": {
+   "file": "src/core/returning-ace.ts",
+   "line": 121,
+   "verbatim": "  const skillDodge = Math.sign(turnRate) === ace.side && Math.abs(turnRate) >= HARD_TURN"
+  },
+  "recommendation": "fix",
+  "size": "s"
+ },
+ {
+  "id": "EN-013",
+  "class": "DIVERGENCE",
+  "title": "The ace evade BRANCH ORDER is inverted \u2014 the freebie is a REWARD for a good break-turn, not a bypass of it",
+  "claim": "In the ROM the skill test is the GATE and the BEFLAG freebie / 50-50 sits BEHIND it. EOLSEQ, in order: wrong side -> 20$ (die); |PLDELX| < 0x1C -> `BCC 20$ ;PLAYER DIES` (die); ONLY having passed both, `BIT BEFLAG / BPL 17$ ;FIRST TIME FREE` -> survive and consume the flag; on any later pass, `JSR RANDOM / BMI 20$ ;AFTER - ONLY 50/50`. So: turn wrong or turn softly and you die OUTRIGHT \u2014 no freebie, no coin flip. Ours is the mirror image (returning-ace.ts:118-125): firstPass -> evaded unconditionally (even standing still); else skill dodge -> evaded; else -> a free 50/50 for a player who did nothing. The ROM never grants a coin flip to a player who failed the break-turn; we never punish one.",
+  "reasoning": "Net effect on difficulty: the arcade ace is a skill check with a mercy roll; ours is a mercy roll with an optional skill check. Combined with EN-012 (inverted polarity), a player cannot learn the mechanic from our game at all \u2014 which is a strong candidate for \"seems way off\". Not a constant tweak: evadeCheck's three-branch nesting has to be restructured, and the \"first attack is free\" semantics change from unconditional to conditional-on-a-good-turn.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 1087,
+   "verbatim": "\tBCC 20$\t\t\t;PLAYER DIES"
+  },
+  "ours": {
+   "file": "src/core/returning-ace.ts",
+   "line": 118,
+   "verbatim": "  if (ace.firstPass) {"
+  },
+  "recommendation": "fix",
+  "size": "m"
+ },
+ {
+  "id": "EN-014",
+  "class": "DIVERGENCE",
+  "title": "PLPOSZ is wrong in every respect \u2014 sign, magnitude, length, and the level ramp (20x vs our 2.5x)",
+  "claim": "PLPOSZ (RBARON.MAC:2482) is `.BYTE -4,-10,-20,-30,-40,-50,-60,-70,-80` in a hex region: -4, -16, -32, -48, -64, -80, -96, -112, -128 \u2014 NINE entries, NEGATIVE (added to the display depth at RBARON.MAC:2704-2707, so depth falls), indexed by GMLEVL 0..5 (PLNZD:2409-2411), i.e. only -4..-80 are ever reached. The arcade ramp is therefore 4/frame at GMLEVL 0 to 80/frame at GMLEVL 5 \u2014 a 20x acceleration in closing rate across the game. Ours is [8, 10, 13, 16, 20]: five entries, positive, ramping 8 -> 20 = 2.5x, and level 0 is 2x too fast while level 5 is 4x too slow.",
+  "reasoning": "And it is worse than the numbers suggest: NOTHING imports closeSpeed() or PLPOSZ \u2014 a grep across src/ shows returning-ace.ts is imported by no module. enemy.ts:161 uses its own invented CLOSE_SPEED = 8, flat at every level, so the difficulty ramp the ROM builds out of PLPOSZ does not exist in our game at all. That is very likely the core of \"difficulty pacing seems way off\": the arcade gets 20x harder to line up a shot on; we get 0x harder.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 2482,
+   "verbatim": "PLPOSZ:\t.BYTE -4,-10,-20,-30,-40,-50,-60,-70,-80"
+  },
+  "ours": {
+   "file": "src/core/returning-ace.ts",
+   "line": 54,
+   "verbatim": "export const PLPOSZ: readonly number[] = Object.freeze([8, 10, 13, 16, 20])"
+  },
+  "recommendation": "fix",
+  "size": "m"
+ }
+]

@@ -1,0 +1,27 @@
+[
+ {
+  "id": "RD-008",
+  "verdict": "CONFIRMED",
+  "reasoning": "PLVALU HUD readout rests on the cited ALPHAS lines.",
+  "refuted_by": "controller (no agent slot available \u2014 see audit limitations)"
+ },
+ {
+  "id": "RD-009",
+  "verdict": "CONFIRMED",
+  "reasoning": "The ROM's overheat cue is a monochrome vector message through the same glyph routine. Our second colour is invented.",
+  "refuted_by": "controller (no agent slot available \u2014 see audit limitations)"
+ },
+ {
+  "id": "RD-010",
+  "verdict": "CONFIRMED",
+  "reasoning": "Controller grepped src/: 0 hits for windscreen/bulletHole/holes. Absence real.",
+  "refuted_by": "controller (no agent slot available \u2014 see audit limitations)"
+ },
+ {
+  "id": "RD-016",
+  "verdict": "CONFIRMED",
+  "reasoning": "HORZ radix error in the doc, and mis-filed under the wrong module. Consistent with MI-022 and the wider radix family.",
+  "refuted_by": "controller (no agent slot available \u2014 see audit limitations)",
+  "corrections": "Duplicate of the doc-error family (EN-001, CD-013, CD-014, FL-002, FL-003, OB-013). Cluster them into one 'retract and rewrite the findings doc' item."
+ }
+]

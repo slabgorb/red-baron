@@ -1,0 +1,169 @@
+[
+ {
+  "id": "MI-011",
+  "class": "DIVERGENCE",
+  "title": "Drones spawn at DRINZ = $1600, not at the lead's depth",
+  "claim": "ROM: after PLNXCG copies the lead's 28-byte record into the drone slot, STPLNE overwrites the drone's Z MSB: `LDA I,DRINZ/100 / STA P.1ST+5` (RBARON.MAC:2369-2370), where DRINZ = $1600 = 5632 (RBARON.MAC:466) and `/100` is a HEX divide by $100, i.e. take the MSB $16. Object DB offset +5 is 'Z MSB' (glossary RBARON.MAC:273). The Z LSB (+4) is inherited from the lead's P.INDP = $1080 (RBARON.MAC:464), LSB $80 \u2014 so the drone's depth becomes $1680 = 5760 against the lead's $1080 = 4224: the drone starts 1536 units FARTHER out. The same store is repeated for drone #2 (`STA P.2ST+5`, RBARON.MAC:2384). Ours: `wave.push({ ...lead, kind: 'drone', x: lead.x + dx, y: lead.y + dy })` \u2014 the spread copies the lead's depth verbatim and only x/y are offset, so all three planes spawn at exactly the same Z.",
+  "reasoning": "The drones are meant to be BEHIND the lead in depth as well as offset laterally \u2014 that is what makes the formation read as a formation and what makes the lead the natural first target. Spawning them coplanar with the lead flattens the wedge into a line abreast. The fix is one field in the drone spread; the Z offset (1536 world units in ROM Z, or the DRINZ \u2212 P.INDP difference re-expressed in our Z scale) is a constant, not a mechanism.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 2369,
+   "verbatim": "\tLDA I,DRINZ/100"
+  },
+  "ours": {
+   "file": "src/core/waves.ts",
+   "line": 83,
+   "verbatim": "    wave.push({ ...lead, kind: 'drone', x: lead.x + dx, y: lead.y + dy })"
+  },
+  "recommendation": "fix",
+  "size": "s"
+ },
+ {
+  "id": "MI-014",
+  "class": "DIVERGENCE",
+  "title": "Mountain PLACEMENT is authored (PFOBIZ) \u2014 we generate an even stagger with all four at x = 0",
+  "claim": "ROM: `PFOBIZ: .WORD 8200,6E0,3220,0D20` (RBARON.MAC:1305) \u2014 the four PF objects' INITIAL DEPTHS, hex: $8200 = 33280, $06E0 = 1760, $3220 = 12832, $0D20 = 3360 \u2014 followed by `.WORD -0C00,-400,400,0C00` (RBARON.MAC:1306) = their INITIAL X POSITIONS, hex: -$0C00, -$0400, +$0400, +$0C00 (GMINIT stores only the MSB: `LDA AY,PFOBIZ+9 ;X POSITION MSB`, RBARON.MAC:1268-1269). GMINIT then classifies each by its Z MSB \u2014 `CMP I,11 ;CHECK INITIAL POSITION / BCC 57$ / ORA I,80 ;ON HORIZON` (RBARON.MAC:1258-1261): $82 \u2265 $11 \u2192 on horizon; $06 < $11 \u2192 already free; $32 \u2265 $11 \u2192 on horizon; $0D < $11 \u2192 already free. So the arcade OPENS with 2 mountains on the horizon and 2 already fallen, spread across four lateral lanes. Ours: `initialMountains()` computes `gap = (4096 \u2212 192) / 4 = 976` and lays the four slots at depths 4096, 3120, 2144, 1168 \u2014 an even arithmetic stagger \u2014 with `x: 0` for ALL FOUR.",
+  "reasoning": "Two authored tables replaced by a formula. The depth stagger is arguably cosmetic; the X collapse is not \u2014 every mountain in our game occupies the same lateral lane (x = 0), so the four silhouettes stack directly on top of one another down the centre of the view instead of spanning the pass. The ROM's \u00b1$400 / \u00b1$C00 spread is what makes it a LANDSCAPE rather than a receding column. PFOBIZ is 8 words; transcribing it is a table, not a redesign.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 1305,
+   "verbatim": "PFOBIZ:\t.WORD 8200,6E0,3220,0D20"
+  },
+  "ours": {
+   "file": "src/core/landscape.ts",
+   "line": 71,
+   "verbatim": "    x: 0,"
+  },
+  "recommendation": "fix",
+  "size": "s"
+ },
+ {
+  "id": "MI-015",
+  "class": "DIVERGENCE",
+  "title": "The ROM has TWO mountain depth deltas ($180 on the horizon, $20 once fallen) \u2014 we have one (64)",
+  "claim": "ROM PFOBMN runs two different closing rates. ON HORIZON (status D7 set \u2192 branch 45$): `LDA I,P.OBDZ&0FF ;STANDARD DELTA / ADC A,PRMDEL ;ADD PERCENT DELTA` (RBARON.MAC:3383-3384) with P.OBDZ = $180 = 384 (RBARON.MAC:444, ';PF OBJECT Y DELTA Z (WHILE ON HORIZON)'). ONCE FALLEN (free object): `LDA I,20 ;STANDARD DELTA / ADC A,PRPDEL ;ADD PERCENTAGING DELTA` (RBARON.MAC:3341-3342) with the literal $20 = 32, subtracted at RBARON.MAC:3345-3346. A mountain therefore closes 384/frame while distant and 32/frame while near \u2014 a 12:1 ratio, before the difficulty-percentage deltas PRMDEL/PRPDEL are added (PRMDEL = 4 \u00d7 PRPDEL, RBARON.MAC:1871-1874). Ours: a single `const DEPTH_STEP = 64`, applied unconditionally in stepMountain, which our own comment concedes is 'a display-feel delta, not a ported ROM constant'.",
+  "reasoning": "It IS a ported ROM constant \u2014 two of them. The near-field rate matters most for feel (a mountain sliding past the cockpit), and ours is 2\u00d7 the ROM's $20 = 32; the far-field rate is 6\u00d7 too slow. The comment in landscape.ts asserts 'ROM P.OBDZ/$180 counts raw ROM Z units; this port's Z is in scene world units' \u2014 but our Z IS in ROM units: SPAWN_DEPTH = HORZ = $1000 and MIN_DEPTH are both raw ROM constants, so the deltas can be ported directly with no rescale. The unit excuse does not survive contact with the module's own imports.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 3341,
+   "verbatim": "\tLDA I,20\t\t;STANDARD DELTA"
+  },
+  "ours": {
+   "file": "src/core/landscape.ts",
+   "line": 42,
+   "verbatim": "const DEPTH_STEP = 64"
+  },
+  "recommendation": "fix",
+  "size": "s"
+ },
+ {
+  "id": "MI-016",
+  "class": "DIVERGENCE",
+  "title": "Mountains recycle to P.OBZI = $7F00 = 32512, not to HORZ = $1000 = 4096 \u2014 ours never spend time on the horizon",
+  "claim": "ROM: when a free mountain reaches minimum depth, PFOBMN recycles it \u2014 `LDA AX,PFOBJ+6 ;ON HORIZON / ORA I,80` (RBARON.MAC:3358-3359), then `LDA I,PF.XZ/100 / STA AX,PFOBJ+3` (X depth \u2190 $10, RBARON.MAC:3366-3367) and `LDA I,P.OBZI&0FF00/100 / STA AX,PFOBJ+5` (Z MSB \u2190 $7F, RBARON.MAC:3368-3369), LSBs zeroed at :3361-3363. P.OBZI = $7F00 = 32512 (RBARON.MAC:443, ';PF OBJECT INITIAL Z'). Ours: `SPAWN_DEPTH = HORZ` = $1000 = 4096 \u2014 7.94\u00d7 too shallow. Arithmetic on the horizon dwell: the ROM's mountain closes from $7F00 to the fall threshold P.MAXZ = $1001 at P.OBDZ = $180/frame \u2192 (32512 \u2212 4097) / 384 = 74.0 calc frames \u00d7 96 ms = 7.10 SECONDS as a distant silhouette on the horizon. Ours: spawns at exactly 4096 and the first `stepMountain` drops it to 4032 < 4096 \u2192 0 frames. Our mountains are never on the horizon at all.",
+  "reasoning": "P.OBZI ('PF OBJECT INITIAL Z') and HORZ ('HORIZON DEPTH') are different constants doing different jobs: HORZ/PF.XZ = $1000 is the X-projection depth used WHILE a mountain is a horizon silhouette; P.OBZI = $7F00 is where it is (re)born. Conflating them removes the entire approach phase \u2014 the 7-second build of a range rising out of the haze \u2014 and drops the player straight into the near field. This is why our landscape reads as 'popping in' rather than approaching. One constant.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 443,
+   "verbatim": "P.OBZI\t=7F00\t\t\t;PF OBJECT INITIAL Z"
+  },
+  "ours": {
+   "file": "src/core/landscape.ts",
+   "line": 36,
+   "verbatim": "export const SPAWN_DEPTH = HORZ"
+  },
+  "recommendation": "fix",
+  "size": "s"
+ },
+ {
+  "id": "MI-017",
+  "class": "DIVERGENCE",
+  "title": "The recycle threshold is a 16-bit compare against $01C0 = 448, not $C0 = 192",
+  "claim": "ROM (RBARON.MAC:3349-3356): with the new depth LSB in Y and MSB in A, `CPY I,0C0 ;MINIMUM DEPTH / SBC I,1 / BCS 35$ ;NO`. That is the standard 6502 16-bit compare idiom \u2014 CPY against the LOW byte then SBC the HIGH byte \u2014 so the constant is ($01 << 8) | $C0 = $01C0 = 448, and the recycle fires when depth < 448. The same idiom appears twelve lines later against P.MAXZ: `CPY I,P.MAXZ&0FF / SBC I,P.MAXZ&0FF00/100 ;MAX Y DEPTH ?` (RBARON.MAC:3397-3398), where the assembler splits $1001 into its LSB and MSB \u2014 proving the pattern. Ours: `MIN_DEPTH = 0xc0 // 192`, taking only the CPY operand and dropping the SBC's high byte. The true value is 448; ours is 2.33\u00d7 too close.",
+  "reasoning": "Also a mis-citation: landscape.ts:38 cites 'RBARON.MAC:3349' for the $0C0, but 3349 is `TAY` \u2014 the CPY is at 3354. The error is small in effect (mountains linger 8 extra frames = 0.77 s at the ROM's $20 delta before recycling) but it is a value we got wrong from a half-read instruction pair, and the fix is one literal.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 3355,
+   "verbatim": "\tSBC I,1"
+  },
+  "ours": {
+   "file": "src/core/landscape.ts",
+   "line": 39,
+   "verbatim": "export const MIN_DEPTH = 0xc0 // 192"
+  },
+  "recommendation": "fix",
+  "size": "s"
+ },
+ {
+  "id": "MI-018",
+  "class": "DIVERGENCE",
+  "title": "'On horizon' is a latched STATUS BIT with hysteresis, not a depth comparison",
+  "claim": "ROM: on-horizon is PFOBJ+6 bit D7 (object glossary RBARON.MAC:362-364, 'STATUS A X X X MTN#---, A ACTIVE'). PFOBMN dispatches on the LATCHED bit, not on depth: `10$: LDA AX,PFOBJ+6 ;STATUS / ... / BPL 15$ / JMP 45$ ;PF ON HORIZON` (RBARON.MAC:3294-3297). The bit is CLEARED once, when the object falls \u2014 `LDA AX,PFOBJ+6 ;ELSE START PF OBJECT 'FALL' / AND I,0F` (RBARON.MAC:3400-3401), reached only when depth < P.MAXZ = $1001 = 4097 (RBARON.MAC:445, tested at :3397-3399) \u2014 and SET once, at recycle (`ORA I,80`, RBARON.MAC:3359). It is a one-way latch per pass. Ours: `onHorizon(m) => m.depth >= HORZ`, recomputed from depth every call, with HORZ = $1000 = 4096 (the ROM's threshold is P.MAXZ = $1001 = HORZ + 1, and the sense is strictly-less-than, so our >= 4096 is off by one at the boundary too).",
+  "reasoning": "The latch is not decoration: PFOBJ+6's LOW nibble simultaneously carries the MOUNTAIN DB OFFSET (glossary :364), and clearing D7 with `AND I,0F` is what PRESERVES that nibble while dropping the flag. Our predicate cannot express the latch because Mountain has no status field \u2014 the mountain's identity and its horizon state are the same byte in the ROM. Beyond structure, a depth-derived predicate is only equivalent to the latch if the recycle depth is right, and it is not (MI-016): today our mountains fail onHorizon() from frame 1 of every pass, so the horizon branch of the renderer is dead code.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 3400,
+   "verbatim": "\tLDA AX,PFOBJ+6\t\t;ELSE START PF OBJECT 'FALL'"
+  },
+  "ours": {
+   "file": "src/core/landscape.ts",
+   "line": 89,
+   "verbatim": "  return m.depth >= HORZ"
+  },
+  "recommendation": "fix",
+  "size": "m"
+ },
+ {
+  "id": "MI-019",
+  "class": "DIVERGENCE",
+  "title": "Mountains never scroll laterally \u2014 the ROM subtracts PLYRDL every frame and wraps",
+  "claim": "ROM: every free PF object has the player's lateral delta subtracted from its X each calc frame, then wrapped \u2014 `SEC / LDA AX,PFOBJ / SBC A,PLYRDL / STA AX,PFOBJ / TAY / LDA AX,PFOBJ+1 / SBC A,PLYRDL+1 / STA AX,PFOBJ+1 / JSR WRAPIT` (RBARON.MAC:3298-3306). At the moment of the fall the X is re-seeded from the horizon scroll position PFXSCR combined with the object's own mountain lane: `LDY PFXSCR / LDX PFXSCR+1 / JSR D.COMP` (RBARON.MAC:3403-3405) then `LDA I,-3 / ADC AX,PFOBJ+6 / ASL / ASL / CLC / ADC TEMP1 / AND I,1F` (RBARON.MAC:3411-3417) \u2014 the mountain index (PFOBJ+6 low nibble) \u00d7 4 sets its lane. Ours: `x` is written 0 at construction (`x: 0` in both spawnMountain and initialMountains) and stepMountain spreads `...m` without ever touching it. It is 0 forever, for every mountain, for the whole game.",
+  "reasoning": "There is no lateral scroll and no lateral spread. Combined with MI-014 (all four seeded at x = 0), the entire landscape is a single column of silhouettes on the centre-line that grows toward the player and never slides. Banking or yawing the aircraft moves the camera but the mountains have nothing to move PAST \u2014 the ROM's WRAPIT band is what makes the pass feel endless. This needs an x-scroll term in stepMountain plus the PFXSCR/lane seeding, so it is a mechanism, not a constant.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 3403,
+   "verbatim": "\tLDY PFXSCR"
+  },
+  "ours": {
+   "file": "src/core/landscape.ts",
+   "line": 84,
+   "verbatim": "  return next <= MIN_DEPTH ? { ...m, depth: SPAWN_DEPTH } : { ...m, depth: next }"
+  },
+  "recommendation": "fix",
+  "size": "m"
+ },
+ {
+  "id": "MI-021",
+  "class": "NO_COUNTERPART",
+  "title": "GREND \u2014 flying into a mountain kills you; we have no ground collision at all",
+  "claim": "ROM: the ground-collision detector ORs the crashed mountain's index into GREND with D7|D6 \u2014 `LDA SAVX+1 ;MOUNTAIN OFFSET OF CRASH / ORA I,0C0 / STA GREND ;D6=GROUND COLLISION` (RBARON.MAC:4643-4645). The main loop reads it every frame, before any motion: `BIT GREND / BVS 20$ ;PLAYER RAN INTO GROUND` (RBARON.MAC:783-784), freezing PFMOTN, NWPLNE and PLMOTN; ENDLFE then takes a life (`DEC LIVES ;TAKE LIFE IN PLAY`, RBARON.MAC:1207) and the crash sequence redraws the mountain the player hit (`AND I,3F / TAX / LDA AX,PFOBJ+6 / AND I,0F / STA SAVY+1 ;MOUNTAIN #`, RBARON.MAC:1131-1135). The collision boxes are authored: PFOCOL, 24 PFCOL corners = 12 (min,max) pairs (RBGRND.MAC:824-847). Ours: landscape.ts exposes no collision surface, main.ts has no GREND, and topology.ts's transcribed PFOCOL table is imported by nobody \u2014 grep for PFOCOL outside topology.ts returns nothing.",
+  "reasoning": "Red Baron's ground wave is a low-altitude run through a mountain pass; the mountains are the hazard. Without GREND the player can fly straight through a range, which removes the only reason the ground wave is tense. The PFOCOL data is already transcribed and sitting unused, so the ROM's half is done \u2014 what is missing is the box test, the GREND byte, and the main-loop freeze. That is a feature, not a constant.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 4645,
+   "verbatim": "\tSTA GREND\t\t;D6=GROUND COLLISION"
+  },
+  "ours": null,
+  "recommendation": "fix",
+  "size": "l"
+ },
+ {
+  "id": "MI-022",
+  "class": "DIVERGENCE",
+  "title": "scene.ts's far clip (20000) is below the ROM's farthest object (P.OBZI = 32512), and its HORZ comment repeats a radix error",
+  "claim": "scene.ts:32-33 sets `const FAR = 20000` with the comment 'past the horizon distance (findings \u00a77 HORZ = 1000, with headroom)'. HORZ is $1000 = 4096 (RBARON.MAC:451, `.RADIX 16`), not decimal 1000 \u2014 the comment reproduces the findings doc's un-radixed '1000' and reads as though 20000 were 20\u00d7 the horizon when it is under 5\u00d7. More consequentially, the ROM's farthest playfield object sits at P.OBZI = $7F00 = 32512 (RBARON.MAC:443) and PFOBIZ seeds one mountain at $8200 = 33280 (RBARON.MAC:1305) \u2014 both BEYOND FAR = 20000. Fixing MI-016 (recycle to $7F00) without raising FAR would push every freshly recycled mountain outside the frustum and clip it away.",
+  "reasoning": "This is latent today only because SPAWN_DEPTH is wrongly clamped to 4096, which keeps everything inside the far plane. It becomes a hard bug the instant MI-016 lands, so the two must move together. Raise FAR above 33280 (the PFOBIZ maximum) \u2014 40000 gives headroom for the difficulty-percentage delta. The stale comment should also stop citing HORZ as decimal 1000.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 451,
+   "verbatim": "HORZ\t=1000\t\t\t;HORIZON DEPTH"
+  },
+  "ours": {
+   "file": "src/core/scene.ts",
+   "line": 33,
+   "verbatim": "const FAR = 20000"
+  },
+  "recommendation": "fix",
+  "size": "s"
+ }
+]

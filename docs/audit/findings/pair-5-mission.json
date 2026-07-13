@@ -1,0 +1,417 @@
+[
+  {
+    "id": "MI-001",
+    "class": "CONFIRMED",
+    "title": "MODECT LSB selects the wave type — even = plane wave, odd = ground wave",
+    "claim": "ROM: `LDA MODECT / LSR / BCC STPLNE / JMP INITGR` (RBARON.MAC:2270-2273). LSR shifts bit 0 into carry; carry CLEAR (MODECT even) falls through to STPLNE (plane wave), carry SET (MODECT odd) jumps to INITGR (ground wave). MODECT is initialised to 0 at GMINIT (`STX MODECT` with X=0, RBARON.MAC:1220), so the game OPENS on a plane wave. Ours: `isPlaneWave(modect) => modect % 2 === 0` — even is the plane wave, and INITIAL_WAVE_CLOCK starts at modect 0. Identical rule, identical opening parity.",
+    "reasoning": "Our waves.ts header hedges: '(Which parity is the plane is inferred; the ROM pins that the LSB selects.)' It is not inferred — the ROM pins it explicitly. BCC (branch-on-carry-clear) after LSR takes the branch when the shifted-out bit 0 was 0, i.e. MODECT even, and that branch target is literally labelled STPLNE with the comment ';PLANE WAVE'. The inference note can be deleted; the parity is correct as written.",
+    "source": {
+      "file": "RBARON.MAC",
+      "line": 2272,
+      "verbatim": "\tBCC STPLNE\t\t;PLANE WAVE"
+    },
+    "ours": {
+      "file": "src/core/waves.ts",
+      "line": 108,
+      "verbatim": "  return modect % 2 === 0"
+    }
+  },
+  {
+    "id": "MI-002",
+    "class": "CONFIRMED",
+    "title": "MCOUNT table values 4,2,3,2,1,3,4,2 are byte-exact",
+    "claim": "ROM: `MCOUNT: .BYTE 4,2,3,2` (RBARON.MAC:1298) followed by `.BYTE 1,3,4,2` (RBARON.MAC:1299) — one 8-byte table under the section comment ';TABLE OF COUNTS BETWEEN PLANE/GROUND WAVES' (RBARON.MAC:1296). Ours: `MCOUNT = Object.freeze([4, 2, 3, 2, 1, 3, 4, 2])`. All eight bytes match in order. (Radix is irrelevant here — every digit is 0-4, identical in hex and decimal.)",
+    "reasoning": "Our code cites the values to `R2BRON.MAC:1296-1297`, the DECOY module, via findings §4. The values happen to be identical in the shipped RBARON.MAC (:1298-1299), so the table itself survives; only the citation is to a file that never shipped. The eight bytes are right. How they are INDEXED and what they COUNT is a separate matter — see MI-003 and MI-004.",
+    "source": {
+      "file": "RBARON.MAC",
+      "line": 1298,
+      "verbatim": "MCOUNT:\t.BYTE 4,2,3,2"
+    },
+    "ours": {
+      "file": "src/core/waves.ts",
+      "line": 51,
+      "verbatim": "export const MCOUNT: readonly number[] = Object.freeze([4, 2, 3, 2, 1, 3, 4, 2])"
+    }
+  },
+  {
+    "id": "MI-003",
+    "class": "DIVERGENCE",
+    "title": "MCOUNT is indexed by MODECT>>1 and a ground MODECT reloads NEWCT=1 — the ROM runs RUNS of plane waves, not a 1:1 alternation",
+    "claim": "ROM (RBARON.MAC:2260-2269): `INC MODECT / LDA MODECT / AND I,0F / STA MODECT / LSR / TAX / LDA AX,MCOUNT / BCC 21$ / LDA I,1 / 21$: STA NEWCT`. LSR puts MODECT bit 0 in carry and MODECT>>1 in A; TAX makes MODECT>>1 the index; `LDA AX,MCOUNT` = MCOUNT[MODECT>>1]. BCC 21$ keeps that value only when carry is CLEAR (MODECT EVEN); when MODECT is ODD the `LDA I,1` overrides it → NEWCT = 1. So: NEWCT = (MODECT odd) ? 1 : MCOUNT[MODECT>>1]. Steady-state cycle over MODECT 0..15: 4 plane, 1 ground, 2 plane, 1 ground, 3 plane, 1 ground, 2 plane, 1 ground, 1 plane, 1 ground, 3 plane, 1 ground, 4 plane, 1 ground, 2 plane, 1 ground = 4+2+3+2+1+3+4+2 = 21 PLANE waves per 8 GROUND waves (72% plane / 28% ground). Ours: `interWaveDelay(modect) = MCOUNT[modect % 8]` — indexed by MODECT itself, not MODECT>>1 — and stepWaveClock advances MODECT on EVERY wave decision, so isPlaneWave flips every wave: 1 plane : 1 ground = 50/50, a ground wave twice as often as the ROM.",
+    "reasoning": "Two independent errors compound. (1) The index: `LSR / TAX` is a divide-by-two before the table lookup — MCOUNT has 8 entries for 16 MODECT values, one entry per PLANE RUN. Indexing MCOUNT by MODECT directly reads the wrong entry and (worse) reads an entry for the ground slots too, which the ROM never does. (2) The odd-MODECT override: the `BCC 21$ / LDA I,1` pair forces NEWCT=1 for every ground slot, so a ground wave is always exactly ONE wave long. Our model has no such override. The net effect on pacing is the headline: the ROM gives you three or four dogfights, then one strafing run; we give you a dogfight, a strafing run, a dogfight, a strafing run. That alone would make the mission 'seem way off'.",
+    "source": {
+      "file": "RBARON.MAC",
+      "line": 2266,
+      "verbatim": "\tLDA AX,MCOUNT"
+    },
+    "ours": {
+      "file": "src/core/waves.ts",
+      "line": 114,
+      "verbatim": "  return MCOUNT[((Math.floor(modect) % len) + len) % len]"
+    },
+    "recommendation": "fix",
+    "size": "m"
+  },
+  {
+    "id": "MI-004",
+    "class": "DIVERGENCE",
+    "title": "NEWCT counts WAVES, not calc-frames — our inter-wave gap is 96-384 ms where the ROM's is 0.48-3.07 s",
+    "claim": "ROM: `DEC NEWCT` (RBARON.MAC:2258) sits inside NWPLNE PAST the frame gate. NWPLNE first tests plane #0's status (`LDA PLSTAT+6 / AND I,0C0 / BNE 17$`, RBARON.MAC:2241-2243) and then `DEC PLSTAT+7 / BNE 17$` (RBARON.MAC:2244) — PLSTAT+7 is the per-calc-frame countdown; NEWCT is only reached once it expires. So NEWCT ticks ONCE PER PLANE-GENERATION EVENT, i.e. once per wave. The actual FRAME gap between waves is PLSTAT+7, loaded from: WO.CNT = 5 (RBARON.MAC:472; 5 × 96 ms = 0.48 s, drones still exploding), WO.RTN = $10 = 16 (RBARON.MAC:473 / :2737; 16 × 96 ms = 1.54 s, plane escaped), $20 = 32 frames (RBARON.MAC:2360-2361, ';GIVE PLANE ^20 FRAMES TO CROSS CENTER'; 32 × 96 ms = 3.07 s). Ours: `stepWaveClock` decrements `countdown` once per calc frame and reloads it from MCOUNT, so the gap between waves is 1-4 calc frames = 96-384 ms — 5× to 32× too short — and MCOUNT (a WAVE count) is being spent as a FRAME count.",
+    "reasoning": "Timebase arithmetic, per the 96 ms calc frame: our gaps are MCOUNT[i] ∈ {1,2,3,4} frames → 0.096 s, 0.192 s, 0.288 s, 0.384 s. The ROM's are 5, 16 or 32 frames → 0.48 s, 1.54 s, 3.07 s. This is not a unit conversion the port got right in different units — it is the WRONG QUANTITY: MCOUNT never meters frames in the ROM, and the frame meter (PLSTAT+7 / WO.CNT / WO.RTN) has no counterpart in waves.ts at all. main.ts gates the clock on `enemies.length === 0 && wrecks.length === 0`, which correctly reproduces NWPLNE's 'only when the sky is clear' precondition — so the fix is to make the countdown a WO.CNT/WO.RTN frame delay and move MCOUNT to metering the RUN LENGTH (MI-003), not to gate it differently.",
+    "source": {
+      "file": "RBARON.MAC",
+      "line": 2244,
+      "verbatim": "\tDEC PLSTAT+7\t\t;DEC PLANE COUNT"
+    },
+    "ours": {
+      "file": "src/core/waves.ts",
+      "line": 135,
+      "verbatim": "    return { clock: { modect: clock.modect, countdown: clock.countdown - 1 }, spawnPlaneWave: false }"
+    },
+    "recommendation": "fix",
+    "size": "m"
+  },
+  {
+    "id": "MI-005",
+    "class": "DIVERGENCE",
+    "title": "MODECT wraps modulo 16 (AND I,0F); ours grows without bound",
+    "claim": "ROM: `INC MODECT / LDA MODECT / AND I,0F / STA MODECT` (RBARON.MAC:2260-2263) — MODECT is masked to $0F after every increment, so it cycles 0..15 and the 16-slot mission cycle repeats forever. Ours: `const nextModect = clock.modect + 1` with no mask — modect grows without limit. Parity (MI-001) survives, but the MCOUNT index does not: once the MODECT>>1 indexing of MI-003 is restored, an unbounded modect walks off the 8-entry table.",
+    "reasoning": "Today this is latent — `interWaveDelay` applies its own `% 8` so it never indexes out of range, and `isPlaneWave` uses `% 2`. It becomes load-bearing the moment MI-003 is fixed, and it is also a float-safety hazard: after ~9e15 waves modect stops being an exact integer. Mask it at the source and both problems disappear.",
+    "source": {
+      "file": "RBARON.MAC",
+      "line": 2262,
+      "verbatim": "\tAND I,0F"
+    },
+    "ours": {
+      "file": "src/core/waves.ts",
+      "line": 138,
+      "verbatim": "  const nextModect = clock.modect + 1"
+    },
+    "recommendation": "fix",
+    "size": "s"
+  },
+  {
+    "id": "MI-006",
+    "class": "CONFIRMED",
+    "title": "GRMODE = $C0 — D7 ground, D6 plane-disable — and the main loop's BVS skip",
+    "claim": "ROM: INITGR does `LDA I,0C0 / STA GRMODE ;TO GROUND MODE` (RBARON.MAC:1407-1408) — $C0 = D7 | D6. The main loop then reads it as `BIT GRMODE / BVS 20$ ;GROUND SEQUENCE` (RBARON.MAC:786-787), and BIT copies bit 6 into V, so the V branch is the D6 = $40 plane-disable bit; the skip target 20$ is past `JSR NWPLNE ;GENERATE MOTION OBJECTS` (RBARON.MAC:788). D7 ($80) is the ground flag, tested with BIT/BPL at RBARON.MAC:3286-3287. Ours: GRMODE_GROUND = 0x80, GRMODE_PLANE_DISABLE = 0x40, GRMODE_INITGR = 0x80 | 0x40 = 0xC0, and `planeGenDisabled` masks D6 while `isGroundMode` masks D7. Byte-exact, bit-exact.",
+    "reasoning": "The hex radix trap our code's own comment flags ('the ROM's GRMODE=0C0 is 0xC0 (= 192), NOT decimal 12') is correctly avoided: RBARON.MAC is `.RADIX 16` at line 1407, and 0C0 is $C0. The bit ASSIGNMENTS are also right — D6 is the one the main loop's BVS reads to skip plane generation, D7 the one PFOBMN reads with BPL to know a ground sequence is running. This is one of the parts of waves.ts that is exactly right.",
+    "source": {
+      "file": "RBARON.MAC",
+      "line": 1408,
+      "verbatim": "\tSTA GRMODE\t\t;TO GROUND MODE"
+    },
+    "ours": {
+      "file": "src/core/waves.ts",
+      "line": 159,
+      "verbatim": "export const GRMODE_INITGR = GRMODE_GROUND | GRMODE_PLANE_DISABLE"
+    }
+  },
+  {
+    "id": "MI-007",
+    "class": "DIVERGENCE",
+    "title": "Ground mode ends on a CONDITION (GRNDCT spent + no live ground objects), not on a countdown — ours lasts ~0.4 s",
+    "claim": "ROM: ground mode is cleared inside PFOBMN, not by the wave clock. PFOBMN ORs the three ground-object status bytes of all four PF objects (PFOBJ+8/+9/+A, RBARON.MAC:3273-3275), then `LDX I,N.PFOB / AND I,0C0 ;CHECK FOR VISIBLE GROUND OBJECTS / BNE 10$` (RBARON.MAC:3283-3285) — if any object still has D7/D6 set it stays in ground mode. Only when GRNDCT has reached 0 (`LDA GRNDCT / BNE 10$`, RBARON.MAC:3270-3271) AND no ground objects are alive AND GRMODE D7 is set AND GREND is clear does it `STA GRMODE` with A=0 (RBARON.MAC:3290) and `LDA I,1 / STA PLSTAT+7 ;START PLANES NEXT FRAME` (RBARON.MAC:3292-3293). Ours: grmode is set by `grmodeForWave(decisionModect)` and cleared by the NEXT wave decision, so a ground wave lasts exactly `interWaveDelay(nextModect) + 1` calc frames. Trace from modect 1: countdown reloads to MCOUNT[2 % 8] = 3, so 3 ticks + the decision frame = 4 calc frames × 96 ms = 0.38 s of 'ground mode'.",
+    "reasoning": "A 0.38 s ground wave with an empty sky and nothing to strafe is not a ground wave — it is a stutter. The ROM's ground wave is open-ended: it runs until BOTH mountain ground-target groups (GRNDCT = 2, MI-008) have been deployed and every target has been destroyed or scrolled past. Nothing in waves.ts can express a condition-terminated mode; `grmodeForWave` is a pure function of modect, so the exit is structurally unavailable. This is the second half of the pacing complaint: the ground half of the alternation happens twice as often as it should (MI-003) and is over before the player can register it.",
+    "source": {
+      "file": "RBARON.MAC",
+      "line": 3290,
+      "verbatim": "\tSTA GRMODE"
+    },
+    "ours": {
+      "file": "src/core/waves.ts",
+      "line": 181,
+      "verbatim": "  return isPlaneWave(modect) ? GRMODE_PLANE : GRMODE_INITGR"
+    },
+    "recommendation": "fix",
+    "size": "l"
+  },
+  {
+    "id": "MI-008",
+    "class": "NO_COUNTERPART",
+    "title": "GRNDCT = 2 and GTIMER — a ground wave deploys exactly two mountain target-groups",
+    "claim": "ROM: INITGR sets `LDA I,2 / STA GRNDCT` (RBARON.MAC:1403-1404) and `LDA I,1 / STA GTIMER ;MOUNTAIN OBJECT TIME-OUT COUNTER` (RBARON.MAC:1405-1406). PFOBMN then, each time a mountain falls off the horizon and GTIMER expires (`DEC GTIMER / BMI 55$`, RBARON.MAC:3426-3427), does `LDA GRNDCT / BEQ 60$ / DEC GRNDCT` (RBARON.MAC:3430-3432) and arms that mountain with a target group: `JSR RANDOM / AND I,3` → 0..3, then ×3 → `STA AX,PFOBJ+7 ;RANDOM PF OBJECT GROUPS` (RBARON.MAC:3450-3455), setting the three ground-target status bytes PFOBJ+8/+9/+A to $80 (RBARON.MAC:3456-3459). So a ground wave arms exactly GRNDCT = 2 mountains, each with one of 4 authored target groups (right/centre/left targets per the object glossary, RBARON.MAC:368-370). Ours: no GRNDCT, no GTIMER, no ground targets — landscape.ts renders silhouettes only.",
+    "reasoning": "This is the CONTENT of the ground wave and the thing that terminates it (MI-007). Without it there is nothing to strafe, nothing to shoot back, and no exit condition. landscape.ts's Mountain interface has no target slots at all, so this is new state, not a constant to retune. Sizing honestly: this is the ground-wave feature, not a patch.",
+    "source": {
+      "file": "RBARON.MAC",
+      "line": 3455,
+      "verbatim": "\tSTA AX,PFOBJ+7\t\t;RANDOM PF OBJECT GROUPS"
+    },
+    "ours": null,
+    "recommendation": "fix",
+    "size": "l"
+  },
+  {
+    "id": "MI-009",
+    "class": "DIVERGENCE",
+    "title": "GMLEVL indexes PLNLVL by OBJKLD>>1 — we index by OBJKLD, so difficulty ramps twice as fast",
+    "claim": "ROM PLNZD0 (RBARON.MAC:2399-2408): `LDX I,10 / LDA OBJKLD+1 / BNE 2$ / LDA OBJKLD / LSR / CMP I,10 / BCS 2$ / TAX / 2$: LDA AX,PLNLVL / STA GMLEVL`. The `LSR` HALVES the kill count before the table lookup, and the clamp is `CMP I,10` = $10 = 16 (the last index of the 17-entry PLNLVL table). So GMLEVL = PLNLVL[min(OBJKLD >> 1, 16)]. With PLNLVL = 0,0,0,0,1,2,2,2,3,3,3,4,4,4,4,4,5 (RBARON.MAC:2478) the real thresholds in KILLS are: level 1 at 8 kills, level 2 at 10, level 3 at 16, level 4 at 22, level 5 at 32. Ours: `gmlevlForKills` indexes PLNLVL by the kill count directly (`Math.min(Math.floor(objkld), PLNLVL.length - 1)`), giving level 1 at 4 kills, 2 at 5, 3 at 8, 4 at 11, 5 at 16 — every rung arrives at exactly HALF the kills the ROM demands.",
+    "reasoning": "The PLNLVL table itself is transcribed byte-perfectly (all 17 bytes). The missing operation is the single `LSR` at RBARON.MAC:2403. Its effect is not subtle: the enemy reaches its top difficulty (GMLEVL 5, which is the rung at which planes are aimed AT the player — `CMP I,5 / BCC 10$ / LDA I,0A8` at RBARON.MAC:3025-3027) after 16 kills instead of 32. Combined with MI-003's doubled ground-wave frequency, the game gets hard about twice as fast as the arcade. Fix is one shift.",
+    "source": {
+      "file": "RBARON.MAC",
+      "line": 2403,
+      "verbatim": "\tLSR"
+    },
+    "ours": {
+      "file": "src/core/scoring.ts",
+      "line": 36,
+      "verbatim": "export const PLNLVL: readonly number[] = Object.freeze([0, 0, 0, 0, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 4, 4, 5])"
+    },
+    "recommendation": "fix",
+    "size": "s"
+  },
+  {
+    "id": "MI-010",
+    "class": "BOOK_WAS_WRONG",
+    "title": "PLANE1/PLANE2 drone offsets are HEX $100 = 256, not decimal 100 — our formation is 2.56× too tight",
+    "claim": "ROM: `PLANE1: .WORD -100,100` (RBARON.MAC:2480) and `PLANE2: .WORD -100,-100` (RBARON.MAC:2481). RBARON.MAC is `.RADIX 16` and lines 2480-2481 are NOT inside either decimal island (the only one in this module is :6217-6280). There is no trailing period, so these are HEX: -$100, +$100 = -256, +256 and -$100, -$100 = -256, -256. The four bytes are copied into P.1ST+0..3 / P.2ST+0..3 (`LDA AX,PLANE1 / STA ZX,P.1ST`, RBARON.MAC:2372-2373) = the X LSB/MSB and Y LSB/MSB of the drone record (object glossary, RBARON.MAC:268-271). Ours: `Object.freeze([-100, 100])` / `Object.freeze([-100, -100])` — DECIMAL 100. Every drone flies 2.56× closer to its lead than the ROM's.",
+    "reasoning": "This is a radix error laundered through a secondary source. docs/red-baron-1980-source-findings.md:172 states 'Drones fly formation offsets `PLANE1 -100,+100` / `PLANE2 -100,-100`' with no radix note, and waves.ts:13 copies it verbatim as 'the byte-pinned formation offsets PLANE1 -100,+100 / PLANE2 -100,-100' — then writes them as JavaScript decimal literals. The doc is the authority our code cites and the doc is wrong; the correct constants are -256/+256 and -256/-256. (For scale: the lead's own spawn depth P.INDP is $1080 = 4224, RBARON.MAC:464 — the ROM's whole coordinate space is hex, and 100 decimal is not a value that appears anywhere near it.)",
+    "source": {
+      "file": "RBARON.MAC",
+      "line": 2480,
+      "verbatim": "PLANE1:\t.WORD -100,100"
+    },
+    "ours": {
+      "file": "src/core/waves.ts",
+      "line": 46,
+      "verbatim": "  Object.freeze([-100, 100]) as readonly [number, number],"
+    },
+    "recommendation": "fix",
+    "size": "s"
+  },
+  {
+    "id": "MI-011",
+    "class": "DIVERGENCE",
+    "title": "Drones spawn at DRINZ = $1600, not at the lead's depth",
+    "claim": "ROM: after PLNXCG copies the lead's 28-byte record into the drone slot, STPLNE overwrites the drone's Z MSB: `LDA I,DRINZ/100 / STA P.1ST+5` (RBARON.MAC:2369-2370), where DRINZ = $1600 = 5632 (RBARON.MAC:466) and `/100` is a HEX divide by $100, i.e. take the MSB $16. Object DB offset +5 is 'Z MSB' (glossary RBARON.MAC:273). The Z LSB (+4) is inherited from the lead's P.INDP = $1080 (RBARON.MAC:464), LSB $80 — so the drone's depth becomes $1680 = 5760 against the lead's $1080 = 4224: the drone starts 1536 units FARTHER out. The same store is repeated for drone #2 (`STA P.2ST+5`, RBARON.MAC:2384). Ours: `wave.push({ ...lead, kind: 'drone', x: lead.x + dx, y: lead.y + dy })` — the spread copies the lead's depth verbatim and only x/y are offset, so all three planes spawn at exactly the same Z.",
+    "reasoning": "The drones are meant to be BEHIND the lead in depth as well as offset laterally — that is what makes the formation read as a formation and what makes the lead the natural first target. Spawning them coplanar with the lead flattens the wedge into a line abreast. The fix is one field in the drone spread; the Z offset (1536 world units in ROM Z, or the DRINZ − P.INDP difference re-expressed in our Z scale) is a constant, not a mechanism.",
+    "source": {
+      "file": "RBARON.MAC",
+      "line": 2369,
+      "verbatim": "\tLDA I,DRINZ/100"
+    },
+    "ours": {
+      "file": "src/core/waves.ts",
+      "line": 83,
+      "verbatim": "    wave.push({ ...lead, kind: 'drone', x: lead.x + dx, y: lead.y + dy })"
+    },
+    "recommendation": "fix",
+    "size": "s"
+  },
+  {
+    "id": "MI-012",
+    "class": "CONFIRMED",
+    "title": "Score thresholds 300 / 1000 for the 2nd and 3rd plane",
+    "claim": "ROM (RBARON.MAC:2337-2343): `LDX SCORE+1 / BEQ 30$ ;SCORE < 1000 / LDA I,3 ;3 PLANES / 30$: LDX SCORE / CPX I,30 / BCC 35$ ;SCORE < 300 / ORA I,1 ;AT LEAST 2 PLANES`. N.OBJ is a BITMASK, not a count: bit 0 arms drone #1 (`LSR N.OBJ / BCC 65$`, RBARON.MAC:2362-2363), bit 1 arms drone #2 (:2376-2377). $30 in the packed BCD score byte reads as 300 and a non-zero SCORE+1 as ≥ 1000 — the ROM's own comments say exactly that. Ours: SCORE_2_PLANES = 300, SCORE_3_PLANES = 1000, and planeCountForScore returns 1 / 2 / 3 across those thresholds. Both thresholds and the 1-lead-plus-2-drone object budget (N.MOB = 2*L.OBJ, '3 MOTION OBJECTS (1 PLANE, 2 DRONES)', RBARON.MAC:463) match.",
+    "reasoning": "Verified against the shipped module rather than the findings doc, and it holds. Note also that the ROM's 25% lone-plane roll — `JSR RANDOM / AND I,30 / BNE 40$ / STA N.OBJ ;RANDOM (0.25) ONLY 1 PLANE` (RBARON.MAC:2345-2348) — masks 2 bits ($30 = bits 4 and 5), giving exactly 1-in-4, which is our LONE_PLANE_CHANCE = 0.25; and it is applied AFTER the score scaling, same as ours. One rule we do NOT implement lives at RBARON.MAC:2334-2336 (`BIT BLOBJ+18 / BMI 35$` — 'IF BLIMP ONLY 1 PLANE'): an active blimp forces a lone plane regardless of score. That belongs to the blimp pair, so it is recorded here only as a pointer.",
+    "source": {
+      "file": "RBARON.MAC",
+      "line": 2342,
+      "verbatim": "\tBCC 35$\t\t\t;SCORE < 300"
+    },
+    "ours": {
+      "file": "src/core/waves.ts",
+      "line": 35,
+      "verbatim": "export const SCORE_2_PLANES = 300"
+    }
+  },
+  {
+    "id": "MI-013",
+    "class": "CONFIRMED",
+    "title": "The landscape IS authored data — and we do use it: PFOPOS transcribes byte-for-byte",
+    "claim": "Answering the direct question: the ROM's landscape is AUTHORED, not generated. Four silhouettes SCAPE0..3 are hand-placed point lists in RBGRND.MAC (`.RADIX 10` at :723; SCAPE0 begins `SCAPE0: PFPNTS -128,0,0` at :725; 21/16/18/15 points; `SSEGS: .WORD SCAPE0,SCAPE1,SCAPE2,SCAPE3` at :799). Each is stitched by an authored SEGSTR table PFOPOS (037007.XXX:83-91, inside the `.RADIX 10` region opened at :80) plus 16 authored SMAP** connect-lists (037007.XXX:93-172). The SEGSTR macro is `.BYTE .A*6+4,.B*6+4,.C*6+4,.D*6+4` (037007.XXX:18-19) — four segment START point-indices, ×6 stride +4 flag. Ours: topology.ts PFOPOS = [[0,3,6,9],[0,2,3,6],[0,2,5,9],[0,3,5,7],[3,6,9,15],[2,3,6,11],[2,5,9,13],[3,5,7,10]] — all 32 numbers match 037007.XXX:83-91 exactly (the R-to-L rows' `15.`/`11.`/`13.`/`10.` carry explicit decimal points, correctly read as 15/11/13/10), and landscape.ts consumes SCAPES + PFOPOS + MOUNTAIN_SEGMAPS rather than generating any geometry.",
+    "reasoning": "The brief asked whether we GENERATE what the ROM AUTHORED, and for the SILHOUETTES the answer is a clean no — landscape.ts:116-117 reads the transcribed tables and stitches them; there is no procedural mountain shape anywhere in the module. The word 'generates' in the module header is about PLACEMENT (which slot sits at which depth/X), and THAT is where we generate what the ROM authored — see MI-014. The distinction matters: the shapes are right, the arrangement is not.",
+    "source": {
+      "file": "037007.XXX",
+      "line": 83,
+      "verbatim": "PFOPOS:\tSEGSTR\t0,3,6,9\t\t;INITIAL POINT # OF SEGMENTS L TO R"
+    },
+    "ours": {
+      "file": "src/core/landscape.ts",
+      "line": 117,
+      "verbatim": "    const starts = PFOPOS[m.scape] // forward (L→R) segment starts"
+    }
+  },
+  {
+    "id": "MI-014",
+    "class": "DIVERGENCE",
+    "title": "Mountain PLACEMENT is authored (PFOBIZ) — we generate an even stagger with all four at x = 0",
+    "claim": "ROM: `PFOBIZ: .WORD 8200,6E0,3220,0D20` (RBARON.MAC:1305) — the four PF objects' INITIAL DEPTHS, hex: $8200 = 33280, $06E0 = 1760, $3220 = 12832, $0D20 = 3360 — followed by `.WORD -0C00,-400,400,0C00` (RBARON.MAC:1306) = their INITIAL X POSITIONS, hex: -$0C00, -$0400, +$0400, +$0C00 (GMINIT stores only the MSB: `LDA AY,PFOBIZ+9 ;X POSITION MSB`, RBARON.MAC:1268-1269). GMINIT then classifies each by its Z MSB — `CMP I,11 ;CHECK INITIAL POSITION / BCC 57$ / ORA I,80 ;ON HORIZON` (RBARON.MAC:1258-1261): $82 ≥ $11 → on horizon; $06 < $11 → already free; $32 ≥ $11 → on horizon; $0D < $11 → already free. So the arcade OPENS with 2 mountains on the horizon and 2 already fallen, spread across four lateral lanes. Ours: `initialMountains()` computes `gap = (4096 − 192) / 4 = 976` and lays the four slots at depths 4096, 3120, 2144, 1168 — an even arithmetic stagger — with `x: 0` for ALL FOUR.",
+    "reasoning": "Two authored tables replaced by a formula. The depth stagger is arguably cosmetic; the X collapse is not — every mountain in our game occupies the same lateral lane (x = 0), so the four silhouettes stack directly on top of one another down the centre of the view instead of spanning the pass. The ROM's ±$400 / ±$C00 spread is what makes it a LANDSCAPE rather than a receding column. PFOBIZ is 8 words; transcribing it is a table, not a redesign.",
+    "source": {
+      "file": "RBARON.MAC",
+      "line": 1305,
+      "verbatim": "PFOBIZ:\t.WORD 8200,6E0,3220,0D20"
+    },
+    "ours": {
+      "file": "src/core/landscape.ts",
+      "line": 71,
+      "verbatim": "    x: 0,"
+    },
+    "recommendation": "fix",
+    "size": "s"
+  },
+  {
+    "id": "MI-015",
+    "class": "DIVERGENCE",
+    "title": "The ROM has TWO mountain depth deltas ($180 on the horizon, $20 once fallen) — we have one (64)",
+    "claim": "ROM PFOBMN runs two different closing rates. ON HORIZON (status D7 set → branch 45$): `LDA I,P.OBDZ&0FF ;STANDARD DELTA / ADC A,PRMDEL ;ADD PERCENT DELTA` (RBARON.MAC:3383-3384) with P.OBDZ = $180 = 384 (RBARON.MAC:444, ';PF OBJECT Y DELTA Z (WHILE ON HORIZON)'). ONCE FALLEN (free object): `LDA I,20 ;STANDARD DELTA / ADC A,PRPDEL ;ADD PERCENTAGING DELTA` (RBARON.MAC:3341-3342) with the literal $20 = 32, subtracted at RBARON.MAC:3345-3346. A mountain therefore closes 384/frame while distant and 32/frame while near — a 12:1 ratio, before the difficulty-percentage deltas PRMDEL/PRPDEL are added (PRMDEL = 4 × PRPDEL, RBARON.MAC:1871-1874). Ours: a single `const DEPTH_STEP = 64`, applied unconditionally in stepMountain, which our own comment concedes is 'a display-feel delta, not a ported ROM constant'.",
+    "reasoning": "It IS a ported ROM constant — two of them. The near-field rate matters most for feel (a mountain sliding past the cockpit), and ours is 2× the ROM's $20 = 32; the far-field rate is 6× too slow. The comment in landscape.ts asserts 'ROM P.OBDZ/$180 counts raw ROM Z units; this port's Z is in scene world units' — but our Z IS in ROM units: SPAWN_DEPTH = HORZ = $1000 and MIN_DEPTH are both raw ROM constants, so the deltas can be ported directly with no rescale. The unit excuse does not survive contact with the module's own imports.",
+    "source": {
+      "file": "RBARON.MAC",
+      "line": 3341,
+      "verbatim": "\tLDA I,20\t\t;STANDARD DELTA"
+    },
+    "ours": {
+      "file": "src/core/landscape.ts",
+      "line": 42,
+      "verbatim": "const DEPTH_STEP = 64"
+    },
+    "recommendation": "fix",
+    "size": "s"
+  },
+  {
+    "id": "MI-016",
+    "class": "DIVERGENCE",
+    "title": "Mountains recycle to P.OBZI = $7F00 = 32512, not to HORZ = $1000 = 4096 — ours never spend time on the horizon",
+    "claim": "ROM: when a free mountain reaches minimum depth, PFOBMN recycles it — `LDA AX,PFOBJ+6 ;ON HORIZON / ORA I,80` (RBARON.MAC:3358-3359), then `LDA I,PF.XZ/100 / STA AX,PFOBJ+3` (X depth ← $10, RBARON.MAC:3366-3367) and `LDA I,P.OBZI&0FF00/100 / STA AX,PFOBJ+5` (Z MSB ← $7F, RBARON.MAC:3368-3369), LSBs zeroed at :3361-3363. P.OBZI = $7F00 = 32512 (RBARON.MAC:443, ';PF OBJECT INITIAL Z'). Ours: `SPAWN_DEPTH = HORZ` = $1000 = 4096 — 7.94× too shallow. Arithmetic on the horizon dwell: the ROM's mountain closes from $7F00 to the fall threshold P.MAXZ = $1001 at P.OBDZ = $180/frame → (32512 − 4097) / 384 = 74.0 calc frames × 96 ms = 7.10 SECONDS as a distant silhouette on the horizon. Ours: spawns at exactly 4096 and the first `stepMountain` drops it to 4032 < 4096 → 0 frames. Our mountains are never on the horizon at all.",
+    "reasoning": "P.OBZI ('PF OBJECT INITIAL Z') and HORZ ('HORIZON DEPTH') are different constants doing different jobs: HORZ/PF.XZ = $1000 is the X-projection depth used WHILE a mountain is a horizon silhouette; P.OBZI = $7F00 is where it is (re)born. Conflating them removes the entire approach phase — the 7-second build of a range rising out of the haze — and drops the player straight into the near field. This is why our landscape reads as 'popping in' rather than approaching. One constant.",
+    "source": {
+      "file": "RBARON.MAC",
+      "line": 443,
+      "verbatim": "P.OBZI\t=7F00\t\t\t;PF OBJECT INITIAL Z"
+    },
+    "ours": {
+      "file": "src/core/landscape.ts",
+      "line": 36,
+      "verbatim": "export const SPAWN_DEPTH = HORZ"
+    },
+    "recommendation": "fix",
+    "size": "s"
+  },
+  {
+    "id": "MI-017",
+    "class": "DIVERGENCE",
+    "title": "The recycle threshold is a 16-bit compare against $01C0 = 448, not $C0 = 192",
+    "claim": "ROM (RBARON.MAC:3349-3356): with the new depth LSB in Y and MSB in A, `CPY I,0C0 ;MINIMUM DEPTH / SBC I,1 / BCS 35$ ;NO`. That is the standard 6502 16-bit compare idiom — CPY against the LOW byte then SBC the HIGH byte — so the constant is ($01 << 8) | $C0 = $01C0 = 448, and the recycle fires when depth < 448. The same idiom appears twelve lines later against P.MAXZ: `CPY I,P.MAXZ&0FF / SBC I,P.MAXZ&0FF00/100 ;MAX Y DEPTH ?` (RBARON.MAC:3397-3398), where the assembler splits $1001 into its LSB and MSB — proving the pattern. Ours: `MIN_DEPTH = 0xc0 // 192`, taking only the CPY operand and dropping the SBC's high byte. The true value is 448; ours is 2.33× too close.",
+    "reasoning": "Also a mis-citation: landscape.ts:38 cites 'RBARON.MAC:3349' for the $0C0, but 3349 is `TAY` — the CPY is at 3354. The error is small in effect (mountains linger 8 extra frames = 0.77 s at the ROM's $20 delta before recycling) but it is a value we got wrong from a half-read instruction pair, and the fix is one literal.",
+    "source": {
+      "file": "RBARON.MAC",
+      "line": 3355,
+      "verbatim": "\tSBC I,1"
+    },
+    "ours": {
+      "file": "src/core/landscape.ts",
+      "line": 39,
+      "verbatim": "export const MIN_DEPTH = 0xc0 // 192"
+    },
+    "recommendation": "fix",
+    "size": "s"
+  },
+  {
+    "id": "MI-018",
+    "class": "DIVERGENCE",
+    "title": "'On horizon' is a latched STATUS BIT with hysteresis, not a depth comparison",
+    "claim": "ROM: on-horizon is PFOBJ+6 bit D7 (object glossary RBARON.MAC:362-364, 'STATUS A X X X MTN#---, A ACTIVE'). PFOBMN dispatches on the LATCHED bit, not on depth: `10$: LDA AX,PFOBJ+6 ;STATUS / ... / BPL 15$ / JMP 45$ ;PF ON HORIZON` (RBARON.MAC:3294-3297). The bit is CLEARED once, when the object falls — `LDA AX,PFOBJ+6 ;ELSE START PF OBJECT 'FALL' / AND I,0F` (RBARON.MAC:3400-3401), reached only when depth < P.MAXZ = $1001 = 4097 (RBARON.MAC:445, tested at :3397-3399) — and SET once, at recycle (`ORA I,80`, RBARON.MAC:3359). It is a one-way latch per pass. Ours: `onHorizon(m) => m.depth >= HORZ`, recomputed from depth every call, with HORZ = $1000 = 4096 (the ROM's threshold is P.MAXZ = $1001 = HORZ + 1, and the sense is strictly-less-than, so our >= 4096 is off by one at the boundary too).",
+    "reasoning": "The latch is not decoration: PFOBJ+6's LOW nibble simultaneously carries the MOUNTAIN DB OFFSET (glossary :364), and clearing D7 with `AND I,0F` is what PRESERVES that nibble while dropping the flag. Our predicate cannot express the latch because Mountain has no status field — the mountain's identity and its horizon state are the same byte in the ROM. Beyond structure, a depth-derived predicate is only equivalent to the latch if the recycle depth is right, and it is not (MI-016): today our mountains fail onHorizon() from frame 1 of every pass, so the horizon branch of the renderer is dead code.",
+    "source": {
+      "file": "RBARON.MAC",
+      "line": 3400,
+      "verbatim": "\tLDA AX,PFOBJ+6\t\t;ELSE START PF OBJECT 'FALL'"
+    },
+    "ours": {
+      "file": "src/core/landscape.ts",
+      "line": 89,
+      "verbatim": "  return m.depth >= HORZ"
+    },
+    "recommendation": "fix",
+    "size": "m"
+  },
+  {
+    "id": "MI-019",
+    "class": "DIVERGENCE",
+    "title": "Mountains never scroll laterally — the ROM subtracts PLYRDL every frame and wraps",
+    "claim": "ROM: every free PF object has the player's lateral delta subtracted from its X each calc frame, then wrapped — `SEC / LDA AX,PFOBJ / SBC A,PLYRDL / STA AX,PFOBJ / TAY / LDA AX,PFOBJ+1 / SBC A,PLYRDL+1 / STA AX,PFOBJ+1 / JSR WRAPIT` (RBARON.MAC:3298-3306). At the moment of the fall the X is re-seeded from the horizon scroll position PFXSCR combined with the object's own mountain lane: `LDY PFXSCR / LDX PFXSCR+1 / JSR D.COMP` (RBARON.MAC:3403-3405) then `LDA I,-3 / ADC AX,PFOBJ+6 / ASL / ASL / CLC / ADC TEMP1 / AND I,1F` (RBARON.MAC:3411-3417) — the mountain index (PFOBJ+6 low nibble) × 4 sets its lane. Ours: `x` is written 0 at construction (`x: 0` in both spawnMountain and initialMountains) and stepMountain spreads `...m` without ever touching it. It is 0 forever, for every mountain, for the whole game.",
+    "reasoning": "There is no lateral scroll and no lateral spread. Combined with MI-014 (all four seeded at x = 0), the entire landscape is a single column of silhouettes on the centre-line that grows toward the player and never slides. Banking or yawing the aircraft moves the camera but the mountains have nothing to move PAST — the ROM's WRAPIT band is what makes the pass feel endless. This needs an x-scroll term in stepMountain plus the PFXSCR/lane seeding, so it is a mechanism, not a constant.",
+    "source": {
+      "file": "RBARON.MAC",
+      "line": 3403,
+      "verbatim": "\tLDY PFXSCR"
+    },
+    "ours": {
+      "file": "src/core/landscape.ts",
+      "line": 84,
+      "verbatim": "  return next <= MIN_DEPTH ? { ...m, depth: SPAWN_DEPTH } : { ...m, depth: next }"
+    },
+    "recommendation": "fix",
+    "size": "m"
+  },
+  {
+    "id": "MI-020",
+    "class": "CONFIRMED",
+    "title": "Four playfield-object slots",
+    "claim": "ROM: `L.PFOB =11.` (RBARON.MAC:245) — the trailing period makes it DECIMAL 11 inside the `.RADIX 16` region — and `N.PFOB =3*L.PFOB ;4 PLAYFIELD OBJECTS` (RBARON.MAC:442) = 33. PFOBMN and GMINIT walk X from N.PFOB = 33 down by L.PFOB = 11 (`SBC I,L.PFOB`, RBARON.MAC:3372 / :1274) while carry holds, visiting X = 33, 22, 11, 0 → exactly 4 records, as the equate's own comment states. Ours: `MAX_MOUNTAINS = 4`. Match.",
+    "reasoning": "Recorded because the radix here is a genuine trap and the module got it right: `11.` is 11, not $11 = 17 (which would have given 3*17 = 51 and a five-slot loop). landscape.ts:32 also cites the right pair of lines. The Mountain slot COUNT is correct even though almost everything about how the slots are positioned and moved is not (MI-014, MI-015, MI-016, MI-019).",
+    "source": {
+      "file": "RBARON.MAC",
+      "line": 442,
+      "verbatim": "N.PFOB\t=3*L.PFOB\t\t;4 PLAYFIELD OBJECTS"
+    },
+    "ours": {
+      "file": "src/core/landscape.ts",
+      "line": 32,
+      "verbatim": "/** The four PF-object slots — N.PFOB = 3*L.PFOB names four records (RBARON.MAC:245/441). */"
+    }
+  },
+  {
+    "id": "MI-021",
+    "class": "NO_COUNTERPART",
+    "title": "GREND — flying into a mountain kills you; we have no ground collision at all",
+    "claim": "ROM: the ground-collision detector ORs the crashed mountain's index into GREND with D7|D6 — `LDA SAVX+1 ;MOUNTAIN OFFSET OF CRASH / ORA I,0C0 / STA GREND ;D6=GROUND COLLISION` (RBARON.MAC:4643-4645). The main loop reads it every frame, before any motion: `BIT GREND / BVS 20$ ;PLAYER RAN INTO GROUND` (RBARON.MAC:783-784), freezing PFMOTN, NWPLNE and PLMOTN; ENDLFE then takes a life (`DEC LIVES ;TAKE LIFE IN PLAY`, RBARON.MAC:1207) and the crash sequence redraws the mountain the player hit (`AND I,3F / TAX / LDA AX,PFOBJ+6 / AND I,0F / STA SAVY+1 ;MOUNTAIN #`, RBARON.MAC:1131-1135). The collision boxes are authored: PFOCOL, 24 PFCOL corners = 12 (min,max) pairs (RBGRND.MAC:824-847). Ours: landscape.ts exposes no collision surface, main.ts has no GREND, and topology.ts's transcribed PFOCOL table is imported by nobody — grep for PFOCOL outside topology.ts returns nothing.",
+    "reasoning": "Red Baron's ground wave is a low-altitude run through a mountain pass; the mountains are the hazard. Without GREND the player can fly straight through a range, which removes the only reason the ground wave is tense. The PFOCOL data is already transcribed and sitting unused, so the ROM's half is done — what is missing is the box test, the GREND byte, and the main-loop freeze. That is a feature, not a constant.",
+    "source": {
+      "file": "RBARON.MAC",
+      "line": 4645,
+      "verbatim": "\tSTA GREND\t\t;D6=GROUND COLLISION"
+    },
+    "ours": null,
+    "recommendation": "fix",
+    "size": "l"
+  },
+  {
+    "id": "MI-022",
+    "class": "DIVERGENCE",
+    "title": "scene.ts's far clip (20000) is below the ROM's farthest object (P.OBZI = 32512), and its HORZ comment repeats a radix error",
+    "claim": "scene.ts:32-33 sets `const FAR = 20000` with the comment 'past the horizon distance (findings §7 HORZ = 1000, with headroom)'. HORZ is $1000 = 4096 (RBARON.MAC:451, `.RADIX 16`), not decimal 1000 — the comment reproduces the findings doc's un-radixed '1000' and reads as though 20000 were 20× the horizon when it is under 5×. More consequentially, the ROM's farthest playfield object sits at P.OBZI = $7F00 = 32512 (RBARON.MAC:443) and PFOBIZ seeds one mountain at $8200 = 33280 (RBARON.MAC:1305) — both BEYOND FAR = 20000. Fixing MI-016 (recycle to $7F00) without raising FAR would push every freshly recycled mountain outside the frustum and clip it away.",
+    "reasoning": "This is latent today only because SPAWN_DEPTH is wrongly clamped to 4096, which keeps everything inside the far plane. It becomes a hard bug the instant MI-016 lands, so the two must move together. Raise FAR above 33280 (the PFOBIZ maximum) — 40000 gives headroom for the difficulty-percentage delta. The stale comment should also stop citing HORZ as decimal 1000.",
+    "source": {
+      "file": "RBARON.MAC",
+      "line": 451,
+      "verbatim": "HORZ\t=1000\t\t\t;HORIZON DEPTH"
+    },
+    "ours": {
+      "file": "src/core/scene.ts",
+      "line": 33,
+      "verbatim": "const FAR = 20000"
+    },
+    "recommendation": "fix",
+    "size": "s"
+  },
+  {
+    "id": "MI-023",
+    "class": "CONFIRMED",
+    "title": "The SEGSTR macro decodes as pointIndex×6 + 4, exactly as topology.ts's OP_SEGMENT claims",
+    "claim": "ROM: `.MACRO SEGSTR .A,.B,.C,.D` / `.BYTE .A*6+4,.B*6+4,.C*6+4,.D*6+4` (037007.XXX:18-19). Four point indices, each emitted as index×6 + flag 4 — the same ×6 stride as VSBLEV/VV (index×6 + 1, :22-24) and BLANKV/BV (index×6 + 0, :26-28), terminated by ENDDB = $FF (:38-40). Ours: topology.ts declares POINT_STRIDE = 6, OP_BLANK = 0, OP_VISIBLE = 1, OP_SEGMENT = 4, ENDDB = 0xff, and landscape.ts consumes PFOPOS as raw start-point INDICES (pre-multiplication), which is the right level of abstraction — the ×6 is a scratch-buffer stride (Z,X,Y × 2 bytes), not geometry. The decode is reversible because stride 6 > max flag 4.",
+    "reasoning": "The brief asked for SEGSTR/VV/BV/ENDDB to be decoded rather than guessed. They are, and our transcription's interpretation is correct: PFOPOS rows are point indices, the SMAP** lists are pen-up/pen-down streams over the same SCAPE point-set, and mountainSegments (landscape.ts:118-127) walks start-point → connect-list exactly as the ROM's decoder does. This is the part of the ground world we got right, and it is the part that mattered most to get right — the data is unrecoverable if mis-decoded.",
+    "source": {
+      "file": "037007.XXX",
+      "line": 19,
+      "verbatim": "\t.BYTE .A*6+4,.B*6+4,.C*6+4,.D*6+4"
+    },
+    "ours": {
+      "file": "src/core/landscape.ts",
+      "line": 118,
+      "verbatim": "    for (let g = 0; g < segMaps.length; g++) {"
+    }
+  }
+]
