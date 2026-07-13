@@ -1,0 +1,69 @@
+[
+ {
+  "id": "FL-014",
+  "class": "DIVERGENCE",
+  "title": "The ROM camera has NO PITCH ROTATION either \u2014 climb/dive is a pure vertical eye TRANSLATION. Our transient camera pitch is fabricated.",
+  "claim": "POSITH's Y input is `LDA OBJECT+2 / SBC I4YPOS ;-EYE POSITION / ... / SBC I4YPOS+1` (RBGRND.MAC:277-283) \u2014 the eye height is SUBTRACTED from every object's Y before the single Z rotation and the divide-by-depth. There is no X-axis (pitch) rotation of the view. Our toAttitude emits `pitch: state.pitchRate * PITCH_SCALE` (PITCH_SCALE = pi/512), a camera rotationX proportional to the CURRENT climb RATE: at full dive pitchRate = -32 gives -32 x pi/512 = -0.196 rad = -11.25 degrees of fake nose-down tilt that snaps back to 0 the instant the stick centres. Nothing in POTSCL/PFMOTN/POSITH produces such a rotation. Worse, the real effect is missing: src/main.ts:191 builds the view with `flightView(attitude, [0, 0, 0])` \u2014 the eye is hard-coded to the origin and toEye() is never called anywhere in src/, so our simulated altitude has ZERO effect on the picture. In the ROM, altitude is THE visible consequence of pitching (it shifts every object's screen Y by -I4YPOS/depth).",
+  "reasoning": "grep confirms toEye is referenced only by src/core/flight.ts (its definition) and tests/core/flight.test.ts \u2014 never by src/main.ts. So today: pulling the yoke back produces an 11-degree cosmetic tilt and changes nothing else on screen; the altitude accumulator, its clamps, and the whole PLDELY chain are simulated and then discarded at render time. Fix is two parts: (a) drop `pitch` from Attitude / stop feeding rotationX, (b) pass toEye(flight) into flightView instead of [0,0,0]. (b) is small; (a) ripples through camera.ts, horizon.ts, and every draw call in main.ts, so: m.",
+  "source": {
+   "file": "RBGRND.MAC",
+   "line": 279,
+   "verbatim": "\tSBC I4YPOS\t\t;-EYE POSITION"
+  },
+  "ours": {
+   "file": "src/core/flight.ts",
+   "line": 196,
+   "verbatim": "    pitch: state.pitchRate * PITCH_SCALE,"
+  },
+  "recommendation": "fix",
+  "size": "m"
+ },
+ {
+  "id": "FL-016",
+  "class": "NO_COUNTERPART",
+  "title": "HORIZN = 0x40 = 64: a constant screen-Y offset added to EVERY projected point. We have none.",
+  "claim": "RBARON.MAC:456 defines HORIZN = 0x40 = 64 (hex radix), commented ';HORIZON OFFSET ( Y AXIS)'. POSITH adds it to the projected Y of every point it places: `CLC / LDA YLOW / ADC I,HORIZN / STA XPOS+2 ;Y RESULT LSB` (RBGRND.MAC:301-304). It is not a horizon-only constant \u2014 it lifts the whole scene (horizon, mountains, planes, shells) 64 units up the screen, equivalently the camera looks 64 units down. Our pipeline has no such offset: horizon.ts and camera.ts project straight to NDC with the optical axis dead centre.",
+  "reasoning": "Our horizon.ts:18 explicitly defers it ('The HORIZN=$40 screen offset and the SCAPE mountain silhouettes (findings \u00a74/\u00a77) are rb2''s ground wave') \u2014 but the ground wave has since shipped and the offset never arrived. This changes where the horizon sits at rest, which is the single most noticeable framing cue in the game. I have NOT decoded the Math Box's fixed-point output scale (VGMC.MAC), so I cannot state what 64 units is as a fraction of the screen \u2014 only that it is a constant, global, positive Y bias applied after the divide-by-depth.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 456,
+   "verbatim": "HORIZN\t=40\t\t\t;HORIZON OFFSET ( Y AXIS)"
+  },
+  "ours": null,
+  "recommendation": "fix",
+  "size": "s"
+ },
+ {
+  "id": "FL-017",
+  "class": "DIVERGENCE",
+  "title": "The ROM horizon is at FINITE depth HORZ = 0x1000 and moves with altitude; ours is at infinity and ignores altitude by design.",
+  "claim": "RBARON.MAC:451: HORZ = 0x1000 = 4096 (hex radix), ';HORIZON DEPTH'. SCENE draws the horizon at world Y = 0 (`STY OBJECT+2 ;Y POSITION / STY OBJECT+3`, RBARON.MAC:4390-4391) and depth HORZ (`LDA I,HORZ/100 / STA OBJECT+5`, RBARON.MAC:4393-4394), then calls POSITH \u2014 which subtracts I4YPOS from that Y (RBGRND.MAC:279) before dividing by 4096. So the ROM horizon's screen Y is (0 - I4YPOS)/HORZ + HORIZN: it DOES move as the player climbs and dives, just slowly. Our horizon.ts hard-codes EYE_AT_ORIGIN and its header asserts the opposite ('The horizon sits at infinity, so it depends only on ATTITUDE (never on eye position/altitude)'). It also uses HORIZON_DISTANCE = 10000, an invented value, where the ROM's is 4096.",
+  "reasoning": "The magnitude of the ROM's altitude->horizon coupling depends on the Math Box divider's fixed-point scale, which I have not decoded, so I will not put a pixel number on it. But the sign and the mechanism are unambiguous, and our code is not merely differently-scaled \u2014 it deliberately drops the term. Fix: pass toEye(flight) into flightView here too and set HORIZON_DISTANCE = 0x1000.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 451,
+   "verbatim": "HORZ\t=1000\t\t\t;HORIZON DEPTH"
+  },
+  "ours": {
+   "file": "src/core/horizon.ts",
+   "line": 35,
+   "verbatim": "  const mvp = multiply(sceneProjection(aspect), flightView(attitude, EYE_AT_ORIGIN))"
+  },
+  "recommendation": "fix",
+  "size": "s"
+ },
+ {
+  "id": "FL-020",
+  "class": "NO_COUNTERPART",
+  "title": "POTSCL's PFROTN return-to-centre (step -2, or -1 at |1|) has no counterpart \u2014 it is the horizon righting itself while PFMOTN is skipped.",
+  "claim": "POTSCL, after loading PLDELY, walks PFROTN back toward 0 by 2 counts per frame (1 count when |PFROTN| is 1): RBARON.MAC:5872-5896, `LDX I,0FE ;ELSE RETURN (STEP=-2)` for positive PFROTN and `LDX I,2` for negative. In normal flight this is immediately overwritten by PFMOTN's PFROTN = PLDELX x 8 (RBARON.MAC:3218-3236) \u2014 but MAIN skips PFMOTN when the game is frozen or the player has hit the ground (`LSR / BCS 20$ ;FREEZE` and `BIT GREND / BVS 20$ ;PLAYER RAN INTO GROUND`, RBARON.MAC:780-784) while POTSCL still runs, so during those states the horizon rights itself at 2 counts (2 x 360/2048 = 0.35 degrees) per 96 ms frame. We have no freeze/crash horizon-decay path.",
+  "reasoning": "Low consequence for flight feel in play, recorded for completeness because the block is easy to mistake for the main bank law (it is not \u2014 PFMOTN unconditionally recomputes PFROTN from PLDELX). accept: our runnable cockpit has no freeze state that keeps flying the pots.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 5877,
+   "verbatim": "\tLDX I,0FE\t\t;ELSE RETURN (STEP=-2)"
+  },
+  "ours": null,
+  "recommendation": "accept"
+ }
+]

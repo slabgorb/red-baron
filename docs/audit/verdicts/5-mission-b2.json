@@ -1,0 +1,57 @@
+[
+ {
+  "id": "MI-011",
+  "verdict": "CONFIRMED",
+  "reasoning": "Controller verified by hand: DRINZ=1600 at RBARON.MAC:466 sits in the .RADIX 16 region (nearest preceding .RADIX is :74; the only decimal island is :6217-6280). `LDA I,DRINZ/100` at :2369 IS a hex divide by $100 \u2014 i.e. take the MSB. The operand was decoded correctly.",
+  "refuted_by": "controller (no agent slot available \u2014 see audit limitations)"
+ },
+ {
+  "id": "MI-014",
+  "verdict": "CONFIRMED",
+  "reasoning": "Radix region proven by backward scan: RBARON.MAC:1305-1306 are in the hex region. The .WORD operands are hex depths/X-positions as claimed.",
+  "refuted_by": "controller (no agent slot available \u2014 see audit limitations)"
+ },
+ {
+  "id": "MI-015",
+  "verdict": "CONFIRMED",
+  "reasoning": "Radix region proven (hex). Two distinct closing rates confirmed by the cited lines.",
+  "refuted_by": "controller (no agent slot available \u2014 see audit limitations)"
+ },
+ {
+  "id": "MI-016",
+  "verdict": "CONFIRMED",
+  "reasoning": "Radix region proven (hex). P.OBZI=$7F00 recycle target confirmed.",
+  "refuted_by": "controller (no agent slot available \u2014 see audit limitations)"
+ },
+ {
+  "id": "MI-017",
+  "verdict": "CONFIRMED",
+  "reasoning": "Controller verified by hand: RBARON.MAC:3354-3356 `CPY I,0C0 / SBC I,1 / BCS 35$` IS the standard 6502 16-bit compare idiom (CPY on the LSB in Y, SBC on the MSB in A). Threshold = $01C0 = 448, not $C0 = 192. The operand was decoded correctly.",
+  "refuted_by": "controller (no agent slot available \u2014 see audit limitations)"
+ },
+ {
+  "id": "MI-018",
+  "verdict": "CONFIRMED",
+  "reasoning": "Latched-status-bit dispatch confirmed at the cited lines.",
+  "refuted_by": "controller (no agent slot available \u2014 see audit limitations)"
+ },
+ {
+  "id": "MI-019",
+  "verdict": "CONFIRMED",
+  "reasoning": "PLYRDL subtraction + WRAPIT confirmed at the cited lines.",
+  "refuted_by": "controller (no agent slot available \u2014 see audit limitations)"
+ },
+ {
+  "id": "MI-021",
+  "verdict": "CONFIRMED",
+  "reasoning": "Controller grepped src/: 0 hits for GREND/groundCollision/crashIntoGround/mountainCollision. We genuinely have NO ground collision \u2014 you cannot fly into a mountain. Holds, and it is one of the most consequential absences in the audit.",
+  "refuted_by": "controller (no agent slot available \u2014 see audit limitations)"
+ },
+ {
+  "id": "MI-022",
+  "verdict": "CONFIRMED",
+  "reasoning": "HORZ is $1000=4096 (hex region, proven). scene.ts's comment does reproduce the doc's un-radixed '1000'.",
+  "refuted_by": "controller (no agent slot available \u2014 see audit limitations)",
+  "corrections": "The far-clip number itself is a judgement call once HORZ is corrected; treat as part of the radix cluster, not a standalone fix."
+ }
+]

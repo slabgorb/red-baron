@@ -1,0 +1,135 @@
+[
+ {
+  "id": "RD-001",
+  "class": "DIVERGENCE",
+  "title": "The player's own propeller \u2014 three sweeping blade arcs, the ROM's most prominent foreground element \u2014 is not drawn at all",
+  "claim": "The ROM's display list opens with a 2-byte JSRL slot inside NOREST that PLPROP repatches EVERY VG frame (62.5 Hz) with one of SEVEN player-prop pictures, PROP0..PROP6 (037007.XXX:481-597, table LNEPRP at :591). Each picture is CNTR + a blank positioning VCTR + three 3-4 vector arcs at intensities .PROP=4, .PROP-1=3, .PROP-2=2. Their positioning vectors sweep the arcs across the lower screen: PROP0 (-408,-324), PROP1 (-284,-254), PROP2 (-162,-212), PROP3 (-48,-195), PROP4 (+162,-212), PROP5 (+284,-254), PROP6 (+408,-324) \u2014 a blade disc scything left-to-right, one step per VG frame, a full 7-step cycle every 7/62.5 s = 112 ms (~8.9 Hz). Our draw() emits horizon, mountains, wrecks, enemies, blimp, shells and a score string, and nothing else \u2014 the propeller is absent.",
+  "reasoning": "PLPROP is called from TWO places on the 62.5 Hz VG clock, never on the 10.4 Hz calc clock: from the NMI end-of-frame path (RBGRND.MAC:244, inside the `INTFLG` EOF + VG-halted guard) and once from MAIN after INTWAIT (RBARON.MAC:857). Its second half (RBARON.MAC:901-921) advances PLYPRP by 2 with wrap at 0x0E \u2014 seven 2-byte entries \u2014 reads the JSRL from LNEPRP and stores it at VGRAM+012/013 (buffer 0) or VGRAM+0812/0813 (buffer 1). Those addresses are exactly the last two bytes of the 0x12-byte NOREST block LOADRAM'd at VGRAM+2 each frame (RBARON.MAC:790-800), and 037006.XXX:158 labels that slot in so many words: `CNTR ;2 BYTES/PLAYER PROP SWITCH`. So the prop is patched into the LIVE buffer and is the ONE thing on screen that animates at the display rate rather than the sim rate. It is drawn first in the list, before the world. A cockpit view of a WWI biplane with no propeller in front of it is a different picture from the arcade's; combined with RD-002 (no depth cueing) this is the most likely single cause of 'seems way off'. Note the ROM has NO crosshair/gunsight and no cockpit frame \u2014 I enumerated the whole list and there is none \u2014 so the prop is the only fixed foreground furniture, and we have zero foreground furniture.",
+  "source": {
+   "file": "037007.XXX",
+   "line": 591,
+   "verbatim": "LNEPRP:\tJSRL PROP0"
+  },
+  "ours": {
+   "file": "src/main.ts",
+   "line": 158,
+   "verbatim": "function draw("
+  },
+  "recommendation": "fix",
+  "size": "m"
+ },
+ {
+  "id": "RD-002",
+  "class": "DIVERGENCE",
+  "title": "Every object in the ROM is drawn with a depth-cued intensity; we stroke the whole world in one flat colour",
+  "claim": "The AVG has a per-vector 3-bit intensity (VCTR ZZ, 0=off .. 7=brightest \u2014 VGMC.MAC:107) fed from a 4-bit STAT intensity register that VGUT drives from VGBRIT with values 0,10,20,...,F0 (VGUT.MAC:64-65). The ROM sets that register PER OBJECT, FROM DEPTH: motion objects (planes/drones) get V.BRIT = .MOTOBJ(0F0) - (depthMSB*8 & 0F0), floored at 60 (RBARON.MAC:4821-4830); playfield/mountain objects get V.BRIT = .PFOBJ(0D0) - (depth-derived term) (RBARON.MAC:4550-4563, the line literally reads `;INTENSITY SET TO DEPTH`); shells get (Z*8) EOR 0F0 AND 0F0 \u2014 F0 at Z=0 down to 30 at Z=S.MAXZ (RBARON.MAC:5241-5247, `;DEPTH DEFINES INTENSITY`); the horizon line is fixed at PF.BRT=60 and the blimp fixed at C0 (RBARON.MAC:4201). We draw literally everything with one `ctx.strokeStyle = '#33ff66'` and one `shadowBlur = 8`.",
+  "reasoning": "I decoded the operand chain end to end. VGVCTR (VGUT.MAC:367-383) EORs the upper 3 bits of VGBRIT into the X-MSB byte of the VCTR word; VGMC.MAC:126 shows those bits ARE the ZZ field (`<ZZ*^H2000>+<DX&^H1FFF>`). DECODE (RBGRND.MAC:683-691) loads VGBRIT=20 for a visible vector and 0 for a blank one \u2014 20 means ZZ=1, which VGUT.MAC:67-68 documents as 'use the last non-zero Z', i.e. the STAT register. So model geometry does NOT carry its own brightness: it inherits whatever STAT the caller just set, and every caller sets that STAT from depth. The result on the real cabinet is a strong aerial-perspective depth cue \u2014 a plane at spawn depth is visibly dimmer than one at gun range, and the mountains fade toward the horizon. We throw all of it away. This is a shell-side change (a per-segment alpha/lightness driven by the same depth the projection already has); it does not touch core.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 4826,
+   "verbatim": "\tEOR I,.MOTOBJ\t\t;SET BRIGHTNESS BY DEPTH"
+  },
+  "ours": {
+   "file": "src/main.ts",
+   "line": 174,
+   "verbatim": "  ctx.strokeStyle = '#33ff66'"
+  },
+  "recommendation": "fix",
+  "size": "m"
+ },
+ {
+  "id": "RD-003",
+  "class": "DIVERGENCE",
+  "title": "The ROM adds a constant HORIZN=0x40 offset to the projected Y of EVERY object; our projection has no such offset",
+  "claim": "POSITH \u2014 the one routine every drawn object goes through to place its beam \u2014 divides X and Y by depth on the Math Box and then adds HORIZN to the Y result (RBGRND.MAC:295-306). HORIZN = 0x40 = 64 (RBARON.MAC:456, in a .RADIX 16 region). The display window set up in NOREST runs from (-512,-512) to (+511,+511) (037006.XXX:154-157), so 64 is 1/8 of the screen half-height: the ROM's vanishing point sits an eighth of a half-screen ABOVE centre, and the whole world with it. src/core/scene.ts:59 performs the perspective divide and returns NDC with no vertical bias, so our vanishing point sits exactly at screen centre.",
+  "reasoning": "This is not a ground-wave detail. POSITH is entered by SCENE (RBARON.MAC:4423/4445/4488), by the plane/drone path (PLNLBS \u2192 POSITH), by BLMOTN (via POSITP \u2192 POSITH), and by every shell (DSPSHL \u2192 POSITP \u2192 POSITH) \u2014 it is THE projector. The +HORIZN is applied unconditionally at RBGRND.MAC:303, before the Y visibility test and before the beam VCTR. Our horizon.ts header explicitly defers it ('the HORIZN=$40 screen offset ... are rb2's ground wave') and it was never picked back up, so the offset is missing from the substrate, not just from the ground wave. Effect: at level flight the arcade's horizon and every object sit ~6% of a full screen height higher than ours. Small in isolation, systematic across the whole picture. Cheapest correct home is a constant NDC y-bias in sceneProjection/projectSegment (+64/512 = +0.125 in NDC), not a per-caller hack.",
+  "source": {
+   "file": "RBGRND.MAC",
+   "line": 303,
+   "verbatim": "\tADC I,HORIZN"
+  },
+  "ours": {
+   "file": "src/core/scene.ts",
+   "line": 59,
+   "verbatim": "  return { x1: ca.x / ca.w, y1: ca.y / ca.w, x2: cb.x / cb.w, y2: cb.y / cb.w }"
+  },
+  "recommendation": "fix",
+  "size": "s"
+ },
+ {
+  "id": "RD-004",
+  "class": "DIVERGENCE",
+  "title": "Shells are single DOTS in the ROM (two per shell per frame), not the line-segment streaks we stroke",
+  "claim": "DSPSHL draws each live shell with `JSR VGDOT` \u2014 VGUT's dot primitive, a zero-length VCTR at the current beam position (VGUT.MAC:315-318) \u2014 at intensity 0x20, i.e. 'use the STAT register' which was just set from depth (RBARON.MAC:5241-5264). One dot, no streak. SHLMOT (RBARON.MAC:5192-5204) then runs DSPSHL/PSTSHL four times per calculation frame with the carry alternating CLC/SEC; the SEC passes set FLAG=0xFF and DSPSHL's `BIT FLAG / BMI 16$` skips the draw, so the shell is DRAWN at 2 of its 4 sub-step positions and COLLISION-CHECKED at all 4. Net: each shell appears as TWO dots, one dim step apart along its flight, at a brightness that runs F0 (point-blank) down to 30 (max range). We draw one continuous glowing line segment from the shell's z back to z-1 (src/main.ts:124-131).",
+  "reasoning": "I decoded VGDOT: it takes A=intensity into Y, zeroes A and X, and falls through to VGVTR \u2014 so dx=dy=0, a point. Both the shape and the count differ: a dotted 2-blip tracer per frame at a depth-varying brightness reads as a bullet, a solid streak reads as a laser. This is entirely inside shellSegments() and the shell-draw loop; the sim side (guns.ts) is untouched. Note in passing, and out of my scope: guns.ts sets `S_MAXZ = 19` decimal while RBARON.MAC:492 reads `S.MAXZ = 19` inside a .RADIX 16 region \u2014 0x19 = 25. That radix belongs to the guns pair, but it also skews the depth\u2192intensity ramp this finding needs, so it is worth their attention.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 5264,
+   "verbatim": "\tJSR VGDOT\t\t;DISPLAY DOT (Z REG)"
+  },
+  "ours": {
+   "file": "src/main.ts",
+   "line": 129,
+   "verbatim": "  const seg = projectSegment(front, back, viewProj)"
+  },
+  "recommendation": "fix",
+  "size": "s"
+ },
+ {
+  "id": "RD-005",
+  "class": "DIVERGENCE",
+  "title": "The enemy plane's propeller is transcribed in topology.ts but never rendered \u2014 the biplanes fly with a bare nose",
+  "claim": "The ROM builds the lead plane's picture as a body sub-list at a fixed VG-RAM address PLUS a separate prop sub-list at 0x27A0/0x2FA0 (RBARON.MAC:4895-4902, `JSR PLNPRP`), and PLPROP swaps the prop's JSRL \u2014 cycling PROP.F over the three blade pictures PPROPA/PPROPB/PPROPC (037007.XXX:445-472) \u2014 every VG frame at 62.5 Hz (RBARON.MAC:882-900). Our topology.ts already carries DBPROP_POINTS, PPROPA, PPROPB, PPROPC and the PROPS table, but main.ts renders only `biplaneLOD(enemy.depth)` \u2014 the body \u2014 and never the prop.",
+  "reasoning": "PLNPRP (RBARON.MAC:5044-5067) decodes all three blade pairs into their own VG sub-list terminated by VGRTSL, and PLANE (RBARON.MAC:4919-4927) reserves the 2-byte JSRL slot in the body list ('2 BYTES FOR PROP') that PLPROP later patches. The prop therefore spins at the display rate on the enemy plane too, not at the sim rate. The geometry is already in our repo \u2014 this is a rendering omission, not a transcription gap: add the prop picture (selected by a 62.5 Hz-driven index, per RD-001's clock) to the model render for the lead plane. Its vertices sit at Z=-36..-44 in plane model space, i.e. on the nose, so it rides the same model matrix.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 4902,
+   "verbatim": "\tJSR PLNPRP"
+  },
+  "ours": {
+   "file": "src/main.ts",
+   "line": 198,
+   "verbatim": "    strokeSegments(renderModel(biplaneLOD(enemy.depth), multiply(projView, model)), width, height)"
+  },
+  "recommendation": "fix",
+  "size": "s"
+ },
+ {
+  "id": "RD-006",
+  "class": "DIVERGENCE",
+  "title": "Objects are drawn in TWO brightness tiers \u2014 bright structure plus dimmer detail lines \u2014 in a single pass for us",
+  "claim": "The plane is decoded twice: DB.MAP (the body) at V.BRIT, then the STAT register is dropped by 0x60 (floor 0) and DB.LNS (the wing struts) is decoded at that dimmer level \u2014 RBARON.MAC:5026-5040, comment `;ADD LIGHTER LINES`. The mountains do the same: SCMAP segments at V.BRIT, then V.BRIT-0x30 (floor 0x20) for SCLMAP, commented `;DISPLAY BRIGHTER SEGMENTS` / `;DISPLAY DIM SEGMENTS` (RBARON.MAC:4627-4658). Our renderModel strokes every connect-op of a picture at one brightness.",
+  "reasoning": "This is a second, orthogonal axis to RD-002's depth cue: within ONE object at ONE depth the ROM still separates primary structure from secondary detail by ~2 intensity steps. On a phosphor vector display that is what makes a biplane read as a solid airframe with fine struts rather than a uniform wire tangle. Implementing it needs a per-connect-list brightness tier in renderModel's output (the connect-lists are already separate in topology.ts \u2014 DB.MAP vs DB.LNS), so it is a small, well-bounded change once RD-002's per-segment brightness plumbing exists. Sequence it after RD-002; alone it buys little.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 5032,
+   "verbatim": "\tSBC I,60"
+  },
+  "ours": {
+   "file": "src/main.ts",
+   "line": 107,
+   "verbatim": "function strokeSegments(segs: readonly SceneSegment[], width: number, height: number): void {"
+  },
+  "recommendation": "fix",
+  "size": "s"
+ },
+ {
+  "id": "RD-007",
+  "class": "DIVERGENCE",
+  "title": "The player's remaining lives are in the ROM's display list every frame; we track lives and never draw them",
+  "claim": "DSPLIF (RBARON.MAC:1503-1528) is called unconditionally from MAIN (RBARON.MAC:824), centres the beam, positions it at (-500, 352) with intensity 0 (a blank move), and then emits one JSRL to LPLANE per remaining life \u2014 LPLANE being a 17-vector plan-view biplane glyph at intensity .BRITE+1 = 5 (037007.XXX:918-936). Beyond 5 lives it draws a row of 4 and a second row offset by (-160, -20). main.ts holds `lives` in state and passes it to nothing: draw() takes attitude, enemies, blimp, mountains, wrecks, shells, overheated and score \u2014 no lives.",
+  "reasoning": "This is a straight omission from the HUD, not a medium difference: the little plane icons top-left are one of the four things always on the arcade screen (lives, score, high score, copyright). We already decrement `lives` through loseLife() from the blimp's fire, so the state exists and only the render is missing. LPLANE's 17 VCTRs are a small addition to topology.ts.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 824,
+   "verbatim": "\tJSR DSPLIF\t\t;DISPLAY PLAYER LIVES"
+  },
+  "ours": {
+   "file": "src/main.ts",
+   "line": 342,
+   "verbatim": "let lives: Lives = initialLives() // the player's planes remaining (rb2-9) \u2014 the blimp's fire is the first wired damage"
+  },
+  "recommendation": "fix",
+  "size": "s"
+ }
+]

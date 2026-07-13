@@ -1,0 +1,358 @@
+[
+ {
+  "id": "FL-001",
+  "class": "DIVERGENCE",
+  "title": "POTDLY is a .4WORD table \u2014 every pitch step is \u00d74. Our PITCH_TABLE is 4x too small.",
+  "claim": "The `.4WORD` macro (RBARON.MAC:15-18) expands to `.WORD .A*4,.B*4,...` \u2014 it MULTIPLIES EVERY OPERAND BY 4. The real POTDLY, the PLDELY table POTSCL indexes, is therefore [-128,-92,-68,-40,-20,0,16,32,52,72,100], not the operand list [-32,-23,-17,-10,-5,0,4,8,13,18,25]. Our PITCH_TABLE is the undecoded operand list, i.e. every climb/dive step is exactly 4x too small. Radix check: line 5930 is in the .RADIX 16 region (RBARON.MAC:74; the decimal island is 6217-6280), and the entries -32.,-23.,-17.,-10.,13.,18.,25. carry trailing periods so they are decimal literals; -5,0,4,8 are bare, hence hex, but 0x5/0x0/0x4/0x8 = 5/0/4/8, so every value reads the same in either radix. The macro's `*4` is the only transformation. Full-dive PLDELY = -32 x 4 = -128 in I4YPOS units (I4YPOS is world Y x 4, RBARON.MAC:91), i.e. -32 world Y per calc frame BEFORE DISCHK.",
+  "reasoning": "RBARON.MAC:15-18 reads exactly:\n\t.MACRO .4WORD .A,.B,.C,.D,.E,.F,.G,.H,.I,.J,.K\n\t.WORD .A*4,.B*4,.C*4,.D*4,.E*4,.F*4,.G*4\n\t.WORD .H*4,.I*4,.J*4,.K*4\n\t.ENDM\nPOTSCL reads the table as WORDS (RBARON.MAC:5866-5871: `ASL` on the index, then `LDA AX,POTDLY` -> PLDELY LSB and `LDA AX,POTDLY+1` -> PLDELY MSB), and PLDELY is declared `.BLKB 2` (RBARON.MAC:165), confirming a 16-bit signed value \u2014 which is exactly why the values need the x4 headroom. Our docs/red-baron-1980-source-findings.md:139 quotes the directive verbatim ('POTDLY: .4WORD -32,-23,...') but never expanded it, and flight.ts copied the operands. This alone makes every climb and dive in our game 4x too sluggish.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 5930,
+   "verbatim": "POTDLY:\t.4WORD -32.,-23.,-17.,-10.,-5,0,4,8,13.,18.,25."
+  },
+  "ours": {
+   "file": "src/core/flight.ts",
+   "line": 44,
+   "verbatim": "  -32, -23, -17, -10, -5, 0, 4, 8, 13, 18, 25,"
+  },
+  "recommendation": "fix",
+  "size": "s"
+ },
+ {
+  "id": "FL-002",
+  "class": "BOOK_WAS_WRONG",
+  "title": "DISCHK's proximity bands are INVERTED in our code: CLOSE is 0.375 and FAR is 1.0, not the reverse.",
+  "claim": "PFMOTN builds the distance flag TEMP3 with `;D7=CLOSE, D6=MIDDLE, D5=FAR` (RBARON.MAC:3189). DISCHK dispatches on those bits: `BVS 10$` (D6=MIDDLE) -> `;0.625 * VALUE` (RBARON.MAC:3472); `BMI 10$` (D7=CLOSE) -> `;0.375 * VALUE` (RBARON.MAC:3473); the fall-through (neither bit set, i.e. D5=FAR) -> `;1.0 * VALUE` (RBARON.MAC:3478). So CLOSE=0.375, MIDDLE=0.625, FAR=1.0. Our DISCHK map is { near: 1.0, mid: 0.625, far: 0.375 } \u2014 the near and far factors are swapped. The arithmetic corroborates the bit assignment: PFMOTN loads 0x20 (=D5=FAR) and keeps it when the distance metric X >= 0x8*3=24 (RBARON.MAC:3179-3181), ASLs to 0x40 (D6=MIDDLE) for 12 <= X < 24, and ASLs again to 0x80 (D7=CLOSE) for X < 12 \u2014 big distance => FAR => full-rate motion.",
+  "reasoning": "DISCHK (RBARON.MAC:3468-3496) decoded: entry A=LSB, TEMP1=MSB. Fall-through path 3474-3479 does `TXA / ASL / TAX / LDA TEMP1 / ADC TEMP1` = a 16-bit x2 of the input. Path 10$ (3480-3496) does `JSR DIVBY4` then either `SBC` (D7 set) -> value - value/4 = x0.75, or `CLC/ADC` at 20$ (D6 set) -> value + value/4 = x1.25. Normalised against the x2 fall-through baseline those are 0.375 and 0.625 \u2014 exactly the source's own comments. The effect is the OPPOSITE of what our flight.ts header claims ('Apparent agility rises when something is near'): in the ROM the player's motion is DAMPED to 0.375 when an enemy is close (slow-motion dogfighting so you can aim) and runs at full rate when the sky is empty. docs/red-baron-1980-source-findings.md:149-151 states 'close x1.0 / mid x0.625 / far x0.375 ... Apparent agility rises when something is near. [ROM-verified]' \u2014 that secondary source is wrong, and our code inherited the error.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 3189,
+   "verbatim": "20$:\tSTA TEMP3\t\t;D7=CLOSE, D6=MIDDLE, D5=FAR"
+  },
+  "ours": {
+   "file": "src/core/flight.ts",
+   "line": 63,
+   "verbatim": "  near: 1.0,"
+  },
+  "recommendation": "fix",
+  "size": "s"
+ },
+ {
+  "id": "FL-003",
+  "class": "BOOK_WAS_WRONG",
+  "title": "Ground mode forces the MIDDLE band (0.625), not the slowest band.",
+  "claim": "PFMOTN: `LDA I,40 ;GROUND MODE (SLOW MOTION)` (RBARON.MAC:3188). Radix is 16 here (RBARON.MAC:74), so the literal is 0x40 = D6 = MIDDLE = x0.625 per DISCHK (RBARON.MAC:3472). Our GROUND_CONTROL_BAND is 'far', which in our (already-inverted, see FL-002) table means x0.375. Correct value is the 0.625 band. Note the ROM's ground-mode band (0.625) is FASTER than its close-object band (0.375) \u2014 ground mode is 'slow motion' only relative to the x1.0 empty-sky default.",
+  "reasoning": "3186-3189 read:\n10$:\tBIT GRMODE\n\tBPL 20$\n\tLDA I,40\t\t;GROUND MODE (SLOW MOTION)\n20$:\tSTA TEMP3\t\t;D7=CLOSE, D6=MIDDLE, D5=FAR\nGRMODE's D7 is the ground flag (RBARON.MAC:134 `GRMODE:\t.BLKB 1\t\t\t;GROUND MODE (D7=GROUND)`), so when it is set the whole distance computation above is discarded and TEMP3 is forced to 0x40. docs/red-baron-1980-source-findings.md:150-151 says 'ground mode is forced to the slow band' which, combined with its inverted band table, produced our 0.375.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 3188,
+   "verbatim": "\tLDA I,40\t\t;GROUND MODE (SLOW MOTION)"
+  },
+  "ours": {
+   "file": "src/core/flight.ts",
+   "line": 76,
+   "verbatim": "export const GROUND_CONTROL_BAND: ProximityBand = 'far'"
+  },
+  "recommendation": "fix",
+  "size": "s"
+ },
+ {
+  "id": "FL-004",
+  "class": "DIVERGENCE",
+  "title": "The DISCHK scale is not the whole gain: X deltas get an extra x4 (MULTB4) and DISCHK's own baseline is x2. Our world/altitude rates are 8x-to-21x too slow.",
+  "claim": "DISCHK's FAR (fall-through) path returns 2 x input (RBARON.MAC:3474-3478), not 1 x input; the 1.0/0.625/0.375 in the comments are RATIOS relative to that x2 baseline. And PLDELX is additionally run through MULTB4 (x4) BEFORE DISCHK (RBARON.MAC:3195-3196), while PLDELY is not (RBARON.MAC:3237-3240). So per calculation frame:\n  dUNIV4X = PLDELX x 4 x {2.0 far, 1.25 mid, 0.75 close} = PLDELX x {8, 5, 3}\n  dI4YPOS = PLDELY x {2.0 far, 1.25 mid, 0.75 close}\nOur step() does `altitude + pitchRate * scale` with scale <= 1.0 \u2014 no x2, and (per FL-001) a pitchRate 4x too small. Arithmetic: full-stick dive with an empty sky is dI4YPOS = -128 x 2 = -256 per 96 ms frame, so falling the whole legal altitude band (PLYMAX 1536 - PLYMIN 32 = 1504) takes 1504/256 = 5.9 frames = 5.9 x 0.096 s = 0.56 s. Ours, best case (band 'near' = 1.0): 1504/32 = 47 frames = 4.5 s (8x too slow); in our 'far' band (0.375): 1504/12 = 125 frames = 12.0 s (21x too slow).",
+  "reasoning": "MULTB4 (RBARON.MAC:6180-6184) is `ASL / ROL TEMP1 / ASL / ROL TEMP1` = a 16-bit x4 on {TEMP1,A}. PFMOTN sign-extends PLDELX into TEMP1 (3190-3194), calls MULTB4 (3195), then DISCHK (3196), and adds the result to UNIV4X (3200-3206) and PFXSCR (3207-3213). The PLDELY path (3237-3240) loads PLDELY/PLDELY+1 straight into A/TEMP1 and calls DISCHK with no MULTB4, then adds to I4YPOS (3245-3252). DIVBY4 (6170-6176) is an arithmetic (sign-preserving) >>2 via `CMP I,80 / ROR`, so the 0.75/1.25 paths are exact. This is a units bug on top of FL-001 and FL-002: three independent errors that all push in the same direction (too sluggish), which is the most plausible mechanical explanation for 'the game seems way off'.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 3478,
+   "verbatim": "\tADC TEMP1\t\t;1.0 RANGE (1.0 * VALUE)"
+  },
+  "ours": {
+   "file": "src/core/flight.ts",
+   "line": 182,
+   "verbatim": "    altitude: clamp(state.altitude + pitchRate * scale, ALT_MIN, ALT_MAX),"
+  },
+  "recommendation": "fix",
+  "size": "m"
+ },
+ {
+  "id": "FL-005",
+  "class": "DIVERGENCE",
+  "title": "POT.X's turn-rate step is PROPORTIONAL to the error (err>>3, min |1|), not a constant 8-count ramp.",
+  "claim": "POT.X computes diff = (POTVAL - PTRNGE/2) - PLDELX (RBARON.MAC:5897-5905), applies 2 counts of hysteresis, then takes `LSR/LSR/LSR` and re-signs with `ORA I,0E0` when the result lands in 0x10..0x1F (RBARON.MAC:5911-5916) \u2014 an arithmetic >>3, i.e. step = floor(diff/8), naturally bounded to [-16,+15]. If that step is 0 but diff != 0 the step is forced to +1 (RBARON.MAC:5923-5926). PLDELX += step (5919-5921). That is a first-order lag: 12.5% of the remaining error per 96 ms frame, big steps far from the target and a 1-count crawl near it. Our easeTurnRate is `current + sign(delta) * min(8, |delta|)` \u2014 a CONSTANT 8-count ramp that then SNAPS the last <=8 counts in one frame. At |delta| = 8 the ROM steps 1; we step 8 (8x too twitchy near the target). At |delta| = 100 the ROM steps 12; we step 8 (1.5x too sluggish far from it). The response curve is a different shape, not a mistuned constant.",
+  "reasoning": "5908-5926 decoded byte-by-byte: `CMP I,3 / BCC 17$` leaves PLDELX alone for |diff| <= 2; `TXA` restores the SIGNED diff; three LSRs give the unsigned byte >>3 (0..31); `CMP I,10` (hex 0x10 = 16) splits it \u2014 0..15 are genuine positive steps, 16..31 came from a negative diff and `ORA I,0E0` turns them into 0xF0..0xFF = -16..-1, which is precisely a sign-preserving >>3. A negative diff can never produce step 0 (the arithmetic shift floors to -1), so the 20$ 'ELSE STEP =1' branch only ever fires for diff in [3..7]. TURN_ACCEL = 8 in our code is not in the source at any setting: replacing the constant with (target-current)>>3 is the fix, and it is a one-function change.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 5916,
+   "verbatim": "\tORA I,0E0\t\t;SIGN EXTEND (MINUS)"
+  },
+  "ours": {
+   "file": "src/core/flight.ts",
+   "line": 161,
+   "verbatim": "  return current + Math.sign(delta) * Math.min(TURN_ACCEL, Math.abs(delta))"
+  },
+  "recommendation": "fix",
+  "size": "s"
+ },
+ {
+  "id": "FL-006",
+  "class": "CONFIRMED",
+  "title": "2 counts of hysteresis on the turn pot \u2014 exact match.",
+  "claim": "POT.X takes |diff| (via `JSR COMP` on the negative branch) and `CMP I,3 / BCC 17$` -> any |diff| <= 2 leaves PLDELX untouched (RBARON.MAC:5906-5909). Our easeTurnRate returns `current` unchanged when Math.abs(delta) <= TURN_HYSTERESIS with TURN_HYSTERESIS = 2. Identical deadband, identical units (PLDELX counts).",
+  "reasoning": "`CMP I,3` sets carry iff A >= 3, so BCC (branch if carry clear) is taken for |diff| in {0,1,2}. The source even labels it: ';2 COUNTS OF HYSTERSIS' (sic). Our comparison is `<= 2`, which is the same set. The one thing we get right in the POT.X path.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 5908,
+   "verbatim": "5$:\tCMP I,3\t\t\t;2 COUNTS OF HYSTERSIS"
+  },
+  "ours": {
+   "file": "src/core/flight.ts",
+   "line": 160,
+   "verbatim": "  if (Math.abs(delta) <= TURN_HYSTERESIS) return current // hysteresis: don't chase"
+  }
+ },
+ {
+  "id": "FL-007",
+  "class": "CONFIRMED",
+  "title": "PFROTN = PLDELX x 8, sign-extended \u2014 exact match.",
+  "claim": "PFMOTN sign-extends PLDELX into PFROTN+1 (X=0 or 0xFF) and then performs `ASL / ASL / ROL PFROTN+1 / ASL / ROL PFROTN+1` (RBARON.MAC:3214-3224), yielding the 16-bit signed PLDELX x 8. (The first ASL's carry is deliberately not rolled in: for a positive PLDELX the carry is 0, and for a negative one the MSB is already 0xFF and `ROL 0xFF` with carry-in 1 is still 0xFF \u2014 so nothing is lost.) Our pfrotn() is `turnRate * 8`. Match.",
+  "reasoning": "Verified the three shifts against the 6502 semantics. Our comment 'PFROTN = PLDELX \u00d7 8' is correct and the code implements it. The clamp that follows is FL-008.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 3215,
+   "verbatim": "\tLDA PLDELX\t\t;PLAYER DELTA X"
+  },
+  "ours": {
+   "file": "src/core/flight.ts",
+   "line": 154,
+   "verbatim": "  return clamp(turnRate * 8, -BANK_LIMIT, BANK_LIMIT)"
+  }
+ },
+ {
+  "id": "FL-008",
+  "class": "CONFIRMED",
+  "title": "The 0x100 bank clamp IS 45 degrees, and ROLL_SCALE = pi/1024 is the right conversion.",
+  "claim": "PFROTN's declared bit format is `XXX XQQA AAAA AA.FF` (RBARON.MAC:166). TRIG decodes it (RBARON.MAC:5984-5990): `LSR / AND I,3` on the MSB -> quadrant = bits 9-10 of the 16-bit word; `TYA / ROR / LSR` -> angle = (word >> 2) & 0x7F, and T.SINE's contract is `; ACC = ANGLE (0 TO 7F)` (RBARON.MAC:6017) with cosine taken as sine(0x80 - angle) (RBARON.MAC:6008-6009). So 0x80 angle units = one quadrant = 90 degrees, angle units = raw/4, hence one quadrant = 0x200 raw and a full circle = 0x800 = 2048 raw PFROTN counts. PFMOTN clamps |PFROTN| to 0x100 (RBARON.MAC:3227-3236). 0x100 / 0x800 x 360 = 45 degrees. Our BANK_LIMIT = 0x100 and ROLL_SCALE = pi/1024 give 256 x pi/1024 = pi/4 = 45 degrees. Match, and 2*pi/2048 = pi/1024 is exactly the ROM's radians-per-count.",
+  "reasoning": "The clamp block: `TAY / LDX PFROTN+1 / JSR DPABS` gives |PFROTN| in X(MSB),Y(LSB) with A=MSB; `CPY I,0` forces carry set; `SBC I,1` then tests MSB >= 1, i.e. |PFROTN| >= 0x100; if so it reloads X=1,Y=0 (=0x0100), re-applies the original sign via `BIT PFROTN+1 / JSR DPABS`, and stores. Consequence worth recording: because PFROTN = PLDELX x 8, the bank saturates at |PLDELX| >= 32 \u2014 see FL-011.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 166,
+   "verbatim": "PFROTN:\t.BLKB 2\t\t\t;HORIZON ROTATION (XXX XQQA AAAA AA.FF)"
+  },
+  "ours": {
+   "file": "src/core/flight.ts",
+   "line": 95,
+   "verbatim": "const ROLL_SCALE = Math.PI / 1024"
+  }
+ },
+ {
+  "id": "FL-009",
+  "class": "CONFIRMED",
+  "title": "Altitude clamp PLYMIN = 8*4 = 32, PLYMAX = 180*4 (hex) = 1536 \u2014 exact match.",
+  "claim": "RBARON.MAC:446-447 in the .RADIX 16 region: PLYMAX = 0x180 * 4 = 384 * 4 = 1536; PLYMIN = 0x8 * 4 = 32. PFMOTN hard-clamps I4YPOS into [PLYMIN, PLYMAX] every frame (RBARON.MAC:3253-3266), splitting each bound with `&0FF` / `/100` (0x100) into LSB/MSB. Our ALT_MIN = 0x8*4 = 32 and ALT_MAX = 0x180*4 = 1536. Match, and our comment correctly flags that the hex read matters for 0x180.",
+  "reasoning": "The clamp is unconditional and lives in PFMOTN, i.e. it applies on every calculation frame in normal flight \u2014 which is why you cannot fly into the ground in a dogfight. Our step() applies clamp(altitude + ..., ALT_MIN, ALT_MAX) in the same place. Match.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 446,
+   "verbatim": "PLYMAX\t=180*4\t\t\t;PF HORIZON LINE MAX Y"
+  },
+  "ours": {
+   "file": "src/core/flight.ts",
+   "line": 53,
+   "verbatim": "export const ALT_MAX = 0x180 * 4 // 1536"
+  }
+ },
+ {
+  "id": "FL-010",
+  "class": "CONFIRMED",
+  "title": "Spawn altitude I4YPOS = 0x0210 = 528 \u2014 exact match.",
+  "claim": "INITIAL does `LDA I,10 / STA I4YPOS / LDA I,2 / STA I4YPOS+1` (RBARON.MAC:1243-1246). Hex radix: LSB = 0x10, MSB = 0x02 -> I4YPOS = 0x0210 = 528. That sits between PLYMIN 32 and PLYMAX 1536, at 33% of the band. Our INITIAL_FLIGHT.altitude = 0x0210. Match.",
+  "reasoning": "Same INITIAL block also zeroes PLDELX/PLDELY (`LDX I,MESTM2-PLDELX / STA ZX,PLDELX`, RBARON.MAC:1237-1241), matching our INITIAL_FLIGHT turnRate = pitchRate = 0.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 1244,
+   "verbatim": "\tSTA I4YPOS\t\t;INITIALIZE HORIZON Y POSITION"
+  },
+  "ours": {
+   "file": "src/core/flight.ts",
+   "line": 131,
+   "verbatim": "  altitude: 0x0210,"
+  }
+ },
+ {
+  "id": "FL-011",
+  "class": "DIVERGENCE",
+  "title": "MAX_TURN = 40 is invented: the ROM's commanded PLDELX is (POTVAL - PTRNGE/2), i.e. HALF the auto-calibrated pot range.",
+  "claim": "POT.X's target is `LDA PTRNGE / LSR ;1/2 OF RANGE / STA TEMP1 / LDA POTVAL / SEC / SBC TEMP1` (RBARON.MAC:5897-5902) \u2014 the centred raw pot count. There is no 40-count cap anywhere in POTSCL/POT.X; PLDELX is a full signed byte and its full-deflection magnitude is PTRNGE/2, where PTRNGE is auto-calibrated at runtime by the NMI (RBGRND.MAC:124-127, 140-142) from the pot's observed swing. Two ROM constants show PLDELX ranges well past our 40: the bank saturates at |PLDELX| >= 32 (0x100 / 8, FL-008), and the 'evade the ace behind you' check demands |PLDELX| >= 0x1C = 28 or the player dies (RBARON.MAC:1084-1087, `CMP I,1C / BCC 20$ ;PLAYER DIES`). With MAX_TURN = 40 our bank only saturates at 80% stick; in the ROM, with a POKEY pot swing on the order of 200+ counts, PTRNGE/2 is ~100+, so 32 is reached at roughly a third of stick and full stick keeps building the world-pan rate ~3x beyond the point where the horizon has already pinned at 45 degrees. We cannot pin PTRNGE numerically from the source (it is measured from the hardware pot), so the exact full-scale is not citable \u2014 but the SHAPE is: bank saturates early, pan rate keeps climbing. Ours does neither.",
+  "reasoning": "Honest limit of the evidence: PTRNGE is runtime state, so no line of source states the maximum PLDELX. What IS pinned is (a) the target is the raw centred pot count, not a scaled +/-40, and (b) |PLDELX| >= 28 must be reachable and is treated as 'a hard bank' by RBARON.MAC:1086, while 32 already pins the horizon. Our MAX_TURN is not derivable from the source and its only cited authority (docs/red-baron-1980-source-findings.md:239, the 0x1C threshold) says nothing about a maximum. Fixing this properly means feeding the pot in raw counts (0..PTRNGE) rather than a normalised [-1,1] x 40, which touches the input plumbing, hence size m.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 5898,
+   "verbatim": "\tLSR\t\t\t;1/2 OF RANGE"
+  },
+  "ours": {
+   "file": "src/core/flight.ts",
+   "line": 91,
+   "verbatim": "const MAX_TURN = 40"
+  },
+  "recommendation": "fix",
+  "size": "m"
+ },
+ {
+  "id": "FL-012",
+  "class": "CONFIRMED",
+  "title": "POTSCL's pitch pot -> 11-step index mapping (round(pot/range x 10), clamped) \u2014 match.",
+  "claim": "POTSCL divides POTVAL+1 (x256) by PTRNGE+1 to get a 0..255 fraction, multiplies by 10 (decimal) and takes the MSB -> `;X = 1 OUT OF 11. VALUES (0 TO 10.)` (RBARON.MAC:5849-5861), rounding up when the product's LSB has bit 7 set (`TYA / BPL 30$ / INX ;ROUND UP`, RBARON.MAC:5862-5864). Degenerate cases clamp: range < 0x10 -> index 5 (centre, RBARON.MAC:5840-5843); pot at full range -> index 10 (RBARON.MAC:5844-5848). Our pitchDelta does `clamp(Math.round((pitchPot + 1) * 5), 0, 10)` on pitchPot in [-1,1]: centre -> 5, full -> 0 or 10, with round-half-up and end clamping. Same 11-step quantiser, same rounding, same clamps. (The TABLE the index reads is wrong \u2014 see FL-001 \u2014 but the INDEXING is right.)",
+  "reasoning": "`LDA I,10 / STA A,DD.NL` at 5856-5857 is the Math Box divider's bit count (0x10 = 16 bits), not a decimal 10 \u2014 checked because it sits next to the genuinely decimal `LDX I,10.` at 5847/5860. The x10 multiplier and the '0 TO 10.' index range both carry explicit trailing periods, so they are decimal despite .RADIX 16.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 5861,
+   "verbatim": "\tJSR MULTPL\t\t;X = 1 OUT OF 11. VALUES (0 TO 10.)"
+  },
+  "ours": {
+   "file": "src/core/flight.ts",
+   "line": 145,
+   "verbatim": "  const index = clamp(Math.round((pitchPot + 1) * 5), 0, PITCH_TABLE.length - 1)"
+  }
+ },
+ {
+  "id": "FL-013",
+  "class": "DIVERGENCE",
+  "title": "The ROM camera has NO YAW ROTATION. Turning is a lateral TRANSLATION of the universe; we rotate the camera about Y.",
+  "claim": "PFMOTN adds the scaled PLDELX to UNIV4X (`;UPDATE UNIVERSE CENTER`, RBARON.MAC:3200-3206) and to PFXSCR (`;UPDATE PF CENTER`, 3207-3213). UNIV4X is a linear X coordinate ('UNIVERSE X (* 4)', RBARON.MAC:90); objects are drawn at (their X - UNIV4X) (e.g. RBARON.MAC:2910 `SBC ZX,UNIV4X\t\t;- UNIVERSE CENTER`). The projector POSITP/POSITH (RBGRND.MAC:261-322) loads (OBJECT.X, OBJECT.Y - I4YPOS) into the Math Box, applies exactly ONE rotation \u2014 the Z rotation set by PFTRIG from PFROTN \u2014 and then perspective-divides by depth. There is no Y-axis (yaw) rotation of the view anywhere in the player camera. Consequence: in the ROM a turn slides the world sideways, so a near object sweeps across the screen fast and a distant one barely moves (screen dx = dUNIV4X / depth). Our toAttitude emits `yaw: state.heading * YAW_SCALE` into rotationY, which sweeps EVERY depth at the same angular rate. That is a different flight model, not a different unit system.",
+  "reasoning": "Cross-checked three ways: (1) POSITP sets only MATH+4/5 = UNIV4X as the rotation centre and MATH+6/7 = 0; (2) POSITH's only matrix op is the Z rotation whose sin/cos PFTRIG loaded from PFROTN; (3) the player has no Z coordinate at all \u2014 UNIV4X is a 4-byte block whose upper half IS I4YPOS (RBARON.MAC:90-91), so the player state is (X, Y) only. Our model is a genuine 3-axis camera. Making it faithful means replacing the yaw accumulator with a world-X pan and dropping rotationY from flightView \u2014 a rewrite of the camera bridge and every consumer that passes `attitude`, not a constant tweak.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 3202,
+   "verbatim": "\tADC UNIV4X\t\t;UPDATE UNIVERSE CENTER"
+  },
+  "ours": {
+   "file": "src/core/flight.ts",
+   "line": 197,
+   "verbatim": "    yaw: state.heading * YAW_SCALE,"
+  },
+  "recommendation": "fix",
+  "size": "l"
+ },
+ {
+  "id": "FL-014",
+  "class": "DIVERGENCE",
+  "title": "The ROM camera has NO PITCH ROTATION either \u2014 climb/dive is a pure vertical eye TRANSLATION. Our transient camera pitch is fabricated.",
+  "claim": "POSITH's Y input is `LDA OBJECT+2 / SBC I4YPOS ;-EYE POSITION / ... / SBC I4YPOS+1` (RBGRND.MAC:277-283) \u2014 the eye height is SUBTRACTED from every object's Y before the single Z rotation and the divide-by-depth. There is no X-axis (pitch) rotation of the view. Our toAttitude emits `pitch: state.pitchRate * PITCH_SCALE` (PITCH_SCALE = pi/512), a camera rotationX proportional to the CURRENT climb RATE: at full dive pitchRate = -32 gives -32 x pi/512 = -0.196 rad = -11.25 degrees of fake nose-down tilt that snaps back to 0 the instant the stick centres. Nothing in POTSCL/PFMOTN/POSITH produces such a rotation. Worse, the real effect is missing: src/main.ts:191 builds the view with `flightView(attitude, [0, 0, 0])` \u2014 the eye is hard-coded to the origin and toEye() is never called anywhere in src/, so our simulated altitude has ZERO effect on the picture. In the ROM, altitude is THE visible consequence of pitching (it shifts every object's screen Y by -I4YPOS/depth).",
+  "reasoning": "grep confirms toEye is referenced only by src/core/flight.ts (its definition) and tests/core/flight.test.ts \u2014 never by src/main.ts. So today: pulling the yoke back produces an 11-degree cosmetic tilt and changes nothing else on screen; the altitude accumulator, its clamps, and the whole PLDELY chain are simulated and then discarded at render time. Fix is two parts: (a) drop `pitch` from Attitude / stop feeding rotationX, (b) pass toEye(flight) into flightView instead of [0,0,0]. (b) is small; (a) ripples through camera.ts, horizon.ts, and every draw call in main.ts, so: m.",
+  "source": {
+   "file": "RBGRND.MAC",
+   "line": 279,
+   "verbatim": "\tSBC I4YPOS\t\t;-EYE POSITION"
+  },
+  "ours": {
+   "file": "src/core/flight.ts",
+   "line": 196,
+   "verbatim": "    pitch: state.pitchRate * PITCH_SCALE,"
+  },
+  "recommendation": "fix",
+  "size": "m"
+ },
+ {
+  "id": "FL-015",
+  "class": "DIVERGENCE",
+  "title": "Transform ORDER: translate by the eye, then roll about Z, then divide by depth \u2014 our composition matches.",
+  "claim": "POSITH (RBGRND.MAC:269-322) does, in order: (1) load OBJECT.X and (OBJECT.Y - I4YPOS) \u2014 the eye translation; (2) start the Math Box matrix multiply with the sin/cos PFTRIG loaded from PFROTN \u2014 the Z roll, about the centre (UNIV4X, 0) that POSITP set; (3) divide the rotated X and Y by the object's depth (MATH+15/16 <- OBJECT+4/6) \u2014 the perspective divide. Our flightView is `viewMatrix(eye, rotationZ(roll) \u2218 ...)`, i.e. translate-by-(-eye) then rotate, then sceneProjection divides by depth. Same order: translate, roll, divide. The roll is the OUTERMOST rotation in our composition, which is the only rotation the ROM has.",
+  "reasoning": "Recorded as a CONFIRMED because the order is the thing most likely to be wrong in a hand-port and it is right. The extra rotationX/rotationY factors we compose inside it are FL-013/FL-014; with roll alone, our matrix and the ROM's pipeline agree structurally. I did not attempt to verify the SIGN of the roll against the Math Box's screen conventions \u2014 VGMC.MAC's fixed-point conventions are not decoded here, so I make no claim about it.",
+  "source": {
+   "file": "RBGRND.MAC",
+   "line": 279,
+   "verbatim": "\tSBC I4YPOS\t\t;-EYE POSITION"
+  },
+  "ours": {
+   "file": "src/core/camera.ts",
+   "line": 47,
+   "verbatim": "  return viewMatrix(eye, orientation)"
+  },
+  "coverage_review": "FALSE CONFIRMED (Phase 3). Confirms a transform pipeline our code does not actually run; contradicted by FL-013/FL-014. Reclassed DIVERGENCE.",
+  "recommendation": "fix",
+  "size": "s"
+ },
+ {
+  "id": "FL-016",
+  "class": "NO_COUNTERPART",
+  "title": "HORIZN = 0x40 = 64: a constant screen-Y offset added to EVERY projected point. We have none.",
+  "claim": "RBARON.MAC:456 defines HORIZN = 0x40 = 64 (hex radix), commented ';HORIZON OFFSET ( Y AXIS)'. POSITH adds it to the projected Y of every point it places: `CLC / LDA YLOW / ADC I,HORIZN / STA XPOS+2 ;Y RESULT LSB` (RBGRND.MAC:301-304). It is not a horizon-only constant \u2014 it lifts the whole scene (horizon, mountains, planes, shells) 64 units up the screen, equivalently the camera looks 64 units down. Our pipeline has no such offset: horizon.ts and camera.ts project straight to NDC with the optical axis dead centre.",
+  "reasoning": "Our horizon.ts:18 explicitly defers it ('The HORIZN=$40 screen offset and the SCAPE mountain silhouettes (findings \u00a74/\u00a77) are rb2''s ground wave') \u2014 but the ground wave has since shipped and the offset never arrived. This changes where the horizon sits at rest, which is the single most noticeable framing cue in the game. I have NOT decoded the Math Box's fixed-point output scale (VGMC.MAC), so I cannot state what 64 units is as a fraction of the screen \u2014 only that it is a constant, global, positive Y bias applied after the divide-by-depth.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 456,
+   "verbatim": "HORIZN\t=40\t\t\t;HORIZON OFFSET ( Y AXIS)"
+  },
+  "ours": null,
+  "recommendation": "fix",
+  "size": "s"
+ },
+ {
+  "id": "FL-017",
+  "class": "DIVERGENCE",
+  "title": "The ROM horizon is at FINITE depth HORZ = 0x1000 and moves with altitude; ours is at infinity and ignores altitude by design.",
+  "claim": "RBARON.MAC:451: HORZ = 0x1000 = 4096 (hex radix), ';HORIZON DEPTH'. SCENE draws the horizon at world Y = 0 (`STY OBJECT+2 ;Y POSITION / STY OBJECT+3`, RBARON.MAC:4390-4391) and depth HORZ (`LDA I,HORZ/100 / STA OBJECT+5`, RBARON.MAC:4393-4394), then calls POSITH \u2014 which subtracts I4YPOS from that Y (RBGRND.MAC:279) before dividing by 4096. So the ROM horizon's screen Y is (0 - I4YPOS)/HORZ + HORIZN: it DOES move as the player climbs and dives, just slowly. Our horizon.ts hard-codes EYE_AT_ORIGIN and its header asserts the opposite ('The horizon sits at infinity, so it depends only on ATTITUDE (never on eye position/altitude)'). It also uses HORIZON_DISTANCE = 10000, an invented value, where the ROM's is 4096.",
+  "reasoning": "The magnitude of the ROM's altitude->horizon coupling depends on the Math Box divider's fixed-point scale, which I have not decoded, so I will not put a pixel number on it. But the sign and the mechanism are unambiguous, and our code is not merely differently-scaled \u2014 it deliberately drops the term. Fix: pass toEye(flight) into flightView here too and set HORIZON_DISTANCE = 0x1000.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 451,
+   "verbatim": "HORZ\t=1000\t\t\t;HORIZON DEPTH"
+  },
+  "ours": {
+   "file": "src/core/horizon.ts",
+   "line": 35,
+   "verbatim": "  const mvp = multiply(sceneProjection(aspect), flightView(attitude, EYE_AT_ORIGIN))"
+  },
+  "recommendation": "fix",
+  "size": "s"
+ },
+ {
+  "id": "FL-018",
+  "class": "CONFIRMED",
+  "title": "No throttle: exactly two pots, and forward motion is not a player input.",
+  "claim": "POTVAL is `.BLKB 2` \u2014 one byte per pot (RBARON.MAC:191), matched by PTRNGE/POTMIN/POTUSE also `.BLKB 2` (RBARON.MAC:190-193). The NMI multiplexes the single POTIN line between exactly two axes (`LDA POTFLG / AND I,1 / TAX`, RBGRND.MAC:113-116, indexing those 2-byte arrays with X in {0,1}). POTSCL consumes POTVAL+1/PTRNGE+1 for pitch and POTVAL/PTRNGE for turn \u2014 that is both pots, and there is no third. Our FlightInput carries turn + pitch + the DISCHK band and no throttle. Match.",
+  "reasoning": "Forward motion in the ROM is applied to the OBJECTS (e.g. PF objects close at `LDA I,20 ;STANDARD DELTA / ADC A,PRPDEL ;ADD PERCENTAGING DELTA`, RBARON.MAC:3341-3342), not commanded by the pilot \u2014 exactly the 'forward motion is implicit and constant' our header claims. (PRPDEL is the difficulty percentaging delta and belongs to another pair's scope.)",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 191,
+   "verbatim": "POTVAL:\t.BLKB 2\t\t\t;POT VALUE"
+  },
+  "ours": {
+   "file": "src/core/flight.ts",
+   "line": 105,
+   "verbatim": "/** One calc-frame of pilot input \u2014 two pots + the DISCHK band. No throttle. */"
+  }
+ },
+ {
+  "id": "FL-019",
+  "class": "CONFIRMED",
+  "title": "Cadence: POTSCL and PFMOTN run exactly once per calculation frame, and so does our step().",
+  "claim": "MAIN calls `JSR POTSCL ;SCALE POT VALUES` (RBARON.MAC:778) and `JSR PFMOTN ;UPDATE PLAYFIELD` (RBARON.MAC:785) once per pass, then blocks in INTWAIT and loops \u2014 so every PLDELX ease, every PLDELY lookup, every UNIV4X/I4YPOS integration happens once per 96 ms (CALCNT = 0x18 = 24 NMIs at 250 Hz = 10.4167 Hz). src/main.ts accumulates real time and runs `flight = step(flight, input)` once per SIM_TIMESTEP_S = 24/250 = 0.096 s. Same cadence, so every per-frame constant in this audit is directly comparable without a timebase conversion: 1 ROM frame == 1 of our steps.",
+  "reasoning": "This is why FL-001/FL-004's factor-of-8 is a real factor of 8 and not a units artefact: both sides advance once per 96 ms, so a step of -128x2 = -256 per ROM frame versus -32 per our frame is an 8x difference in I4YPOS/second (-256 x 10.4167 = -2667/s versus -32 x 10.4167 = -333/s), full stop.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 785,
+   "verbatim": "\tJSR PFMOTN\t\t;UPDATE PLAYFIELD"
+  },
+  "ours": {
+   "file": "src/main.ts",
+   "line": 374,
+   "verbatim": "    flight = step(flight, input)"
+  }
+ },
+ {
+  "id": "FL-020",
+  "class": "NO_COUNTERPART",
+  "title": "POTSCL's PFROTN return-to-centre (step -2, or -1 at |1|) has no counterpart \u2014 it is the horizon righting itself while PFMOTN is skipped.",
+  "claim": "POTSCL, after loading PLDELY, walks PFROTN back toward 0 by 2 counts per frame (1 count when |PFROTN| is 1): RBARON.MAC:5872-5896, `LDX I,0FE ;ELSE RETURN (STEP=-2)` for positive PFROTN and `LDX I,2` for negative. In normal flight this is immediately overwritten by PFMOTN's PFROTN = PLDELX x 8 (RBARON.MAC:3218-3236) \u2014 but MAIN skips PFMOTN when the game is frozen or the player has hit the ground (`LSR / BCS 20$ ;FREEZE` and `BIT GREND / BVS 20$ ;PLAYER RAN INTO GROUND`, RBARON.MAC:780-784) while POTSCL still runs, so during those states the horizon rights itself at 2 counts (2 x 360/2048 = 0.35 degrees) per 96 ms frame. We have no freeze/crash horizon-decay path.",
+  "reasoning": "Low consequence for flight feel in play, recorded for completeness because the block is easy to mistake for the main bank law (it is not \u2014 PFMOTN unconditionally recomputes PFROTN from PLDELX). accept: our runnable cockpit has no freeze state that keeps flying the pots.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 5877,
+   "verbatim": "\tLDX I,0FE\t\t;ELSE RETURN (STEP=-2)"
+  },
+  "ours": null,
+  "recommendation": "accept"
+ }
+]

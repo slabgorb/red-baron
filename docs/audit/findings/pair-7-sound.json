@@ -1,0 +1,361 @@
+[
+  {
+    "id": "SN-001",
+    "class": "CONFIRMED",
+    "title": "The pointer table is 8 bytes per sound (one offset per POKEY register), not 6 — our code is right and the in-source comment is stale",
+    "claim": "The OFFSET macro body is `.IRPC X,<12345678>` — 8 characters, therefore 8 iterations, therefore 8 `.BYTE`s emitted per `OFFSET` invocation. PNTRS invokes it 5 times (TK, WP, BN, TH, TP), so PTLEN = 5 x 8 = 40 = $28. The caller confirms the stride independently: the SOUND macro is `LDY I,.X*8+7` (RBARON.MAC:70), i.e. sound number x 8, +7 to address the LAST of the 8 bytes (SNDON walks X=7..0 downward). The 8 slots are the 8 POKEY audio registers AUDF1,AUDC1,AUDF2,AUDC2,AUDF3,AUDC3,AUDF4,AUDC4 — MODSND loops `LDX I,7` down to 0 and does `STA X,POKEY` (RBSOUN.MAC:228,258). RBSOUN.MAC:124's '(6 BYTES PER SOUND NUMBER)' is a stale leftover from the T2SOUN ancestor named in the .TITLE. pokey.ts models exactly 8 slots as a fixed-length tuple with `null` = 'offset 0 = leave that register alone'.",
+    "reasoning": "This is the one claim the doc makes about the table format that survives contact with the source, and our code implements it correctly. Recorded so the format is not 're-corrected' back to 6 by a future reader who trusts the comment. The macro decodes fully: `.IF DF,LABEL''X` emits `LABEL X - SOUND` when the label (e.g. TK1..TK8) is defined and `.BYTE 0` when it is not — so TK, which defines only TK1/TK2, yields byte0=TK1-SOUND, byte1=TK2-SOUND, bytes 2-7 = 0, i.e. it touches only AUDF1/AUDC1.",
+    "source": {
+      "file": "RBSOUN.MAC",
+      "line": 97,
+      "verbatim": "\t.IRPC X,<12345678>"
+    },
+    "ours": {
+      "file": "src/shell/pokey.ts",
+      "line": 118,
+      "verbatim": "  TK: table(1, held(0x30), { start: 0xa4, hold: 7, change: -1, steps: 4 }),"
+    }
+  },
+  {
+    "id": "SN-002",
+    "class": "CONFIRMED",
+    "title": "Five sounds exist, and every channel assignment in our table matches the ROM",
+    "claim": "PNTRS holds exactly 5 entries: TK, WP, BN, TH, TP (RBSOUN.MAC:126-130), so sound numbers are 0=TK, 1=WP, 2=BN, 3=TH, 4=TP. Which POKEY registers each touches is decided by which of the LABELn labels exist: TK1/TK2 -> slots 0,1 = ch1. BN1/BN2 -> slots 0,1 = ch1. TP1/TP2 -> slots 0,1 = ch1. TH3/TH4 -> slots 2,3 = ch2. WP5/WP6 -> slots 4,5 = ch3. Channel 4 (slots 6,7) is touched by NO envelope sound. RBARON.MAC independently corroborates: the score routine polls `POINT+4` for 'PLANE ENTRY' (= AUDF3 = ch3 = WP) and `POINT+2` for the '300 PT SOUND' (= AUDF2 = ch2 = TH) at RBARON.MAC:1541-1542. Ours: TK ch1, TP ch1, BN ch1, WP ch3, TH ch2 — all five correct.",
+    "reasoning": "The digit in each label (TK1, TH3, WP5) IS the register slot index+1; that is the whole trick of the OFFSET macro. Our five `table(channel, ...)` calls land on the same registers. No sound is invented that has no slot in the ROM's table, and none of the five is missing from pokey.ts.",
+    "source": {
+      "file": "RBSOUN.MAC",
+      "line": 126,
+      "verbatim": "PNTRS:\tOFFSET TK"
+    },
+    "ours": {
+      "file": "src/shell/pokey.ts",
+      "line": 131,
+      "verbatim": "  WP: table(3, held(0x50), { start: 0xa6, hold: 6, change: -2, steps: 3 }),"
+    }
+  },
+  {
+    "id": "SN-003",
+    "class": "BOOK_WAS_WRONG",
+    "title": "NUMBER is the COUNT OF DISTINCT VALUES, not '# changes - 1'. The doc is wrong, RBSOUN's own prose comment is wrong, and our code's `steps === romNUMBER + 1` rule is wrong in the opposite direction",
+    "claim": "Trace MODSND: SNDON seeds FRAMES=1, COUNT=1 (RBSOUN.MAC:214-216). Call 1: DEC FRAMES -> 0, DEC COUNT -> 0, so the sequence loads (CURRENT=STVAL, FRAMES=FRCNT, COUNT=NUMBER, POINT+=4) and outputs STVAL. Thereafter the step at 20$ runs only while `DEC COUNT` leaves a NON-zero result (RBSOUN.MAC:233-234), so there are exactly NUMBER-1 steps, hence exactly NUMBER distinct values, each held FRCNT frames: duration = NUMBER x FRCNT frames. PROOF, and it is decisive: a sound's AUDF and AUDC chains must run out together. Under 'values = NUMBER' every one of the five does, exactly — TK 4x7=28 vs 4x7=28; TP 4x10=40 vs 4x10=40; BN 6x(48x1)=288 vs 144x2=288; WP 3x(60x2)=360 vs 180x2=360; TH (16+16+16+32+16+32)x2=256 vs 128x2=256. Under 'values = NUMBER+1' every one of the five would MISMATCH (e.g. TH: AUDF2 (17+17+17+33+17+33)x2=268 frames vs AUDC2 129x2=258 frames). 5 out of 5 exact agreements is not a coincidence. Therefore the correct transcription rule for our `steps` field (which yields `steps+1` values, since `taken` runs 0..steps) is `steps = romNUMBER - 1`, NOT `steps = romNUMBER + 1` as pokey.ts:26 states — a two-step error.",
+    "reasoning": "Findings doc §6 says NUMBER is '(# changes - 1)'; RBSOUN's own comments say the same twice (RBSOUN.MAC:89 'TOTAL NUMBER OF CHANGES IN THIS SEQUENCE-1' and :152 '# OF DIFFERENT VALUES-1', plus the EX1 comment at :90-91 which lists 7 values for NUMBER=6). All of them are wrong about the code they document — the assembler comments were inherited from the T2SOUN ancestor. Our repo trusted the prose and enshrined a `+1` rule in a loud warning comment. The saving grace is that the code did NOT actually apply its own stated rule: TK stores the raw byte 4 into `steps`, so it renders 5 levels ($A4,$A3,$A2,$A1,$A0) where the ROM renders 4 ($A4..$A1) — one extra level, which happens to be volume 0 and therefore silent. The rule is nonetheless a live trap for the byte-exact pass that SN-004..SN-007 demand: applying it would make every sound one step too long, and applying the doc's version would make it two.",
+    "source": {
+      "file": "RBSOUN.MAC",
+      "line": 234,
+      "verbatim": "\tBNE 20$\t\t\t;NO -- NONE"
+    },
+    "ours": {
+      "file": "src/shell/pokey.ts",
+      "line": 26,
+      "verbatim": "// COUNT DIRECTLY (i.e. `steps === romNUMBER + 1`). A future byte-exact pass that"
+    },
+    "recommendation": "fix",
+    "size": "s"
+  },
+  {
+    "id": "SN-004",
+    "class": "CONFIRMED",
+    "title": "TK (SOUND 0, the 10-point score tick) is byte-accurate: $30 pure tone at 652 Hz, volume 4 decaying -1 every 7 frames, ~112 ms",
+    "claim": "ROM TK1 (AUDF1) = 30,7,0,4 -> divisor $30=48 held; TK2 (AUDC1) = 0A4,7,0FF,4 -> $A4 (high nibble A = pure tone / N / 2 per the ACC table at RBSOUN.MAC:81; low nibble = volume 4), CHANGE=$FF=-1, so $A4,$A3,$A2,$A1, each held 7 MODSND frames. MODSND runs on the 250 Hz NMI (RBGRND.MAC:237), so 1 frame = 4 ms: 4 x 7 = 28 frames = 112 ms. Pitch = 63920/(2 x (48+1)) = 652.2 Hz. Ours: `held(0x30)` + `{start: 0xa4, hold: 7, change: -1, steps: 4}` -> audfToHz(0x30) = 652.2 Hz, gains (4,3,2,1,0)/15 each for 7 x 4 ms. Identical for the 28 audible frames; the 5th level our extra step adds is $A0 = volume 0 = silence (see SN-003).",
+    "reasoning": "The one envelope our repo claims is ROM-exact, and it is. Notably it is also the only one it could have been exact about — the header admits the raw RBSOUN.MAC was never in the checkout and the other four were invented (see SN-005..SN-008). Also confirms our 4 ms frame unit: pokeyTone uses `1 / MASTER_NMI_HZ` (250 Hz), NOT the 96 ms calculation frame. If it had used the calc frame, TK would last 28 x 96 ms = 2.7 s instead of 112 ms.",
+    "source": {
+      "file": "RBSOUN.MAC",
+      "line": 159,
+      "verbatim": "TK2:\t.BYTE 0A4,7,0FF,4"
+    },
+    "ours": {
+      "file": "src/shell/audio.ts",
+      "line": 224,
+      "verbatim": "  const frameSeconds = 1 / MASTER_NMI_HZ // MODSND steps every 4 ms"
+    }
+  },
+  {
+    "id": "SN-005",
+    "class": "DIVERGENCE",
+    "title": "TP (SOUND 4, the 100-point tick) is INVENTED: wrong pitch (969 Hz vs 561 Hz), wrong hold (7 vs 10), wrong volume, wrong length",
+    "claim": "ROM TP1 (AUDF1) = 38,0A,0,4 -> divisor $38=56 held; TP2 (AUDC1) = 0A4,0A,0FF,4 -> $A4,$A3,$A2,$A1 held $0A=10 frames each. Duration 4 x 10 = 40 frames x 4 ms = 160 ms. Pitch = 63920/(2 x 57) = 560.7 Hz. Ours: `held(0x20)` + `{start: 0xa6, hold: 7, change: -1, steps: 6}` -> pitch 63920/(2 x 33) = 968.5 Hz (1.73x too HIGH), start volume 6 not 4, hold 7 not 10, duration (6+1) x 7 = 49 frames = 196 ms (1.23x too long). Every one of the four bytes is wrong. The ROM makes the bigger score tick LOWER in pitch than TK ($38 vs $30 -> 561 Hz vs 652 Hz) and LONGER (160 ms vs 112 ms) at the SAME volume; our comment claims the opposite design ('brighter, louder tick: higher pitch (smaller divisor), volume 6') and implements it.",
+    "reasoning": "pokey.ts's header states plainly that TP/BN/WP/TH were SYNTHESISED because 'The raw RBSOUN.MAC is not in this checkout'. It is in the quarry, and here it is. The synthesis is not merely un-sourced, it inverted the ROM's actual pitch relationship between the two score ticks.",
+    "source": {
+      "file": "RBSOUN.MAC",
+      "line": 197,
+      "verbatim": "TP1:\t.BYTE 38,0A,0,4"
+    },
+    "ours": {
+      "file": "src/shell/pokey.ts",
+      "line": 122,
+      "verbatim": "  TP: table(1, held(0x20), { start: 0xa6, hold: 7, change: -1, steps: 6 }),"
+    },
+    "recommendation": "fix",
+    "size": "s"
+  },
+  {
+    "id": "SN-006",
+    "class": "DIVERGENCE",
+    "title": "BN (bonus life) is INVENTED and 10x too short: the ROM is a 6x repeated 4.6 kHz -> 592 Hz pitch sweep at CONSTANT volume, lasting 1.152 s; ours is a fixed pitch with rising volume lasting 112 ms",
+    "claim": "ROM BN1 (AUDF1) = six identical sequences `06,1,1,30`: start divisor 6, hold 1 frame, CHANGE +1, NUMBER $30=48 -> the divisor ramps 6,7,...,53 over 48 frames (192 ms), i.e. the PITCH FALLS from 63920/(2x7) = 4565.7 Hz to 63920/(2x54) = 591.9 Hz; repeated 6 times = 288 frames. BN2 (AUDC1) = 0A4,2,0,90 -> $A4 (pure tone, volume 4) held CONSTANT, NUMBER $90=144, FRCNT=2 -> 144 x 2 = 288 frames. Both chains = 288 frames x 4 ms = 1152 ms. That is the 'rising warble x6' the doc gestures at: six fast falling-pitch sweeps at a flat volume 4. Ours: `held(0x28)` + `{start: 0xa1, hold: 4, change: 1, steps: 6}` -> a FIXED divisor $28=40 (779.5 Hz) with the VOLUME climbing $A1->$A7 (1->7), total (6+1) x 4 = 28 frames = 112 ms. Ratio 1152/112 = 10.3x too short, and the modulated register is the wrong one: the ROM sweeps AUDF and holds AUDC; we hold AUDF and sweep AUDC.",
+    "reasoning": "Our envelope has no sweep at all — the warble the doc names is entirely absent — and the extra-life award is over in a tenth of the time the cabinet gives it. Also note the ROM's shape ends at volume 4, not loud-and-rising, so the release-ramp workaround our code documents for BN ('It ENDS LOUD by design') is solving a problem the ROM does not have.",
+    "source": {
+      "file": "RBSOUN.MAC",
+      "line": 164,
+      "verbatim": "BN1:\t.BYTE 06,1,1,30"
+    },
+    "ours": {
+      "file": "src/shell/pokey.ts",
+      "line": 127,
+      "verbatim": "  BN: table(1, held(0x28), { start: 0xa1, hold: 4, change: 1, steps: 6 }),"
+    },
+    "recommendation": "fix",
+    "size": "s"
+  },
+  {
+    "id": "SN-007",
+    "class": "DIVERGENCE",
+    "title": "WP (enemy plane announce) is INVENTED and 15x too short: the ROM is a 3x repeated RISING sweep 376 Hz -> 1229 Hz at constant volume over 1.44 s; ours is a fixed pitch fading out in 96 ms",
+    "claim": "ROM WP5 (AUDF3) = three identical sequences `54,2,0FF,3C`: start divisor $54=84, hold 2 frames, CHANGE $FF=-1, NUMBER $3C=60 -> the divisor falls 84,83,...,25 over 60 x 2 = 120 frames (480 ms), i.e. the PITCH RISES from 63920/(2x85) = 375.9 Hz to 63920/(2x26) = 1229.2 Hz; x3 = 360 frames. WP6 (AUDC3) = 0A4,2,0,0B4 -> $A4 held constant, NUMBER $B4=180, FRCNT=2 -> 360 frames. Total 360 x 4 ms = 1440 ms. Ours: `held(0x50)` + `{start: 0xa6, hold: 6, change: -2, steps: 3}` -> fixed divisor $50=80 (394.6 Hz), volume $A6->$A0, duration (3+1) x 6 = 24 frames = 96 ms. 1440/96 = 15x too short. Our comment even calls it 'A DESCENDING tone' — the ROM's pitch RISES (the divisor descends; those are opposite things).",
+    "reasoning": "The doc's shorthand 'descending x3' describes the DIVISOR, not the pitch, and our synthesis read it as a descending VOLUME on a fixed pitch. The result is that the single most important warning cue in the game — a plane has entered the sky — is a 96 ms blip instead of a 1.44-second three-fold siren. WP also owns POKEY ch3, the same channel as the engine hum, and the ROM makes the hum yield to it (SN-013); at 96 ms that hand-off is inaudible anyway.",
+    "source": {
+      "file": "RBSOUN.MAC",
+      "line": 176,
+      "verbatim": "WP5:\t.BYTE 54,2,0FF,3C"
+    },
+    "ours": {
+      "file": "src/shell/pokey.ts",
+      "line": 131,
+      "verbatim": "  WP: table(3, held(0x50), { start: 0xa6, hold: 6, change: -2, steps: 3 }),"
+    },
+    "recommendation": "fix",
+    "size": "s"
+  },
+  {
+    "id": "SN-008",
+    "class": "DIVERGENCE",
+    "title": "TH (300-point jingle) is INVENTED: the ROM plays a real 6-note tune C4-D4-E4-B4-E4-B4 over 1.024 s; ours plays a 140 ms chromatic ramp",
+    "claim": "ROM TH3 (AUDF2) is six CONSTANT-pitch sequences (CHANGE=0 in every one), i.e. six NOTES: $79 (16 x 2 = 32 frames), $6C (32), $60 (32), $40 (NUMBER $20=32, so 64 frames), $60 (32), $40 (64). Total 256 frames. Pitches: 63920/(2 x 122) = 261.97 Hz (C4, concert 261.63), 63920/(2 x 109) = 293.2 Hz (D4), 63920/(2 x 97) = 329.5 Hz (E4), 63920/(2 x 65) = 491.7 Hz (B4). So the tune is C-D-E-B-E-B with the two B's held double-length. TH4 (AUDC2) = 0A4,2,0,80 -> $A4 held constant, NUMBER $80=128 x FRCNT 2 = 256 frames. Total 256 x 4 ms = 1024 ms at a flat volume 4. Ours: AUDF2 `{start: 0x60, hold: 5, change: -8, steps: 5}` -> divisors $60,$58,$50,$48,$40,$38 = 329.5, 359.1, 394.6, 437.8, 491.7, 560.7 Hz (a monotonically RISING run), with AUDC2 fading $A6->$A0; duration (6+1) x 5 = 35 frames = 140 ms. 1024/140 = 7.3x too short, and the melody is wrong: the ROM's tune goes up-up-LEAP-back-LEAP, never repeats a rising ramp, and holds a constant volume.",
+    "reasoning": "The four decoded note values landing within 0.15% of C4/D4/E4/B4 is what proves the byte-reading is right — this is a deliberately composed jingle, not a sweep. It is also the sound with the most character in the whole cabinet, and it is the one a player hears on every drone kill.",
+    "source": {
+      "file": "RBSOUN.MAC",
+      "line": 185,
+      "verbatim": "TH3:\t.BYTE 79,2,0,10"
+    },
+    "ours": {
+      "file": "src/shell/pokey.ts",
+      "line": 137,
+      "verbatim": "    { start: 0x60, hold: 5, change: -8, steps: 5 },"
+    },
+    "recommendation": "fix",
+    "size": "s"
+  },
+  {
+    "id": "SN-009",
+    "class": "DIVERGENCE",
+    "title": "THE HEADLINE: three of the five shipped POKEY sounds — TK, TP and BN — can never play, because no `score-tick` or `bonus-life` event is ever emitted",
+    "claim": "audio-dispatch.ts wires `score-tick` -> TK/TP and `bonus-life` -> BN, and both event types are declared in core/events.ts. But a sweep of the whole of src/ finds NO producer: the only `events.push(...)` calls in main.ts are `player-hit` (main.ts:407), `enemy-destroyed` (main.ts:429,442) and `wave-incoming` (main.ts:468). Score is added instantly (`score += points`, main.ts:426,438) — there is no count-up animation to tick — and there is no extra-life award at all. Net: 3 of the 5 sounds the ROM ships — TK = SOUND 0 '10 POINT SOUND' (RBARON.MAC:1577), TP = SOUND 4 '100 POINT SOUND' (RBARON.MAC:1580), BN = SOUND 2 'BONUS LIFE SOUND' (RBARON.MAC:1596) — are dead code in our build. Only WP and TH can ever sound.",
+    "reasoning": "The ROM's SCOREM routine is a per-4 ms score COUNT-UP: it adds 1 unit (10 pts) per STINIT = $18 = 24 NMIs = 96 ms, or 10 units (100 pts) per 48 NMIs = 192 ms when the pending total is >= 10 (RBARON.MAC:1556-1580), and every single one of those ticks fires SOUND 0 or SOUND 4. That rattling count-up is what the cabinet sounds like after a kill, and we do not have it — nor the bonus life at $2000/$4000/$6000 (BONUSL, RBARON.MAC:1602). The audio module is not itself at fault: pokey.ts and audio-dispatch.ts are ready, and the missing piece is the sim's score-countup + extra-life logic. But an audit of 'is every shipped sound present?' has to answer NO: 60% of the POKEY inventory is unreachable.",
+    "source": {
+      "file": "RBARON.MAC",
+      "line": 1577,
+      "verbatim": "\tSOUND 0\t\t\t;10 POINT SOUND"
+    },
+    "ours": {
+      "file": "src/shell/audio-dispatch.ts",
+      "line": 59,
+      "verbatim": "        audio.playTone(event.size === 'small' ? 'TK' : 'TP')"
+    },
+    "recommendation": "fix",
+    "size": "l"
+  },
+  {
+    "id": "SN-010",
+    "class": "CONFIRMED",
+    "title": "Cue mapping: every wiring that CAN fire is aimed at the right event — TH on a flat-300 kill, WP on a plane entering, BN on the extra life, TK/TP on the small/large score tick",
+    "claim": "Checked one by one against the callers. (1) TH = SOUND 3 fires ONLY from DRNSCR (RBARON.MAC:3042), which is reached (a) when a killed plane is scored the flat DRNPNT = 30. = 300 points (PLNSCR falls into DRNSCR when PLSTAT+5 >= $10) and (b) directly on a drone kill (RBARON.MAC:5657 `JSR DRNSCR`). A plane scored the depth-scaled PLVALU jumps PAST the SOUND 3, and the blimp (200 pts, RBARON.MAC:5705 `LDA I,20.` -> NWSCRE) never reaches it. Ours: `if (event.points === DRONE_SCORE) audio.playTone('TH')` with DRONE_SCORE = 300 — exactly 'the kill worth the flat 300', and our blimp's 200 correctly stays silent. (2) WP = SOUND 1 is the plane-entry announce (RBARON.MAC:2317, 3021); ours fires it on `wave-incoming`. (3) BN = SOUND 2 on the extra life (RBARON.MAC:1596). (4) SOUND 0/4 on the small/large score tick (RBARON.MAC:1577/1580) -> our `size: 'small' | 'large'` -> TK/TP, and the ROM's small tick IS SOUND 0 = TK. No sound is wired to the wrong cue.",
+    "reasoning": "Explicitly re-derived because a sibling game had two sounds crossed. Two traps here that we did NOT fall into: (a) RBSOUN's own labels are misleading — it calls TK 'POINT TICK' and TP '10 POINT TICK', while the callers show TK is the 10-point tick and TP the 100-point tick, so a reader trusting the sound-table comments would have swapped them; (b) TH is keyed on the SCORE VALUE, not the kill kind, and our `points === DRONE_SCORE` test reproduces the ROM's branch exactly rather than testing `kind === 'drone'` (which would have missed the far/dim lead plane that also scores a flat 300 and does ring the jingle). One residual nuance, not a divergence: the ROM announces per PLANE ENTRY (including the returning ace at RBARON.MAC:2317) whereas we announce once per WAVE spawn.",
+    "source": {
+      "file": "RBARON.MAC",
+      "line": 3042,
+      "verbatim": "DRNSCR:\tSOUND 3\t\t\t;300 POINT SOUND"
+    },
+    "ours": {
+      "file": "src/shell/audio-dispatch.ts",
+      "line": 50,
+      "verbatim": "        if (event.points === DRONE_SCORE) audio.playTone('TH')"
+    }
+  },
+  {
+    "id": "SN-011",
+    "class": "DIVERGENCE",
+    "title": "No mutual exclusion: TK, TP and BN all share POKEY channel 1, so in the ROM a new one KILLS the one playing — ours stacks unlimited overlapping oscillators",
+    "claim": "SNDON overwrites POINT/FRAMES/COUNT for every register the new sound owns (RBSOUN.MAC:211-217): a sound whose offset byte is non-zero for slot X seizes slot X outright, discarding whatever was mid-envelope there. TK, BN and TP all own slots 0-1 (AUDF1/AUDC1), so the cabinet can only ever have ONE of them sounding; a bonus life mid-score-count silences the tick instantly. TH (ch2) and WP (ch3) are independent and can overlap with a ch1 sound and each other — that is the full priority model, and it is per-CHANNEL, not per-sound. Ours: `playTone` calls `pokeyTone`, which unconditionally does `context.createOscillator()` (audio.ts:228) and never cancels a voice already sounding — every call layers another oscillator onto the master bus, with no channel bookkeeping at all. N rapid score ticks = N simultaneous 652 Hz square waves, at N x TONE_LEVEL.",
+    "reasoning": "Two consequences: a fidelity one (the ROM's ch1 sounds are strictly serial) and a mix one (our unbounded polyphony is exactly what MASTER_GAIN's 'headroom so overlapping cues never clip' is trying and failing to cover). Currently masked by SN-009 — the three ch1 sounds cannot fire at all — so this only bites once the score tick is wired up, at which point it will bite hard: the score count-up fires a tick every 96 ms.",
+    "source": {
+      "file": "RBSOUN.MAC",
+      "line": 213,
+      "verbatim": "\tSTA X,POINT\t\t;IF NOT SET UP POINTER "
+    },
+    "ours": {
+      "file": "src/shell/audio.ts",
+      "line": 228,
+      "verbatim": "  const osc = context.createOscillator()"
+    },
+    "recommendation": "fix",
+    "size": "m"
+  },
+  {
+    "id": "SN-012",
+    "class": "DIVERGENCE",
+    "title": "The score tick is suppressed while the plane-announce, the 300-point jingle, or an explosion is sounding — we have no such gate",
+    "claim": "SCOREM refuses to tick at all while any of three things is live: `LDA A,POINT+4` (AUDF3 pointer non-zero = WP announce still playing), `ORA A,POINT+2` (AUDF2 = TH jingle still playing), `ORA EXCNTR` (an explosion is counting down) -> `BNE 30$` = return without scoring or sounding (RBARON.MAC:1541-1544). The score count-up therefore WAITS OUT those cues, and separately BNTIME = $0C = 12 holds it off after a bonus life (RBARON.MAC:1598-1599). Given WP is 1440 ms and TH is 1024 ms (SN-007/SN-008), that is a long, deliberate hold. Ours: `playEventSounds` fires whatever the event list contains, in order, unconditionally.",
+    "reasoning": "This is the ROM's cross-channel priority rule, and it is stronger than the per-channel exclusion of SN-011: it gates the SCORE ADVANCE itself, not just the sound, so the score literally stops counting up while a jingle plays. Also currently masked by SN-009. Filed so that the score-tick wiring, when it lands, lands with the gate.",
+    "source": {
+      "file": "RBARON.MAC",
+      "line": 1541,
+      "verbatim": "\tLDA A,POINT+4\t\t;WAIT FOR OTHER SOUNDS (PLANE ENTRY)"
+    },
+    "ours": {
+      "file": "src/shell/audio-dispatch.ts",
+      "line": 59,
+      "verbatim": "        audio.playTone(event.size === 'small' ? 'TK' : 'TP')"
+    },
+    "recommendation": "fix",
+    "size": "m"
+  },
+  {
+    "id": "SN-013",
+    "class": "DIVERGENCE",
+    "title": "The engine hum's TIMBRE *is* in the source and we got it wrong: the ROM writes AUDC=$A1 = POKEY PURE TONE at volume 1/15; we render a sawtooth at gain 0.18",
+    "claim": "The hum is NOT on the discrete board — it is two direct POKEY register writes: `LDA I,0A1 / STA A,POKEY+5 / STA A,POKEY+7` sets AUDC3 = AUDC4 = $A1 (RBARON.MAC:1001-1003), and `LDX I,0F8 / STX A,POKEY+4 / DEX / STX A,POKEY+6` sets AUDF3 = $F8, AUDF4 = $F7 (RBARON.MAC:1039-1042). Decoding $A1 against the ACC table at RBSOUN.MAC:81 ('1 X 1 0 = PURE TONE / N / 2'): high nibble $A = 1010 = pure tone, low nibble 1 = volume 1 of 15 = 0.067. Divisors give 63920/(2 x 249) = 128.4 Hz and 63920/(2 x 248) = 128.9 Hz — a 0.5 Hz beat, which is the engine. Ours gets both FREQUENCIES exactly right (`audfToHz(0xf8), audfToHz(0xf7)`) and then renders them with `osc.type = 'sawtooth'` (audio.ts:355) at `gain: 0.18` — a harmonically rich waveform at 2.7x the ROM's volume, where the ROM specifies POKEY's pure tone (a square) at volume 1.",
+    "reasoning": "BOOK-ADJACENT: audio.ts:8-12 files the engine hum under '(B) The discrete analog board ... the analog TIMBRE ... is NOT in the source — so a port must SYNTHESISE', and that is simply false for the hum. The doc's §6B heading invites the error ('Discrete analog board — gun, explosion, spiral, engine hum') even though its own body correctly says 'direct POKEY writes of detuned oscillators $F8/$F7 on ch3/ch4 (AUDC=$A1)'. The gun and the crash genuinely are off-CPU and un-auditable; the hum and the whine are POKEY and fully specified, waveform and volume included. We inherited the heading, not the body. Note the correct fix is a square wave, and it is one word — but the volume is a real mix decision (0.067 is very quiet, and POKEY's 4 channels sum in hardware).",
+    "source": {
+      "file": "RBARON.MAC",
+      "line": 1001,
+      "verbatim": "\tLDA I,0A1"
+    },
+    "ours": {
+      "file": "src/shell/audio.ts",
+      "line": 355,
+      "verbatim": "            osc.type = 'sawtooth'"
+    },
+    "recommendation": "fix",
+    "size": "s"
+  },
+  {
+    "id": "SN-014",
+    "class": "DIVERGENCE",
+    "title": "The approach whine is a PITCH ramp at constant volume on the hum's own two channels — not a separate voice that gets LOUDER as the plane closes",
+    "claim": "The whine and the hum are the SAME POKEY voices (ch3+ch4) — the hum is just the whine's idle state. In SOUNDS, AUDC3/AUDC4 are pinned at $A1 (volume 1) for BOTH (RBARON.MAC:1001-1003); the only thing that moves is the divisor. ATGVAL+1 is seeded to $F8 when a plane is set closing (RBARON.MAC:2464; PLNZND recomputes ATGDEL from the plane's Z-delta at RBARON.MAC:2458-2462), then SOUNDS adds ATGDEL to the 16-bit ATGVAL once per 96 ms calculation frame and writes ATGVAL+1 straight to AUDF3, with AUDF4 = AUDF3 x (1 + 1/32) - 8 to hold the detune (RBARON.MAC:1010-1024). When ATGVAL+1 falls below $30 the whine cuts out entirely (`CMP I,30 / BCS 70$`, RBARON.MAC:1032-1033). So the whine sweeps 63920/(2 x 249) = 128.4 Hz up to 63920/(2 x 49) = 652.2 Hz — a 5.1x pitch RISE — at a FLAT volume of 1/15, and it is the same oscillator pair that was humming. Ours: a SECOND, independent `triangle` oscillator (audio.ts:385) layered on top of the still-running hum, with `frequency: 400 + 600 * nearness` (400 -> 1000 Hz) and `gain: 0.35 * nearness` (0 -> 0.35). Wrong waveform, wrong band, and it adds a 0 -> 0.35 volume ramp the ROM does not have.",
+    "reasoning": "audio.ts:112-118 states the ROM fact as 'the closer the plane, the more it SINGS' and calls the ordering ROM and the curve inferred. The ordering is right; the AXIS is wrong. The cabinet says nearer = HIGHER, at a fixed loudness — a rising whine out of the engine drone itself, which is why $F8 is both the hum's divisor and the whine's start value. Modelling it as a separate voice that swells in volume also means our hum and whine sound SIMULTANEOUSLY, where the ROM has one voice pair that can only be in one state.",
+    "source": {
+      "file": "RBARON.MAC",
+      "line": 1032,
+      "verbatim": "\tCMP I,30"
+    },
+    "ours": {
+      "file": "src/shell/audio.ts",
+      "line": 123,
+      "verbatim": "  return { frequency: 400 + 600 * nearness, gain: 0.35 * nearness }"
+    },
+    "recommendation": "fix",
+    "size": "m"
+  },
+  {
+    "id": "SN-015",
+    "class": "NO_COUNTERPART",
+    "title": "The SPIRAL sound (CRSHSN D1) is missing entirely — the shot-down plane's dive whine, and the cue that fills the ~576 ms before the wreck explodes",
+    "claim": "A plane hit by the player's shell sets `LDA I,2 / STA SPIRAL` (RBARON.MAC:5585-5586) — D1 of the $1808 CRSHSN latch, ORed into the byte the NMI composes every 4 ms (RBGRND.MAC:177,181). It is CLEARED (`LDX I,0 / STX SPIRAL`) only when the falling wreck's explosion counter reaches .EXPL1, at which point the crash sound starts (RBARON.MAC:2974-2978). It is also cleared at end-of-life (RBARON.MAC:1119,1170). So the kill sequence is: SPIRAL on at the hit -> the wreck spirals down for .EXPL1 = 6 calculation frames = 576 ms -> SPIRAL off, EXPVAL crash on. We have no spiral cue at all: `OneShot = 'explosion' | 'crash'`, and audio.ts:331-333 openly notes '§6B also lists a D1 spiral/dive one-shot that this story does not implement'.",
+    "reasoning": "This is a genuinely absent sound, not a mis-tuned one, and it is load-bearing for SN-016: without it, the gap between the hit and the explosion is silent in our build. Its TIMBRE is off-CPU (the discrete PCB) and cannot be audited from this source — but its TRIGGER, its GATE and its 576 ms duration are all fully specified here, which is everything a port needs to place it.",
+    "source": {
+      "file": "RBARON.MAC",
+      "line": 5586,
+      "verbatim": "\tSTA SPIRAL\t\t;SPIRAL SOUND"
+    },
+    "ours": null,
+    "recommendation": "fix",
+    "size": "m"
+  },
+  {
+    "id": "SN-016",
+    "class": "DIVERGENCE",
+    "title": "The explosion fires at the wrong MOMENT and for the wrong DURATION: the ROM starts it 576 ms after the hit and runs 7/8/10 calc-frames depending on what died; we fire it instantly and always run 12",
+    "claim": "The crash sound is EXPVAL's top nibble (CRSHSN D4-D7), loaded with $F0 and stepped -$10 once per 96 ms calculation frame by SOUNDS (`SEC / SBC I,10`, RBARON.MAC:991-994 — RADIX 16, so $10 = 16 = one nibble). EXCNTR sets how many frames it runs, and the ROM uses THREE different values: 8 for the player's own crash (RBARON.MAC:1177-1180: EXPVAL=$F0, EXCNTR=8 -> 768 ms, nibble $F down to $7), 10. for a plane wreck reaching .EXPL1 (RBARON.MAC:2975-2978), for a drone kill (RBARON.MAC:5653-5655) and for the blimp (RBARON.MAC:5701-5703) -> 960 ms, and 7 for a ground object (RBARON.MAC:3906-3908) -> 672 ms. Crucially, for a PLANE the explosion does not start at the hit at all — the hit starts the SPIRAL (SN-015), and EXCNTR/EXPVAL are only loaded when the falling wreck's counter hits .EXPL1, 6 frames = 576 ms later. Ours: `play('explosion')` fires the instant `enemy-destroyed` is emitted (audio-dispatch.ts:49), and `explosionLevel` ramps $F0 linearly to 0 over EXPL2_FRAMES = 12 frames = 1152 ms for BOTH the kill and the player's crash (audio.ts:105) — 1.2x too long for a kill, 1.5x too long for a crash, identical for two cues the ROM gives different lengths, and 576 ms too early for a plane.",
+    "reasoning": "Three errors compounded. (a) The frame COUNT: our code borrows EXPL2_FRAMES (the 12-frame debris window from core/explosion.ts) because the doc says the level 'ramps down over .EXPL1..2 frames' — but the ROM's sound has its OWN counter, EXCNTR, which is not .EXPL1 or .EXPL2 and is not even the same number for different victims. (b) The FLOOR: the ROM's nibble stops at $7/$6/$8 and is then hard-zeroed when EXCNTR expires — it does NOT ramp to 0, so the cabinet's explosion cuts off while still at ~40% level, where ours fades smoothly to nothing. (c) The ONSET, above. The 96 ms step unit is right in both.",
+    "source": {
+      "file": "RBARON.MAC",
+      "line": 1180,
+      "verbatim": "\tSTA EXCNTR\t\t;START EXPLOSION SOUND"
+    },
+    "ours": {
+      "file": "src/shell/audio.ts",
+      "line": 105,
+      "verbatim": "  return Math.round(0xf0 * (1 - f / EXPL2_FRAMES))"
+    },
+    "recommendation": "fix",
+    "size": "m"
+  },
+  {
+    "id": "SN-017",
+    "class": "DIVERGENCE",
+    "title": "The gun sound fires on EVERY shell — the enemy's as well as the player's — so enemy fire, which is audible in the cabinet, is silent in ours",
+    "claim": "The CRSHSN D2 'SHOT SOUND' bit is gated by S.VAL, and S.VAL is incremented in SETSHL — 'INITIALIZE SHELL' — which is the common shell constructor for BOTH sides (TEMP4 carries the 'PLAYER/ENEMY FLAG (D7)' one instruction later): `BIT GAMODE / BPL 5$ ;SOUNDS ONLY IN PLAY / INC S.VAL` (RBARON.MAC:2182-2184). The enemy's spray path bumps it too: `INC S.VAL ;STROBE SOUND FOR ENEMY SPRAY` (RBARON.MAC:1479). S.VAL is decremented once per 96 ms calculation frame (RBARON.MAC:877), so each shell buys ~96 ms of gun noise and rapid fire accumulates a tail. Ours drives the rattle purely from the player's trigger: `audio.setGun(playing && world.gunFiring)` with `gunFiring: fireHeld && !guns.overheated` (main.ts:487) — an enemy shooting at you makes no sound whatsoever, and our gun is a continuous gate for as long as the trigger is held rather than a per-shell counter.",
+    "reasoning": "This is the mis-wired cue the audit was told to hunt for, and it is a cue OMISSION rather than a swap: the ROM gives the player an audible warning that he is being shot at (the same rattle, since both sides' shells drive the same D2 bit), and we removed it. Note the ROM makes no attempt to distinguish the two — one latch bit, one counter, both sides — so the fix is to bump the same gun timer when an enemy shell is created.",
+    "source": {
+      "file": "RBARON.MAC",
+      "line": 2184,
+      "verbatim": "\tINC S.VAL"
+    },
+    "ours": {
+      "file": "src/shell/audio-dispatch.ts",
+      "line": 85,
+      "verbatim": "  audio.setGun(playing && world.gunFiring)"
+    },
+    "recommendation": "fix",
+    "size": "m"
+  },
+  {
+    "id": "SN-018",
+    "class": "CONFIRMED",
+    "title": "The gun's rat-a-tat strobe is right: bit 3 of the 4 ms INTCNT gates D2, giving 32 ms on / 32 ms off = 15.625 Hz",
+    "claim": "RBGRND.MAC:168-175: X is preloaded with SH.BIT ($4 = D2) if S.VAL is non-zero, then `LDA INTCNT / AND I,8 / BNE 4$ / LDX I,0` — the bit survives only when INTCNT bit 3 is SET, and is zeroed when it is clear. INTCNT increments every NMI = 4 ms, so bit 3 is set for 8 counts (32 ms) and clear for 8 (32 ms): a full cycle is 16 NMIs = 64 ms = 15.625 Hz. Ours: `gunStrobe(intcnt) => (intcnt & 8) !== 0` — the same polarity, on when the bit is set — and GUN_STROBE_HZ = MASTER_NMI_HZ / 16 = 250/16 = 15.625 Hz, driving a square LFO with depth == level so the trough lands at true zero (a gate, not a wobble).",
+    "reasoning": "Worth recording because the polarity is easy to invert (the branch is `BNE` to the KEEP-the-bit path, so the naive reading of 'AND I,8 then branch' gets it backwards) and because it is the one place our synthesis derives a continuous-time parameter from a per-NMI bit correctly. The only unmodelled wrinkle is that INTCNT wraps at 250 (RBGRND.MAC:189-190), which is not a multiple of 16, so the real strobe stutters once per second — inaudible, not worth modelling.",
+    "source": {
+      "file": "RBGRND.MAC",
+      "line": 172,
+      "verbatim": "\tAND I,8"
+    },
+    "ours": {
+      "file": "src/shell/audio.ts",
+      "line": 84,
+      "verbatim": "  return (intcnt & 8) !== 0"
+    }
+  },
+  {
+    "id": "SN-019",
+    "class": "NO_COUNTERPART",
+    "title": "SNDON is a hard no-op in attract mode — the cabinet's attract screen is SILENT on POKEY",
+    "claim": "SNDON's first two instructions are `BIT Z,GAMODE / BPL 10$` where 10$ is `RTS` (RBSOUN.MAC:205-206,222): if GAMODE's D7 (game-in-progress) is clear, the sound is discarded before the pointer table is even indexed. The same gate guards the discrete sounds (`BIT GAMODE / BPL 6$` in the NMI, RBGRND.MAC:166-167), the shell sound (`BPL 5$ ;SOUNDS ONLY IN PLAY`, RBARON.MAC:2183) and the engine hum (`BIT GAMODE / BPL 30$ ;NOT PLAY`, RBARON.MAC:995-996); GMINIT even shuts POKEY's random-number generator off in attract (RBARON.MAC:1233). We have no attract mode, so there is nothing to gate.",
+    "reasoning": "Recorded as a real absence rather than a defect: our build boots straight into play, and `updateContinuousSounds` already silences everything when `playing` is false. Filed so that whoever eventually adds an attract screen knows the ROM's answer is 'no sound at all, not even the hum'.",
+    "source": {
+      "file": "RBSOUN.MAC",
+      "line": 205,
+      "verbatim": "SNDON:\tBIT Z,GAMODE\t\t;ATTRACT MODE?"
+    },
+    "ours": null,
+    "recommendation": "wont_fix"
+  },
+  {
+    "id": "SN-020",
+    "class": "CONFIRMED",
+    "title": "The two clocks are not confused: MODSND (the envelope stepper) runs on the 250 Hz NMI, SOUNDS (hum/whine/explosion level) runs on the 10.4 Hz calculation frame — and our code uses each in the right place",
+    "claim": "MODSND is called from NMEXIT inside the NMI handler (`JSR MODSND ;UPDATE SOUNDS`, RBGRND.MAC:237), which fires every 4 ms — matching RBSOUN.MAC:17 ('THE SECOND MUST BE CALLED ONCE EVERY 4 MSEC'). So an envelope FRCNT unit = 4 ms. SOUNDS, by contrast, is called from the main loop (`JSR SOUNDS`, RBARON.MAC:829), which blocks on INTWAIT -> CALFLG, bumped once every CALCNT = $18 = 24 NMIs = 96 ms (RBGRND.MAC:221-229, RBARON.MAC:621). So EXPVAL's -$10 step and ATGVAL's += ATGDEL step are 96 ms units — 24x slower than an envelope frame. Ours honours both: pokeyTone steps on `1 / MASTER_NMI_HZ` = 4 ms (audio.ts:224) while explosionBurst steps on `SIM_TIMESTEP_S` = 96 ms (audio.ts:187,198).",
+    "reasoning": "Getting this backwards would have made every envelope 24x too slow (TK: 2.7 s instead of 112 ms) or the explosion 24x too fast (32 ms instead of 768 ms). Both units are right in our code, and every duration computed elsewhere in this audit rests on this split.",
+    "source": {
+      "file": "RBGRND.MAC",
+      "line": 237,
+      "verbatim": "\tJSR MODSND\t\t;UPDATE SOUNDS"
+    },
+    "ours": {
+      "file": "src/shell/audio.ts",
+      "line": 225,
+      "verbatim": "  const frames = Math.max((audc.steps + 1) * audc.hold, 1)"
+    }
+  }
+]

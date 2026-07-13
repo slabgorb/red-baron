@@ -1,0 +1,131 @@
+[
+ {
+  "id": "MI-003",
+  "class": "DIVERGENCE",
+  "title": "MCOUNT is indexed by MODECT>>1 and a ground MODECT reloads NEWCT=1 \u2014 the ROM runs RUNS of plane waves, not a 1:1 alternation",
+  "claim": "ROM (RBARON.MAC:2260-2269): `INC MODECT / LDA MODECT / AND I,0F / STA MODECT / LSR / TAX / LDA AX,MCOUNT / BCC 21$ / LDA I,1 / 21$: STA NEWCT`. LSR puts MODECT bit 0 in carry and MODECT>>1 in A; TAX makes MODECT>>1 the index; `LDA AX,MCOUNT` = MCOUNT[MODECT>>1]. BCC 21$ keeps that value only when carry is CLEAR (MODECT EVEN); when MODECT is ODD the `LDA I,1` overrides it \u2192 NEWCT = 1. So: NEWCT = (MODECT odd) ? 1 : MCOUNT[MODECT>>1]. Steady-state cycle over MODECT 0..15: 4 plane, 1 ground, 2 plane, 1 ground, 3 plane, 1 ground, 2 plane, 1 ground, 1 plane, 1 ground, 3 plane, 1 ground, 4 plane, 1 ground, 2 plane, 1 ground = 4+2+3+2+1+3+4+2 = 21 PLANE waves per 8 GROUND waves (72% plane / 28% ground). Ours: `interWaveDelay(modect) = MCOUNT[modect % 8]` \u2014 indexed by MODECT itself, not MODECT>>1 \u2014 and stepWaveClock advances MODECT on EVERY wave decision, so isPlaneWave flips every wave: 1 plane : 1 ground = 50/50, a ground wave twice as often as the ROM.",
+  "reasoning": "Two independent errors compound. (1) The index: `LSR / TAX` is a divide-by-two before the table lookup \u2014 MCOUNT has 8 entries for 16 MODECT values, one entry per PLANE RUN. Indexing MCOUNT by MODECT directly reads the wrong entry and (worse) reads an entry for the ground slots too, which the ROM never does. (2) The odd-MODECT override: the `BCC 21$ / LDA I,1` pair forces NEWCT=1 for every ground slot, so a ground wave is always exactly ONE wave long. Our model has no such override. The net effect on pacing is the headline: the ROM gives you three or four dogfights, then one strafing run; we give you a dogfight, a strafing run, a dogfight, a strafing run. That alone would make the mission 'seem way off'.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 2266,
+   "verbatim": "\tLDA AX,MCOUNT"
+  },
+  "ours": {
+   "file": "src/core/waves.ts",
+   "line": 114,
+   "verbatim": "  return MCOUNT[((Math.floor(modect) % len) + len) % len]"
+  },
+  "recommendation": "fix",
+  "size": "m"
+ },
+ {
+  "id": "MI-004",
+  "class": "DIVERGENCE",
+  "title": "NEWCT counts WAVES, not calc-frames \u2014 our inter-wave gap is 96-384 ms where the ROM's is 0.48-3.07 s",
+  "claim": "ROM: `DEC NEWCT` (RBARON.MAC:2258) sits inside NWPLNE PAST the frame gate. NWPLNE first tests plane #0's status (`LDA PLSTAT+6 / AND I,0C0 / BNE 17$`, RBARON.MAC:2241-2243) and then `DEC PLSTAT+7 / BNE 17$` (RBARON.MAC:2244) \u2014 PLSTAT+7 is the per-calc-frame countdown; NEWCT is only reached once it expires. So NEWCT ticks ONCE PER PLANE-GENERATION EVENT, i.e. once per wave. The actual FRAME gap between waves is PLSTAT+7, loaded from: WO.CNT = 5 (RBARON.MAC:472; 5 \u00d7 96 ms = 0.48 s, drones still exploding), WO.RTN = $10 = 16 (RBARON.MAC:473 / :2737; 16 \u00d7 96 ms = 1.54 s, plane escaped), $20 = 32 frames (RBARON.MAC:2360-2361, ';GIVE PLANE ^20 FRAMES TO CROSS CENTER'; 32 \u00d7 96 ms = 3.07 s). Ours: `stepWaveClock` decrements `countdown` once per calc frame and reloads it from MCOUNT, so the gap between waves is 1-4 calc frames = 96-384 ms \u2014 5\u00d7 to 32\u00d7 too short \u2014 and MCOUNT (a WAVE count) is being spent as a FRAME count.",
+  "reasoning": "Timebase arithmetic, per the 96 ms calc frame: our gaps are MCOUNT[i] \u2208 {1,2,3,4} frames \u2192 0.096 s, 0.192 s, 0.288 s, 0.384 s. The ROM's are 5, 16 or 32 frames \u2192 0.48 s, 1.54 s, 3.07 s. This is not a unit conversion the port got right in different units \u2014 it is the WRONG QUANTITY: MCOUNT never meters frames in the ROM, and the frame meter (PLSTAT+7 / WO.CNT / WO.RTN) has no counterpart in waves.ts at all. main.ts gates the clock on `enemies.length === 0 && wrecks.length === 0`, which correctly reproduces NWPLNE's 'only when the sky is clear' precondition \u2014 so the fix is to make the countdown a WO.CNT/WO.RTN frame delay and move MCOUNT to metering the RUN LENGTH (MI-003), not to gate it differently.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 2244,
+   "verbatim": "\tDEC PLSTAT+7\t\t;DEC PLANE COUNT"
+  },
+  "ours": {
+   "file": "src/core/waves.ts",
+   "line": 135,
+   "verbatim": "    return { clock: { modect: clock.modect, countdown: clock.countdown - 1 }, spawnPlaneWave: false }"
+  },
+  "recommendation": "fix",
+  "size": "m"
+ },
+ {
+  "id": "MI-005",
+  "class": "DIVERGENCE",
+  "title": "MODECT wraps modulo 16 (AND I,0F); ours grows without bound",
+  "claim": "ROM: `INC MODECT / LDA MODECT / AND I,0F / STA MODECT` (RBARON.MAC:2260-2263) \u2014 MODECT is masked to $0F after every increment, so it cycles 0..15 and the 16-slot mission cycle repeats forever. Ours: `const nextModect = clock.modect + 1` with no mask \u2014 modect grows without limit. Parity (MI-001) survives, but the MCOUNT index does not: once the MODECT>>1 indexing of MI-003 is restored, an unbounded modect walks off the 8-entry table.",
+  "reasoning": "Today this is latent \u2014 `interWaveDelay` applies its own `% 8` so it never indexes out of range, and `isPlaneWave` uses `% 2`. It becomes load-bearing the moment MI-003 is fixed, and it is also a float-safety hazard: after ~9e15 waves modect stops being an exact integer. Mask it at the source and both problems disappear.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 2262,
+   "verbatim": "\tAND I,0F"
+  },
+  "ours": {
+   "file": "src/core/waves.ts",
+   "line": 138,
+   "verbatim": "  const nextModect = clock.modect + 1"
+  },
+  "recommendation": "fix",
+  "size": "s"
+ },
+ {
+  "id": "MI-007",
+  "class": "DIVERGENCE",
+  "title": "Ground mode ends on a CONDITION (GRNDCT spent + no live ground objects), not on a countdown \u2014 ours lasts ~0.4 s",
+  "claim": "ROM: ground mode is cleared inside PFOBMN, not by the wave clock. PFOBMN ORs the three ground-object status bytes of all four PF objects (PFOBJ+8/+9/+A, RBARON.MAC:3273-3275), then `LDX I,N.PFOB / AND I,0C0 ;CHECK FOR VISIBLE GROUND OBJECTS / BNE 10$` (RBARON.MAC:3283-3285) \u2014 if any object still has D7/D6 set it stays in ground mode. Only when GRNDCT has reached 0 (`LDA GRNDCT / BNE 10$`, RBARON.MAC:3270-3271) AND no ground objects are alive AND GRMODE D7 is set AND GREND is clear does it `STA GRMODE` with A=0 (RBARON.MAC:3290) and `LDA I,1 / STA PLSTAT+7 ;START PLANES NEXT FRAME` (RBARON.MAC:3292-3293). Ours: grmode is set by `grmodeForWave(decisionModect)` and cleared by the NEXT wave decision, so a ground wave lasts exactly `interWaveDelay(nextModect) + 1` calc frames. Trace from modect 1: countdown reloads to MCOUNT[2 % 8] = 3, so 3 ticks + the decision frame = 4 calc frames \u00d7 96 ms = 0.38 s of 'ground mode'.",
+  "reasoning": "A 0.38 s ground wave with an empty sky and nothing to strafe is not a ground wave \u2014 it is a stutter. The ROM's ground wave is open-ended: it runs until BOTH mountain ground-target groups (GRNDCT = 2, MI-008) have been deployed and every target has been destroyed or scrolled past. Nothing in waves.ts can express a condition-terminated mode; `grmodeForWave` is a pure function of modect, so the exit is structurally unavailable. This is the second half of the pacing complaint: the ground half of the alternation happens twice as often as it should (MI-003) and is over before the player can register it.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 3290,
+   "verbatim": "\tSTA GRMODE"
+  },
+  "ours": {
+   "file": "src/core/waves.ts",
+   "line": 181,
+   "verbatim": "  return isPlaneWave(modect) ? GRMODE_PLANE : GRMODE_INITGR"
+  },
+  "recommendation": "fix",
+  "size": "l"
+ },
+ {
+  "id": "MI-008",
+  "class": "NO_COUNTERPART",
+  "title": "GRNDCT = 2 and GTIMER \u2014 a ground wave deploys exactly two mountain target-groups",
+  "claim": "ROM: INITGR sets `LDA I,2 / STA GRNDCT` (RBARON.MAC:1403-1404) and `LDA I,1 / STA GTIMER ;MOUNTAIN OBJECT TIME-OUT COUNTER` (RBARON.MAC:1405-1406). PFOBMN then, each time a mountain falls off the horizon and GTIMER expires (`DEC GTIMER / BMI 55$`, RBARON.MAC:3426-3427), does `LDA GRNDCT / BEQ 60$ / DEC GRNDCT` (RBARON.MAC:3430-3432) and arms that mountain with a target group: `JSR RANDOM / AND I,3` \u2192 0..3, then \u00d73 \u2192 `STA AX,PFOBJ+7 ;RANDOM PF OBJECT GROUPS` (RBARON.MAC:3450-3455), setting the three ground-target status bytes PFOBJ+8/+9/+A to $80 (RBARON.MAC:3456-3459). So a ground wave arms exactly GRNDCT = 2 mountains, each with one of 4 authored target groups (right/centre/left targets per the object glossary, RBARON.MAC:368-370). Ours: no GRNDCT, no GTIMER, no ground targets \u2014 landscape.ts renders silhouettes only.",
+  "reasoning": "This is the CONTENT of the ground wave and the thing that terminates it (MI-007). Without it there is nothing to strafe, nothing to shoot back, and no exit condition. landscape.ts's Mountain interface has no target slots at all, so this is new state, not a constant to retune. Sizing honestly: this is the ground-wave feature, not a patch.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 3455,
+   "verbatim": "\tSTA AX,PFOBJ+7\t\t;RANDOM PF OBJECT GROUPS"
+  },
+  "ours": null,
+  "recommendation": "fix",
+  "size": "l"
+ },
+ {
+  "id": "MI-009",
+  "class": "DIVERGENCE",
+  "title": "GMLEVL indexes PLNLVL by OBJKLD>>1 \u2014 we index by OBJKLD, so difficulty ramps twice as fast",
+  "claim": "ROM PLNZD0 (RBARON.MAC:2399-2408): `LDX I,10 / LDA OBJKLD+1 / BNE 2$ / LDA OBJKLD / LSR / CMP I,10 / BCS 2$ / TAX / 2$: LDA AX,PLNLVL / STA GMLEVL`. The `LSR` HALVES the kill count before the table lookup, and the clamp is `CMP I,10` = $10 = 16 (the last index of the 17-entry PLNLVL table). So GMLEVL = PLNLVL[min(OBJKLD >> 1, 16)]. With PLNLVL = 0,0,0,0,1,2,2,2,3,3,3,4,4,4,4,4,5 (RBARON.MAC:2478) the real thresholds in KILLS are: level 1 at 8 kills, level 2 at 10, level 3 at 16, level 4 at 22, level 5 at 32. Ours: `gmlevlForKills` indexes PLNLVL by the kill count directly (`Math.min(Math.floor(objkld), PLNLVL.length - 1)`), giving level 1 at 4 kills, 2 at 5, 3 at 8, 4 at 11, 5 at 16 \u2014 every rung arrives at exactly HALF the kills the ROM demands.",
+  "reasoning": "The PLNLVL table itself is transcribed byte-perfectly (all 17 bytes). The missing operation is the single `LSR` at RBARON.MAC:2403. Its effect is not subtle: the enemy reaches its top difficulty (GMLEVL 5, which is the rung at which planes are aimed AT the player \u2014 `CMP I,5 / BCC 10$ / LDA I,0A8` at RBARON.MAC:3025-3027) after 16 kills instead of 32. Combined with MI-003's doubled ground-wave frequency, the game gets hard about twice as fast as the arcade. Fix is one shift.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 2403,
+   "verbatim": "\tLSR"
+  },
+  "ours": {
+   "file": "src/core/scoring.ts",
+   "line": 36,
+   "verbatim": "export const PLNLVL: readonly number[] = Object.freeze([0, 0, 0, 0, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 4, 4, 5])"
+  },
+  "recommendation": "fix",
+  "size": "s"
+ },
+ {
+  "id": "MI-010",
+  "class": "BOOK_WAS_WRONG",
+  "title": "PLANE1/PLANE2 drone offsets are HEX $100 = 256, not decimal 100 \u2014 our formation is 2.56\u00d7 too tight",
+  "claim": "ROM: `PLANE1: .WORD -100,100` (RBARON.MAC:2480) and `PLANE2: .WORD -100,-100` (RBARON.MAC:2481). RBARON.MAC is `.RADIX 16` and lines 2480-2481 are NOT inside either decimal island (the only one in this module is :6217-6280). There is no trailing period, so these are HEX: -$100, +$100 = -256, +256 and -$100, -$100 = -256, -256. The four bytes are copied into P.1ST+0..3 / P.2ST+0..3 (`LDA AX,PLANE1 / STA ZX,P.1ST`, RBARON.MAC:2372-2373) = the X LSB/MSB and Y LSB/MSB of the drone record (object glossary, RBARON.MAC:268-271). Ours: `Object.freeze([-100, 100])` / `Object.freeze([-100, -100])` \u2014 DECIMAL 100. Every drone flies 2.56\u00d7 closer to its lead than the ROM's.",
+  "reasoning": "This is a radix error laundered through a secondary source. docs/red-baron-1980-source-findings.md:172 states 'Drones fly formation offsets `PLANE1 -100,+100` / `PLANE2 -100,-100`' with no radix note, and waves.ts:13 copies it verbatim as 'the byte-pinned formation offsets PLANE1 -100,+100 / PLANE2 -100,-100' \u2014 then writes them as JavaScript decimal literals. The doc is the authority our code cites and the doc is wrong; the correct constants are -256/+256 and -256/-256. (For scale: the lead's own spawn depth P.INDP is $1080 = 4224, RBARON.MAC:464 \u2014 the ROM's whole coordinate space is hex, and 100 decimal is not a value that appears anywhere near it.)",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 2480,
+   "verbatim": "PLANE1:\t.WORD -100,100"
+  },
+  "ours": {
+   "file": "src/core/waves.ts",
+   "line": 46,
+   "verbatim": "  Object.freeze([-100, 100]) as readonly [number, number],"
+  },
+  "recommendation": "fix",
+  "size": "s"
+ }
+]

@@ -1,0 +1,50 @@
+[
+ {
+  "id": "SN-003",
+  "verdict": "CONFIRMED",
+  "reasoning": "CONFIRMED by an independent instruction-by-instruction trace of MODSND (RBSOUN.MAC:228-260) by the controller, on a second pass distinct from the original auditor. The table entry is 4 bytes (STVAL=0, FRCNT=1, CHANGE=2, NUMBER=3). On entering a block the code emits CURRENT=STVAL (1 value) and sets COUNT=NUMBER (:242-243). Each later expiry does `DEC X,COUNT / BNE 20$` (:233-234): while non-zero it steps to 20$ and emits STVAL + k*CHANGE \u2014 that is NUMBER-1 further values \u2014 and when DEC COUNT reaches zero it loads the NEXT block instead. Total emitted per block = 1 + (NUMBER-1) = exactly NUMBER distinct values, each held FRCNT frames. So NUMBER IS the count of distinct values, and RBSOUN.MAC:89 ('...SEQUENCE-1') and :152 ('# OF DIFFERENT VALUES-1') are both WRONG about the code they document. The finding's extraordinary claim is correct. pokey.ts's `steps = NUMBER + 1` rule is a two-step error.",
+  "refuted_by": "controller (independent second-pass trace of MODSND)",
+  "corrections": "Do NOT 'correct' pokey.ts back toward the assembler's prose comments \u2014 they are the bug. Record this trace in the code beside the constant."
+ },
+ {
+  "id": "SN-005",
+  "verdict": "CONFIRMED",
+  "reasoning": "Sound clock verified by controller: MODSND is called from the NMI handler (RBGRND.MAC:237, inside NMEXIT) = 250 Hz / 4 ms per tick, NOT the 96 ms calc frame. The auditor used the correct clock.",
+  "refuted_by": "controller (no agent slot available \u2014 see audit limitations)",
+  "corrections": "Ratios rest on SN-003's NUMBER rule; if SN-003 is ever overturned these numbers move. Fix them together."
+ },
+ {
+  "id": "SN-006",
+  "verdict": "CONFIRMED",
+  "reasoning": "Same clock verification as SN-005.",
+  "refuted_by": "controller (no agent slot available \u2014 see audit limitations)",
+  "corrections": "As SN-005 \u2014 coupled to SN-003."
+ },
+ {
+  "id": "SN-007",
+  "verdict": "CONFIRMED",
+  "reasoning": "Same clock verification as SN-005.",
+  "refuted_by": "controller (no agent slot available \u2014 see audit limitations)",
+  "corrections": "As SN-005 \u2014 coupled to SN-003."
+ },
+ {
+  "id": "SN-008",
+  "verdict": "CONFIRMED",
+  "reasoning": "Same clock verification as SN-005.",
+  "refuted_by": "controller (no agent slot available \u2014 see audit limitations)",
+  "corrections": "As SN-005 \u2014 coupled to SN-003."
+ },
+ {
+  "id": "SN-009",
+  "verdict": "CONFIRMED",
+  "reasoning": "Controller verified by hand: `score-tick` and `bonus-life` are DECLARED in src/core/events.ts (:45, :51) and CONSUMED in src/shell/audio-dispatch.ts (:58, :61) but EMITTED BY NOTHING anywhere in src/. Three of the five shipped POKEY sounds are therefore unreachable. Holds.",
+  "refuted_by": "controller (no agent slot available \u2014 see audit limitations)",
+  "corrections": "The audio layer is NOT at fault \u2014 pokey.ts and audio-dispatch.ts are ready. The missing piece is the sim's score COUNT-UP and the extra-life award. Cluster with CB-004 (BONUSL)."
+ },
+ {
+  "id": "SN-011",
+  "verdict": "CONFIRMED",
+  "reasoning": "Channel-sharing / mutual-exclusion claim rests on the cited RBSOUN lines; re-read and consistent.",
+  "refuted_by": "controller (no agent slot available \u2014 see audit limitations)"
+ }
+]

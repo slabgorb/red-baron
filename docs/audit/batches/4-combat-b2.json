@@ -1,0 +1,131 @@
+[
+ {
+  "id": "CB-012",
+  "class": "DIVERGENCE",
+  "title": "Our guns cannot reach the enemy spawn depth \u2014 the ROM's shells outrange it by 1.5x",
+  "claim": "In the ROM the shell's Z and the plane's depth are the SAME 16-bit world coordinate (COLSTP subtracts SHELLS+4/+5 directly from the object depth). Shell Z runs from S.DPTH = 0x100 = 256 out to S.MAXZ x 0x100 = 0x1900 = 6400. The plane spawns at P.INDP = 0x1080 = 4224 and closes to P.MNDP = 0x140 = 320. So the shell's range [256, 6400] COMPLETELY COVERS the plane's depth range [320, 4224], with 6400/4224 = 1.5x to spare \u2014 a plane can be shot the instant it appears, which is precisely how the 300-point dim/far bonus (CB-003) is earned. Ours maps world depth to shell-z through SHELL_RANGE_DEPTH = 800, so a shell at S_MAXZ = 19 reaches world depth 800 \u2014 but our enemies spawn at P_INDP = 1080 (enemy.ts:41). Depths 800..1080 are UNREACHABLE: our maximum gun reach is 800/1080 = 74% of the spawn depth. The far/dim long shot the arcade rewards most is impossible in our game.",
+  "reasoning": "SHELL_RANGE_DEPTH = 800 is flagged 'Inferred' in guns.ts and was chosen without reference to the spawn depth. The ROM never needs such a mapping because shell Z and object depth share one coordinate system \u2014 the projection in guns.ts (depthToShellZ) is our invention, and it was calibrated to a number smaller than the depth it must span. Interacts with CB-011: even after S_MAXZ is corrected to 25 the mapping is still short unless SHELL_RANGE_DEPTH is raised past P_INDP. The structurally faithful fix is to drop depthToShellZ and put shell Z in the same units as enemy depth (ratio S.MAXZ x 0x100 : P.INDP = 6400 : 4224 = 1.515, so SHELL_RANGE_DEPTH should be at least 1.515 x P_INDP). I am NOT claiming P_INDP = 1080 is itself correct \u2014 enemy.ts is another pair's file, and note that P.INDP in the source is hex 0x1080 = 4224, so that constant deserves their scrutiny \u2014 but the RATIO argument above holds whatever absolute units they land on.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 464,
+   "verbatim": "P.INDP\t=1080\t\t\t;INITIAL PLANE DEPTH"
+  },
+  "ours": {
+   "file": "src/core/guns.ts",
+   "line": 65,
+   "verbatim": "const SHELL_RANGE_DEPTH = 800"
+  },
+  "recommendation": "fix",
+  "size": "m"
+ },
+ {
+  "id": "CB-013",
+  "class": "DIVERGENCE",
+  "title": "The hit box is the perspective-projected silhouette of the plane, not a fixed \u00b132 window",
+  "claim": "CDSSET builds the target's collision window per frame from geometry: it takes the plane's 4-point collision frame (.COLLD = 0C = 12 bytes, RBARON.MAC:435), rotates it by the plane's live attitude through PLTEST (Z then Y-or-X axis, RBARON.MAC:4984-5022), runs D.LOOP to PROJECT it, then calls MINMAX (RBARON.MAC:5537) which reduces the projected points to a screen-space min/max box in X and Y. COLSTP then tests the shell's screen X/Y against THAT box (RBARON.MAC:5806-5814). The box therefore SHRINKS WITH DISTANCE \u2014 a plane at spawn depth 0x1080 is a near-point target and one in your face is a wide one. Ours uses WINDOW_X = WINDOW_Y = 32 in screen-window units, constant at every depth (guns.ts:222): a plane at maximum range is exactly as easy to hit as one filling the windshield. Long-range shooting is systematically far too easy in our game.",
+  "reasoning": "This is a structural divergence that CANNOT be closed by tuning WINDOW_X/WINDOW_Y \u2014 no single constant reproduces a box whose size varies as ~1/depth. It needs the window scaled by the same projection factor the renderer already applies to the enemy's silhouette. Our rotation-into-the-banked-frame is the right IDEA (the ROM does rotate the collision frame by the plane's attitude before projecting), so the shape of collides() is salvageable; what is missing is the depth term. Sized m because our renderer already computes the enemy's projected extent \u2014 the fix is to feed that extent into the window rather than to build a new projector. Note the Z half of the test IS correct \u2014 see CB-014.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 5537,
+   "verbatim": "\tJSR MINMAX\t\t;SET MIN,MAX OF X,Y"
+  },
+  "ours": {
+   "file": "src/core/guns.ts",
+   "line": 222,
+   "verbatim": "  return Math.abs(rx) <= WINDOW_X && Math.abs(ry) <= WINDOW_Y && Math.abs(dz) <= WINDOW_Z"
+  },
+  "recommendation": "fix",
+  "size": "m"
+ },
+ {
+  "id": "CB-018",
+  "class": "DIVERGENCE",
+  "title": "EX.ACY is -0x20 = -32 decimal, not -20 \u2014 our wreck falls at 62.5% of the ROM's gravity",
+  "claim": "`EX.ACY =-20` sits in the .RADIX 16 region, so it is -0x20 = -32 decimal. UPPLEX confirms the 16-bit interpretation directly: it adds the low byte (`ADC I,EX.ACY`) and then the high byte (`ADC I,EX.ACY&0FF00/100`), i.e. it adds the 16-bit constant -0x0020 = -32 to the wreck's Y velocity every calculation frame. Our EX_ACY = -20 is the typed literal read as decimal. Arithmetic: over the 6 falling frames the ROM's wreck accumulates a drop of 32 x (1+2+3+4+5+6) = 32 x 21 = 672 Y units; ours accumulates 20 x 21 = 420 units \u2014 37.5% short. Our wreck hangs in the air.",
+  "reasoning": "Same radix slip as CB-011. The absence of a trailing period is decisive: the neighbouring decimal equates in this block all carry one (L.OBJ =28., DRNPNT =30.), and the assembler's default here is hex (`.RADIX 16`, RBARON.MAC:74). The fix is one constant. Note that the ROM applies this gravity on EVERY live frame \u2014 falling AND exploding \u2014 which our stepWreck already does correctly (the ADC at the head of UPPLEX is before any branch), so only the magnitude is wrong.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 481,
+   "verbatim": "EX.ACY\t=-20\t\t\t;PLANE FALL ACCELERATE Y (GRAVITY)"
+  },
+  "ours": {
+   "file": "src/core/explosion.ts",
+   "line": 33,
+   "verbatim": "export const EX_ACY = -20"
+  },
+  "recommendation": "fix",
+  "size": "s"
+ },
+ {
+  "id": "CB-019",
+  "class": "DIVERGENCE",
+  "title": "Wreck Z spin is 0x180 = 67.5\u00b0 per frame, not 45\u00b0",
+  "claim": "UPPLX0 adds 0x80 to the low byte of the wreck's 16-bit Z angle (PLSTAT+12) and 1 to the high byte with carry (`ADC I,80` then `ADC I,1`, RBARON.MAC:2997-3003), i.e. it adds 0x0180 = 384 angle units per calculation frame. The angle scale is fixed by `P.MAXR =1FF ;90 DEGREE MAX ROTATION` (RBARON.MAC:471): 0x200 = 512 units = 90\u00b0, so a full turn = 2048 units. Therefore the spin is 384/2048 = 0.1875 turn = 67.5\u00b0 per frame = 3\u03c0/8 radians. Our SPIN_RATE = \u03c0/4 = 45\u00b0 per frame \u2014 the wreck tumbles at 45/67.5 = 2/3 the ROM's rate, taking 8 frames per revolution where the arcade takes 5.33.",
+  "reasoning": "guns/explosion flagged SPIN_RATE as inferred ('The ROM spins the wreck about Z but does not pin the rate') \u2014 it does pin it, in the two-instruction 16-bit add, and the scale is pinned by P.MAXR. This is the 'operand you have not decoded' case again: `ADC I,80` alone is meaningless until you notice the paired `ADC I,1` that makes it a 16-bit 0x0180, and until you find the units. One constant: 3 * Math.PI / 8.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 2999,
+   "verbatim": "\tADC I,80"
+  },
+  "ours": {
+   "file": "src/core/explosion.ts",
+   "line": 51,
+   "verbatim": "const SPIN_RATE = Math.PI / 4"
+  },
+  "recommendation": "fix",
+  "size": "s"
+ },
+ {
+  "id": "CB-020",
+  "class": "DIVERGENCE",
+  "title": "The end-of-life sequence HAS ROM-pinned durations \u2014 .TIME1 = 16 and .TIME2 = 28 frames \u2014 and we assert it does not",
+  "claim": "lives.ts's header states outright: 'the three death sub-stages have NO ROM-pinned durations (unlike WO.CNT=5), so DEATH_SEQUENCE is an ordered cursor advanced one stage per call ... No fabricated durations.' They ARE pinned. EOLSEQ drives EOGTMR, incremented once per calculation frame (RBARON.MAC:1115). `.TIME1 =10` is 0x10 = 16 decimal: at EOGTMR == 16 the STARFIELD begins (RBARON.MAC:1163, `CPX I,.TIME1 ;TIME FOR STARFIELD ?`). `.TIME2 =1C` is 0x1C = 28 decimal: at EOGTMR == 28 the sequence ends and the life is taken (RBARON.MAC:1124-1126, `CMP I,.TIME2 / BCC 45$ / JMP ENDLFE ;END OF LIFE SEQUENCE DONE`). And the bullet-hole sub-stage steps B.HOLE from 0 up to 0x0C = 12, one step per frame (RBARON.MAC:1101-1104). So a shot-down death is: bullet-hole/spiral for frames 0-15 (16 x 96 ms = 1.536 s), starfield for frames 16-27 (12 x 96 ms = 1.152 s), ENDLFE at frame 28 \u2014 28 x 96 ms = 2.688 s total. Ours has no timing at all; the cursor advances one stage per call and the shell invents the durations.",
+  "reasoning": "The claim in our header is falsifiable and false, which matters more than the missing numbers: it told the next developer to stop looking. The three constants (.TIME1 = 16, .TIME2 = 28, B.HOLE cap = 12) are all in the equate block and in EOLSEQ, and all three are hex literals without trailing periods. Sized m because DEATH_SEQUENCE must gain per-stage frame counts and a tick function, and main.ts's death path has to drive it \u2014 but the values themselves are now known and need no invention.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 505,
+   "verbatim": ".TIME1\t=10\t\t\t;EOL COUNTS"
+  },
+  "ours": {
+   "file": "src/core/lives.ts",
+   "line": 53,
+   "verbatim": "export const DEATH_SEQUENCE: readonly DeathPhase[] = Object.freeze(["
+  },
+  "recommendation": "fix",
+  "size": "m"
+ },
+ {
+  "id": "CB-021",
+  "class": "DIVERGENCE",
+  "title": "The two death channels have DIFFERENT end-of-life lengths; we model one undifferentiated sequence",
+  "claim": "GREND encodes WHICH death happened: bit 7 alone (GREND = 0x80, ';SHELL CD', RBARON.MAC:3759) means shot down by a shell; bits 7+6 (GREND = 0xC0, ';D6=GROUND COLLISION', RBARON.MAC:4645) means the player flew into the ground. EOLSEQ branches on bit 6 (RBARON.MAC:1059-1067) and seeds the EOL timer DIFFERENTLY: shot down \u2192 EOGTMR = 0 and GMEND1 = 0xC0, giving the full 28-frame sequence (2.688 s); ran into ground \u2192 EOGTMR = 0x0F = 15 (RBARON.MAC:1064, `LDA I,0F`) and GMEND1 = 0xA0, so only 28 - 15 = 13 frames remain (1.248 s) and the starfield fires almost immediately (15 \u2192 16 = .TIME1 on the very next frame), with the mountain-crash scene (SCENE1/SCENE2, RBARON.MAC:1133-1137) in place of the bullet-hole/spiral. MAIN also aborts the entire flight update on GREND bit 6 (`BIT GREND / BVS 20$ ;PLAYER RAN INTO GROUND`, RBARON.MAC:783-784) \u2014 the world freezes on a ground crash and does not on a shoot-down. lives.ts has a single DEATH_SEQUENCE and a beginDeath(side) that records only the ENSIDE shoulder; there is no channel discriminator and no ground-crash path.",
+  "reasoning": "The pair brief asks specifically for 'the distinct DEATH CHANNELS (shot down vs flew into the ground)' \u2014 they are distinct in the ROM in three separate ways (EOL duration 28 vs 13 frames, visual sequence, and whether the world keeps moving), and undifferentiated in ours. Depends on CB-020 landing (the sequence needs durations before the channels can differ in duration). Sized m: DeathSequence gains a channel tag and the ground channel gains its own 13-frame timeline.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 4645,
+   "verbatim": "\tSTA GREND\t\t;D6=GROUND COLLISION"
+  },
+  "ours": {
+   "file": "src/core/lives.ts",
+   "line": 83,
+   "verbatim": "  return { side: seq.side, phase: Math.min(seq.phase + 1, DEATH_SEQUENCE.length) }"
+  },
+  "recommendation": "fix",
+  "size": "m"
+ },
+ {
+  "id": "CB-025",
+  "class": "NO_COUNTERPART",
+  "title": "The returning-ace death test \u2014 |PLDELX| >= 0x1C toward ENSIDE, first evasion free, 50/50 thereafter",
+  "claim": "The returning ace's kill is decided on ONE frame: at PLSTAT+7 == 0x0C = 12, EOLSEQ tests whether the player is turning toward the shoulder the ace came from and how hard (RBARON.MAC:1078-1094). `LDA ENSIDE / EOR PLDELX / BPL 20$ ;SORRY WRONG X` \u2014 if the sign of the player's roll rate does not oppose ENSIDE's sign bit, the player DIES. Then `LDA PLDELX / JSR SPABS / CMP I,1C / BCC 20$ ;PLAYER DIES` \u2014 the roll must also be at least 0x1C = 28 decimal in magnitude, or the player DIES. Even having passed both, `BIT BEFLAG / BPL 17$ ;FIRST TIME FREE` gives the evasion for free only the FIRST time per game; after BEFLAG is set it is `JSR RANDOM / BMI 20$ ;AFTER - ONLY 50/50` \u2014 a coin flip. Nothing in lives.ts models any of this: beginDeath(side) merely records ENSIDE after the fact.",
+  "reasoning": "This is the ROM's single most punishing mechanic and the whole reason ENSIDE exists \u2014 and our lives.ts stores ENSIDE (`side`) while implementing none of the test that produces it. Reported as NO_COUNTERPART rather than DIVERGENCE because there is no line in our combat spine that even attempts the check. Whether it belongs in lives.ts or in returning-ace.ts (another pair's file) is a design call, but the DEATH is this pair's scope and the threshold constants are recorded here: evasion window PLSTAT+7 == 12, roll direction must oppose ENSIDE, |PLDELX| >= 28, one free escape per game, 50/50 afterwards. Sized m: it needs the player's roll rate plumbed into the death check and a per-game BEFLAG.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 1086,
+   "verbatim": "\tCMP I,1C"
+  },
+  "ours": null,
+  "recommendation": "fix",
+  "size": "m"
+ }
+]

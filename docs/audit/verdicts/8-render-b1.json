@@ -1,0 +1,48 @@
+[
+ {
+  "id": "RD-001",
+  "verdict": "CONFIRMED",
+  "reasoning": "Controller grepped src/: 0 hits for PROP0/playerProp/propeller. The player's propeller \u2014 repatched every VG frame at 62.5 Hz in the ROM \u2014 is genuinely not drawn. 037007.XXX:591 is in the .RADIX 10 region, so the auditor read the picture table in the correct radix.",
+  "refuted_by": "controller (no agent slot available \u2014 see audit limitations)"
+ },
+ {
+  "id": "RD-002",
+  "verdict": "CONFIRMED",
+  "reasoning": "AVG per-vector intensity is real (VGMC.MAC / VGUT.MAC as cited). Our SceneSegment carries no intensity field.",
+  "refuted_by": "controller (no agent slot available \u2014 see audit limitations)",
+  "corrections": "CLUSTER with OB-014 and RD-006 \u2014 these are one change (add an intensity channel), filed three times."
+ },
+ {
+  "id": "RD-003",
+  "verdict": "CONFIRMED",
+  "reasoning": "HORIZN=$40=64 is in the hex region (proven). POSITH adds it to the projected Y of every object. We have no such offset.",
+  "refuted_by": "controller (no agent slot available \u2014 see audit limitations)"
+ },
+ {
+  "id": "RD-004",
+  "verdict": "CONFIRMED",
+  "reasoning": "VGDOT is a real VGUT primitive at the cited lines.",
+  "refuted_by": "controller (no agent slot available \u2014 see audit limitations)"
+ },
+ {
+  "id": "RD-005",
+  "verdict": "CONFIRMED",
+  "reasoning": "Enemy prop transcribed but never rendered \u2014 consistent with the controller's grep (no propeller rendering at all).",
+  "refuted_by": "controller (no agent slot available \u2014 see audit limitations)",
+  "corrections": "Same underlying gap as RD-001; cluster."
+ },
+ {
+  "id": "RD-006",
+  "verdict": "CONFIRMED",
+  "reasoning": "Two-tier brightness confirmed by controller's own read of RBARON.MAC:5030-5040 (`SBC I,60 ... ;ADD LIGHTER LINES`).",
+  "refuted_by": "controller (no agent slot available \u2014 see audit limitations)",
+  "corrections": "CLUSTER with OB-014 and RD-002 \u2014 one change."
+ },
+ {
+  "id": "RD-007",
+  "verdict": "CONFIRMED",
+  "reasoning": "Controller grepped src/: lives are tracked but never drawn (and, per CD-011, never read either).",
+  "refuted_by": "controller (no agent slot available \u2014 see audit limitations)",
+  "corrections": "Cluster with CD-011 \u2014 the lives system is unwired end to end, not merely undrawn."
+ }
+]

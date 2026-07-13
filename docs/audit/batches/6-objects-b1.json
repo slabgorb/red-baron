@@ -1,0 +1,141 @@
+[
+ {
+  "id": "OB-011",
+  "class": "DIVERGENCE",
+  "title": "PROPS is not a rotation-frame selector \u2014 the ROM draws ALL THREE blade pairs every frame",
+  "claim": "topology.ts:161 documents PROPS as 'the three prop-blade frames, indexed by prop rotation'. The ROM's PLNPRP loop does the opposite: it sets Y=4, calls DECMAP on PROPS[Y], resets the pen origin, then DEY/DEY and BPL back \u2014 three iterations (Y=4,2,0), commented ';DO ALL THREE BLADE PAIRS'. PPROPA, PPROPB and PPROPC are all decoded into the SAME picture on EVERY frame, producing a static 6-spoke blur, not a 3-frame animation.",
+  "reasoning": "RBARON.MAC:5052-5066. The spin illusion for the enemy plane's prop does not come from cycling PROPS; the prop POINT-SET is re-rotated each frame by PLTEST (LDX I,1 selects DBPROP in the PPNTS table) and all three blade pairs are always drawn. The animated PLAYER prop is a different asset entirely \u2014 the six JMPL pictures behind `.PROPS`/LNEPRP (037007.XXX:70-75). Our data is correct (OB-009); only the semantics attached to it are wrong, and any consumer that reads PROPS as a frame index will animate a prop the original never animated. PROPS currently has no consumer in src/, so this is a comment + usage-contract fix before it acquires one.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 5066,
+   "verbatim": "\tBPL 10$\t\t\t;DO ALL THREE BLADE PAIRS"
+  },
+  "ours": {
+   "file": "src/core/topology.ts",
+   "line": 161,
+   "verbatim": "export const PROPS: readonly (readonly ConnectOp[])[] = [PPROPA, PPROPB, PPROPC]"
+  },
+  "recommendation": "fix",
+  "size": "s"
+ },
+ {
+  "id": "OB-012",
+  "class": "DIVERGENCE",
+  "title": "The LOD switch is an orientation STATE BIT, not a camera distance \u2014 LOD_DISTANCE = 1500 is invented",
+  "claim": "biplane.ts selects the 42-vertex model vs. the 29-vertex drone with `depth < LOD_DISTANCE` where LOD_DISTANCE = 1500 (a number that appears nowhere in the ROM). The ROM's DRNPIC selects on bit $10 (D4) of PLSTAT+6: `LDA PLSTAT+6 ;PLANE ROTATED / AND I,10 / BEQ 20$`. D4=0 ('PLANE FACING AWAY', set at RBARON.MAC:2650-2652) takes branch 20$ -> `.DRPNT` (29 points), PLNABZ only (';2-D DRONE POINTS', Z-axis rotation alone) -> decode DB.MAR. D4=1 falls through -> DROFFZ scale-down + DRNTST -> decode DB.MAP (the full 42-vertex list, falling through into DB.MAR).",
+  "reasoning": "RBARON.MAC:4961-4979. The criterion is whether the plane needs a 3-D rotation at all: a drone flying directly away from the player is rendered by a cheap 2-D (Z-only) transform of the front 29 points; a drone that has rotated out of that pose gets the full 42-point 3-D path. Distance never enters the branch. Our threshold therefore switches LOD at the wrong times: a near plane facing away keeps its back faces (the ROM drops them), and a far plane mid-turn loses them (the ROM keeps them). Fix: drive biplaneLOD from the enemy's facing/rotation state rather than from projected depth. Size m because the LOD entry point and every caller's argument change (enemy.ts supplies depth today), and the tests that pin LOD_DISTANCE move with it.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 4961,
+   "verbatim": "DRNPIC:\tLDA PLSTAT+6\t\t;PLANE ROTATED"
+  },
+  "ours": {
+   "file": "src/core/biplane.ts",
+   "line": 131,
+   "verbatim": "  return depth < LOD_DISTANCE ? NEAR_MODEL : FAR_MODEL"
+  },
+  "recommendation": "fix",
+  "size": "m"
+ },
+ {
+  "id": "OB-013",
+  "class": "BOOK_WAS_WRONG",
+  "title": "findings.md calls the LOD a 'distance LOD'; the ROM has no distance test",
+  "claim": "docs/red-baron-1980-source-findings.md:321 asserts a 'Built-in distance LOD'. There is no distance comparison anywhere in the plane/drone picture path. The selector is PLSTAT+6 bit $10 (see OB-012). The doc's split itself (42 pts + DB.MAP + DB.LNS near; 29 pts + DB.MAR far) is correct \u2014 only the word 'distance' is fabricated, and biplane.ts inherited it as LOD_DISTANCE = 1500.",
+  "reasoning": "This is the secondary-source trap doing exactly what it does: our code cites the doc as authority (biplane.ts:106-110 even says 'the ROM pins the near-full/far-drone SPLIT but not the switch distance'), when in fact the ROM pins the switch CRITERION precisely \u2014 it is simply not a distance. The doc should say 'orientation LOD (PLSTAT+6 D4, PLANE FACING AWAY)'. Correcting the prose is what unblocks OB-012 from recurring.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 4972,
+   "verbatim": "20$:\tLDY I,.DRPNT-3"
+  },
+  "ours": {
+   "file": "docs/red-baron-1980-source-findings.md",
+   "line": 321,
+   "verbatim": "distance LOD:** the *full* plane = 42 pts (`.PLPNT`); the *drone / distant* plane = **29 pts** (`.DRPNT`,"
+  },
+  "recommendation": "fix",
+  "size": "s"
+ },
+ {
+  "id": "OB-014",
+  "class": "DIVERGENCE",
+  "title": "The wing struts (DB.LNS) are drawn DIMMER than the airframe; renderModel has no intensity at all",
+  "claim": "PLDECD decodes DB.MAP (-> DB.MAR) at the full brightness V.BRIT, then drops the intensity by $60 (floored at 0) via `SBC I,60` / `BCS 10$` / `LDA I,0` and issues a VGSTAT before decoding DB.LNS \u2014 the comment is ';ADD LIGHTER LINES'. Our renderModel emits a flat readonly SceneSegment[] of {x1,y1,x2,y2} with no intensity field, so all 84 ops of [...DB_MAP, ...DB_MAR, ...DB_LNS] render at one brightness.",
+  "reasoning": "RBARON.MAC:5026-5040. On a real vector monitor the inter-plane bracing wires are visibly fainter than the fuselage and wings \u2014 that two-tier brightness is a large part of why the original biplane reads as a biplane and not a wireframe blob. We have the correct 17 strut ops (OB-003) but throw away the intensity that distinguishes them. Size m: SceneSegment (src/core/scene.ts:21-26) has no intensity member, so the field, projectSegment's construction of it, and the shell renderer that consumes it all move together.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 5038,
+   "verbatim": "\tLDX I,DB.LNS&0FF"
+  },
+  "ours": {
+   "file": "src/core/biplane.ts",
+   "line": 160,
+   "verbatim": "export function renderModel(model: BiplaneModel, mvp: Mat4): readonly SceneSegment[] {"
+  },
+  "recommendation": "fix",
+  "size": "m"
+ },
+ {
+  "id": "OB-015",
+  "class": "DIVERGENCE",
+  "title": "Every RBARON.MAC line citation in biplane.ts points at the wrong line",
+  "claim": "biplane.ts cites the plane point table as 'RBARON.MAC:6206-6259' (line 10) and 'RBARON.MAC:6212-6256' (lines 36, 41); DB.PLN..P.BACK actually spans RBARON.MAC:6221-6265. It cites `.PLPNT` at :6258 (line 14) and `.DRPNT` at :6259 (line 90); they are at :6267 and :6268. It cites the POINTP macro at 'RBARON.MAC:57' (line 11); it is at :29. The findings doc's ':6207-6279' (line 320) is likewise off.",
+  "reasoning": "The VALUES transcribed are all correct (OB-004) \u2014 this is anchor drift, not data drift, and it is uniformly 5-9 lines short, which is what you get when line numbers are copied from a differently-lineated file rather than re-read from RBARON.MAC. It still matters: these anchors are the only audit trail a future maintainer has for a 42-line hand-copied table, and a citation that lands on the wrong line is a citation nobody can check. Re-anchor to 6221/6253/6267/6268/29.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 6221,
+   "verbatim": "DB.PLN:\tPOINTP 0,0,40\t\t;0 BACK TAILS"
+  },
+  "ours": {
+   "file": "src/core/biplane.ts",
+   "line": 36,
+   "verbatim": "// PLANE POINTS DB \u2014 the 42 biplane vertices (RBARON.MAC:6212-6256)."
+  },
+  "recommendation": "fix",
+  "size": "s"
+ },
+ {
+  "id": "OB-016",
+  "class": "NO_COUNTERPART",
+  "title": "BLCOLL \u2014 the blimp's 8-vertex collision box \u2014 is never transcribed",
+  "claim": "BLCOLL (RBARON.MAC:6270-6277) is 8 POINTP vertices: (16,16,-40) (16,-16,-40) (-16,16,-40) (-16,-16,-40) (16,16,40) (16,-16,40) (-16,16,40) (-16,-16,40) \u2014 a +/-16, +/-16, +/-40 box \u2014 with `.BLCL = .-BLCOLL-3` = 21. CDSSET uses it for the blimp hit test (`BIT BLOBJ+18 ;BLIMP ?` ... `LDY I,.BLCL` ... `JSR MNMX0 ;DETERMINE MIN/MAX OF X,Y&Z`). It appears in the PLNDB master table (RBARON.MAC:6285-6287) alongside DB.PLN/DBPROP/COLLD/PIECE0-3/BLIMP/STAR0/STAR1 \u2014 every other member of which IS in topology.ts. BLCOLL is the only omission.",
+  "reasoning": "topology.ts transcribes COLLD (the plane's collision window) but not BLCOLL (the blimp's). Our findings doc even names BLCOLL at line 323 and describes it correctly \u2014 it just never landed in code, so blimp.ts has no ROM-derived hit volume. The ROM rotates the 8 corners (PLNABZ + YAXIS) and takes their min/max, i.e. it is an ORIENTED box reduced to an AABB per frame, not a static AABB. Size s: 8 triples plus an export.",
+  "source": {
+   "file": "RBARON.MAC",
+   "line": 6270,
+   "verbatim": "BLCOLL:\tPOINTP 16,16,-40\t;POINT CD'S"
+  },
+  "ours": null,
+  "recommendation": "fix",
+  "size": "s"
+ },
+ {
+  "id": "OB-017",
+  "class": "NO_COUNTERPART",
+  "title": "The four ground-target vector objects (pyramid, house, tank, pill box) are entirely absent",
+  "claim": "037007.XXX:1132-1230 defines a complete, self-contained object set that topology.ts does not contain at all: point-sets PFPYRM (4 PFPNTS), PFHOME (7), PFTANK (10), PFPBOX (16); decode-lists DEPFPY (5 ops), DEPFHS (8), DEPFTK (11), DEPFPB (18); the PFODEC pointer table (`.WORD DEPFPY,DEPFHS,DEPFTK,DEPFPB`), the PFLOB point-set table (`.WORD PFPYRM,PFHOME,PFTANK,PFPBOX`), the `.PFLOB` length table, and the PFOFFS table of 12 PFCOL screen offsets (037007.XXX:1232-1246).",
+  "reasoning": "These are vector OBJECT data in the same POINTP/BV/VV vocabulary as everything else in this pair, and they are the ground targets the player strafes \u2014 the objects PFOCOL's collision boxes (already in topology.ts:371-384) exist to hit. We shipped the collision boxes without the things they collide with. Note the point macro here is PFPNTS, which emits only two bytes (.X/2, .Y*2) and DISCARDS its third argument \u2014 so these are planar billboards, and the constant 32/24/28/34 third column in the source is inert (topology.ts:296-302 already documents PFPNTS correctly for the SCAPEs). Size m: four point-sets, four decode-lists, two pointer tables, plus tests.",
+  "source": {
+   "file": "037007.XXX",
+   "line": 1186,
+   "verbatim": "PFPYRM:\tPFPNTS -8,-4,32\t\t;PYRAMID"
+  },
+  "ours": null,
+  "recommendation": "fix",
+  "size": "m"
+ },
+ {
+  "id": "OB-018",
+  "class": "NO_COUNTERPART",
+  "title": "The SLAP** mountain-highlight lists and the SCLMAP table are absent and unmentioned",
+  "claim": "037007.XXX:258-307 defines ten SLAP** connect-lists (SLAP01, SLAP02, SLAP03, SLAP11, SLAP13, SLAP20, SLAP21, SLAP22, SLAP30, SLAP32) and 037007.XXX:321-324 defines SCLMAP, a 16-entry pointer table into them with -1 in the six empty slots (RBARON.MAC:403 names it ';PF OBJECT HIGHLIGHT DECODE POINTERS'). topology.ts contains neither, and no comment in the repo acknowledges they exist. Separately, the 16 reverse-scroll SMP** lists (037007.XXX:175-256) are absent but ARE acknowledged as deferred (topology.ts:412).",
+  "reasoning": "topology.ts:399-414 presents the mountain render data as 'PFOPOS transcribed in full + the 16 forward SMAP lists', with only the SMP** reverse set called out as deferred. That inventory is incomplete: a THIRD list family (SLAP**, the highlight/second-intensity pass over the same SCAPE points, reached via SCMAP+40) is missing without acknowledgement, so the file reads as complete when it is not. SMP** is a known deferral; SLAP**/SCLMAP is an unknown one, which is the more dangerous kind. Landscape-adjacent, but it lives in my file, so it is reported here.",
+  "source": {
+   "file": "037007.XXX",
+   "line": 321,
+   "verbatim": "SCLMAP:\t.WORD -1,SLAP01,SLAP02,SLAP03"
+  },
+  "ours": null,
+  "recommendation": "accept"
+ }
+]
