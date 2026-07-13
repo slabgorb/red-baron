@@ -149,6 +149,16 @@ C11 early (it makes the rest testable). C3 is the one that changes the game from
   `5-mission-b2`, `6-objects-b1`, `7-sound-b1/b2`, `8-render-b1/b2`. **The sound pair received the least
   adversarial scrutiny of any subsystem** and its per-sound millisecond figures should be re-derived
   before anyone implements them.
+
+  A second, independent adversarial pass on the sound batches was attempted after the first wave of
+  agents exited, and the environment refused to fork it. What *was* done instead: **SN-003 — the only
+  sound finding that changes code — was re-verified by a fresh instruction-by-instruction trace of
+  `MODSND` (`RBSOUN.MAC:228-260`), and it holds.** A sequence block emits `CURRENT=STVAL` (one value)
+  and sets `COUNT=NUMBER`; each later expiry does `DEC COUNT / BNE 20$`, stepping while non-zero
+  (NUMBER-1 further values) and loading the next block when it hits zero. Total = exactly `NUMBER`
+  distinct values. **`RBSOUN.MAC:89` and `:152` are both wrong about the code they document**, and
+  `pokey.ts`'s `steps = NUMBER + 1` is a two-step error. The *timing* figures in the other sound
+  findings remain the weakest evidence in the audit.
 - **`COND65`, `ASCVG` and `MBDIAG` shipped but are absent from the quarry.** `RBSOUN.MAC:3` includes
   `COND65`, so parts of the sound driver's vocabulary are unknowable from this source.
 - **The analog sound board is off-CPU.** Gun/explosion/engine *timbre* is not in this source at all;

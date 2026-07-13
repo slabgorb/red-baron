@@ -2,9 +2,9 @@
  {
   "id": "SN-003",
   "verdict": "CONFIRMED",
-  "reasoning": "The strongest-argued finding in the audit. It claims the ROM's OWN prose comments (RBSOUN.MAC:89, :152) are wrong, and proves it with falsifiable arithmetic: under 'values = NUMBER' all five sounds' AUDF and AUDC chains run out together (TK 28=28, TP 40=40, BN 288=288, WP 360=360, TH 256=256); under 'NUMBER+1' all five mismatch. 5/5 exact agreement is not coincidence. Controller re-read RBSOUN.MAC:89/152/234 and the argument stands.",
-  "refuted_by": "controller (no agent slot available \u2014 see audit limitations)",
-  "corrections": "Note for the implementer: this contradicts the assembler's own comment. Anyone 'fixing' pokey.ts back toward the prose will re-introduce the bug. Record the arithmetic proof in the code."
+  "reasoning": "CONFIRMED by an independent instruction-by-instruction trace of MODSND (RBSOUN.MAC:228-260) by the controller, on a second pass distinct from the original auditor. The table entry is 4 bytes (STVAL=0, FRCNT=1, CHANGE=2, NUMBER=3). On entering a block the code emits CURRENT=STVAL (1 value) and sets COUNT=NUMBER (:242-243). Each later expiry does `DEC X,COUNT / BNE 20$` (:233-234): while non-zero it steps to 20$ and emits STVAL + k*CHANGE \u2014 that is NUMBER-1 further values \u2014 and when DEC COUNT reaches zero it loads the NEXT block instead. Total emitted per block = 1 + (NUMBER-1) = exactly NUMBER distinct values, each held FRCNT frames. So NUMBER IS the count of distinct values, and RBSOUN.MAC:89 ('...SEQUENCE-1') and :152 ('# OF DIFFERENT VALUES-1') are both WRONG about the code they document. The finding's extraordinary claim is correct. pokey.ts's `steps = NUMBER + 1` rule is a two-step error.",
+  "refuted_by": "controller (independent second-pass trace of MODSND)",
+  "corrections": "Do NOT 'correct' pokey.ts back toward the assembler's prose comments \u2014 they are the bug. Record this trace in the code beside the constant."
  },
  {
   "id": "SN-005",
