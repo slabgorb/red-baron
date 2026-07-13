@@ -198,11 +198,14 @@ describe('waves — planeCountForScore (findings §3, NWPLNE/STPLNE)', () => {
 // AC-2 — spawnWave: formation offsets, kinds, and the 25 % lone-plane roll
 // ───────────────────────────────────────────────────────────────────────────
 describe('waves — spawnWave formation + lone roll (findings §3, PLANE1/PLANE2 offsets)', () => {
-  it('DRONE_OFFSETS is the byte-exact PLANE1 -100,+100 / PLANE2 -100,-100 table', () => {
+  // rb4-1 RE-BASELINE: PLANE1/PLANE2 (RBARON.MAC:2480-2481) are in the `.RADIX 16`
+  // region, so the literals are HEX: ±0x100 = ±256. Read as decimal 100 the formation
+  // flew 2.56× too tight.
+  it('DRONE_OFFSETS is the byte-exact PLANE1/PLANE2 table — ±0x100, not ±100', () => {
     const off = need(m.DRONE_OFFSETS, 'DRONE_OFFSETS')
     expect(off.map((o) => [...o])).toEqual([
-      [-100, 100],
-      [-100, -100],
+      [-0x100, 0x100],
+      [-0x100, -0x100],
     ])
     expect(off.length).toBe(2) // exactly two drones — the object budget is 1 lead + 2 drones
   })

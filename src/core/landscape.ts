@@ -18,9 +18,14 @@
 // a post-divide SCREEN offset — and has nothing to do with the mountain's fall depth.
 //
 // SCOPE: forward (L→R) scroll only; the reverse SMP** stitch-lists are a deferred
-// follow-up (rb3-3 TEA deviation). The exact per-frame scroll delta is a display
-// tuning parameter, not a ported ROM constant (ROM P.OBDZ/$180 counts raw ROM Z units;
-// this port's Z is in scene world units, like enemy P_INDP=1080).
+// follow-up (rb3-3 TEA deviation).
+//
+// rb4-1: the scroll deltas ARE ported ROM constants — the old comment here claimed they
+// were "display tuning", and a single invented DEPTH_STEP=64 stood in for both of them.
+// The ROM runs TWO closing rates (P_OBDZ on the horizon, PF_FALLEN_DZ once fallen), and
+// the mountains' opening depths and lanes are AUTHORED (PFOBIZ), not generated. The
+// MACHINE that selects between the two rates — the latched on-horizon bit with its
+// hysteresis — is rb4-8's; this story lands the NUMBERS it will consume.
 //
 // PURE and deterministic. No DOM, no time, no randomness.
 
@@ -32,14 +37,64 @@ import { SCAPES, PFOPOS, MOUNTAIN_SEGMAPS, HORZ, type Point2 } from './topology'
 /** The four PF-object slots — N.PFOB = 3*L.PFOB names four records (RBARON.MAC:245/441). */
 export const MAX_MOUNTAINS = 4
 
-/** Horizon spawn / recycle depth — the Z a mountain (re)appears at, on the horizon (HORZ = $1000). */
-export const SPAWN_DEPTH = HORZ
+// ─── ROM-exact data (RBARON.MAC, `.RADIX 16` region — HEX) ───────────────────
 
-/** Near-plane recycle threshold — the ROM `$0C0` minimum depth (RBARON.MAC:3349). 0 < MIN_DEPTH < HORZ. */
-export const MIN_DEPTH = 0xc0 // 192
+/**
+ * P.OBZI — the Z a mountain (re)appears at when it recycles, FAR beyond the horizon.
+ * RBARON.MAC:443 `P.OBZI =7F00`, .RADIX 16 region (set at :74) → 0x7F00 = 32512.
+ *
+ * We had `SPAWN_DEPTH = HORZ` (4096) — 7.94× too shallow, and the consequence was not
+ * subtle: a mountain spawned AT the horizon depth and the very first step dropped it
+ * below, so OUR MOUNTAINS WERE NEVER ON THE HORIZON AT ALL. The ROM's closes from
+ * 0x7F00 to the fall threshold at P_OBDZ/frame — (32512 − 4097) / 384 ≈ 74 calc-frames
+ * ≈ 7.1 SECONDS as a distant silhouette before it starts to grow.
+ */
+export const SPAWN_DEPTH = 0x7f00
 
-/** World Z the mountain scrolls in per calc-frame — a display-feel delta, not a ROM constant. */
-const DEPTH_STEP = 64
+/**
+ * The near-plane recycle threshold — a 16-BIT compare, and that is the whole point.
+ * RBARON.MAC:3349-3355 is the standard 6502 16-bit idiom: `CPY I,0C0` against the LOW
+ * byte, then `SBC I,1` against the HIGH byte. The constant is therefore
+ * (0x01 << 8) | 0xC0 = 0x01C0 = 448 — not the CPY operand 0xC0 = 192 alone.
+ *
+ * The same idiom appears twelve lines later against P.MAXZ (`CPY I,P.MAXZ&0FF` /
+ * `SBC I,P.MAXZ&0FF00/100`, RBARON.MAC:3397-3398), where the assembler itself splits
+ * 0x1001 into LSB and MSB — which proves the pattern. We took only the CPY operand.
+ */
+export const MIN_DEPTH = 0x01c0
+
+/**
+ * P.OBDZ — the closing rate WHILE ON THE HORIZON.
+ * RBARON.MAC:444 `P.OBDZ =180`, .RADIX 16 region (set at :74) → 0x180 = 384.
+ * (";PF OBJECT Y DELTA Z (WHILE ON HORIZON)")
+ */
+export const P_OBDZ = 0x180
+
+/**
+ * The closing rate ONCE FALLEN — a bare literal in PFOBMN's free-object branch:
+ * RBARON.MAC:3341 `LDA I,20 ;STANDARD DELTA`, .RADIX 16 region → 0x20 = 32.
+ *
+ * So a mountain closes 384/frame while distant and 32/frame while near — a 12:1 ratio.
+ * We shipped a single invented `DEPTH_STEP = 64`, which is neither.
+ */
+export const PF_FALLEN_DZ = 0x20
+
+/**
+ * PFOBIZ — the four mountains' AUTHORED opening depths.
+ * RBARON.MAC:1305 `PFOBIZ: .WORD 8200,6E0,3220,0D20`, .RADIX 16 region → HEX.
+ *
+ * GMINIT classifies each by its Z MSB against 0x11 (RBARON.MAC:1258-1261), so the
+ * arcade OPENS with two mountains on the horizon (0x82, 0x32) and two already fallen
+ * (0x06, 0x0D). We generated an even arithmetic stagger instead.
+ */
+export const PFOBIZ_DEPTHS: readonly number[] = Object.freeze([0x8200, 0x06e0, 0x3220, 0x0d20])
+
+/**
+ * PFOBIZ — the four mountains' AUTHORED lateral lanes.
+ * RBARON.MAC:1306 `.WORD -0C00,-400,400,0C00`, .RADIX 16 region → HEX:
+ * −3072, −1024, +1024, +3072. We placed ALL FOUR at x = 0, stacked in one lane.
+ */
+export const PFOBIZ_X: readonly number[] = Object.freeze([-0x0c00, -0x400, 0x400, 0x0c00])
 
 /** One scrolling mountain — a SCAPE silhouette closing on the eye. */
 export interface Mountain {
@@ -59,28 +114,35 @@ export function spawnMountain(scape: number): Mountain {
 }
 
 /**
- * The opening ≤4-slot fill: one of each SCAPE silhouette, staggered in depth across
- * the pass so the player meets a landscape already in progress rather than an empty
- * horizon that suddenly populates.
+ * The opening 4-slot fill — AUTHORED, not generated (GMINIT, RBARON.MAC:1258-1269).
+ * Each slot takes its depth from {@link PFOBIZ_DEPTHS} and its lane from
+ * {@link PFOBIZ_X}, so the player meets the arcade's opening landscape: two mountains
+ * still on the horizon, two already fallen, spread across four lateral lanes.
  */
 export function initialMountains(): readonly Mountain[] {
-  const gap = (SPAWN_DEPTH - MIN_DEPTH) / MAX_MOUNTAINS
   return Array.from({ length: MAX_MOUNTAINS }, (_, i) => ({
     scape: i,
-    depth: SPAWN_DEPTH - i * gap,
-    x: 0,
+    depth: PFOBIZ_DEPTHS[i],
+    x: PFOBIZ_X[i],
     active: true,
   }))
 }
 
 /**
- * One calc-frame of scroll: the mountain's depth decreases toward the eye. When it
- * reaches the near-plane minimum it recycles back to the horizon (a continuous pass),
- * rather than vanishing (RBARON.MAC:3356-3364).
+ * One calc-frame of scroll: the mountain's depth decreases toward the eye at ONE OF TWO
+ * rates — P_OBDZ (384) while it is still on the horizon, PF_FALLEN_DZ (32) once it has
+ * fallen. When it reaches the near-plane minimum it recycles back out to P.OBZI
+ * (RBARON.MAC:3356-3369) rather than vanishing, so the four slots feed a continuous pass.
+ *
+ * NOTE (rb4-8): the ROM selects the rate from a LATCHED status bit with hysteresis
+ * (D7 of PFOBJ+6), not from a live depth test. Selecting on `onHorizon` here is the
+ * faithful reading of the two RATES — which is rb4-1's scope — and leaves the latched
+ * bit itself to rb4-8, which owns that machine.
  */
 export function stepMountain(m: Mountain): Mountain {
   if (!m.active) return m
-  const next = m.depth - DEPTH_STEP
+  const delta = onHorizon(m) ? P_OBDZ : PF_FALLEN_DZ
+  const next = m.depth - delta
   return next <= MIN_DEPTH ? { ...m, depth: SPAWN_DEPTH } : { ...m, depth: next }
 }
 

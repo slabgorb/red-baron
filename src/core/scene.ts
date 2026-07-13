@@ -29,8 +29,17 @@ export interface SceneSegment {
 const VERTICAL_FOV = Math.PI / 3
 /** Near clip: just in front of the eye. */
 const NEAR = 1
-/** Far clip: past the horizon distance (findings §7 HORZ = 1000, with headroom). */
-const FAR = 20000
+/**
+ * Far clip — past the ROM's FARTHEST playfield object, with headroom.
+ *
+ * rb4-1: the old comment here cited the horizon depth with the poisoned doc's UN-RADIXED
+ * digits. `HORZ` is defined at RBARON.MAC:451 inside the `.RADIX 16` region opened at
+ * :74, so its literal is HEX → 0x1000 = 4096. Read as decimal, 20000 looked like 20× the
+ * horizon when it was under 5× — and, worse, it sat BELOW the ROM's farthest objects: the
+ * mountain recycle depth P.OBZI = 0x7F00 = 32512 (RBARON.MAC:443) and PFOBIZ's opening
+ * slot at 0x8200 = 33280 (RBARON.MAC:1305).
+ */
+const FAR = 40000
 
 /** The one perspective matrix of the game, for a given viewport aspect ratio. */
 export function sceneProjection(aspect: number): Mat4 {

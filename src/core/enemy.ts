@@ -6,14 +6,14 @@
 // drone formations and score-scaled counts are rb2-7.
 //
 // STEERING is a WEAVING WINDOW-FOLLOWER, NOT a beeline seeker (findings §3,
-// UPDPLN/PLNDEL/P.WINDW, R2BRON.MAC:2566-2870): the plane accelerates its ΔX
-// (ACCEL=30) toward the window limits and REVERSES at the boundaries, weaving
+// UPDPLN/PLNDEL/P.WINDW, RBARON.MAC:2570/2743/2806): the plane accelerates its ΔX
+// (ACCEL=0x30) toward the window limits and REVERSES at the boundaries, weaving
 // across screen centre. It follows the WINDOW, not the player — a stationary
-// target is never chased to a standstill. Limits are GMLEVL-indexed (P.OLIM /
-// P.ILIM, R2BRON.MAC:2935-2952) — higher level = wider, more aggressive weave.
+// target is never chased to a standstill. Limits are GMLEVL-indexed
+// (P.OLIM/P.ILIM, RBARON.MAC:2939/2945) — higher level = wider, more aggressive weave.
 //
-// SPAWN (findings §3, NWPLNE/STPLNE, R2BRON.MAC:2237-2386): enters from a screen
-// SIDE banked 90°, random X/Y, at depth P.INDP=1080. This story ships the LONE
+// SPAWN (findings §3, NWPLNE/STPLNE, RBARON.MAC:2241/2274): enters from a screen
+// SIDE banked 90°, random X/Y, at depth P.INDP=0x1080. This story ships the LONE
 // plane; `spawn` returns ONE enemy and consumes the injected seeded Rng for its
 // random placement (the arcade-shared PRNG, same pattern as asteroids' spawnRock).
 //
@@ -28,20 +28,45 @@
 import { type Rng, nextFloat } from '@arcade/shared/rng'
 import { biplaneBank } from './biplane'
 import type { ProximityBand } from './flight'
+import { P_MNDP } from './returning-ace'
 
-// ─── ROM-exact data (findings §3, R2BRON.MAC) ────────────────────────────────
+// ─── ROM-exact data (RBARON.MAC, `.RADIX 16` region — HEX) ───────────────────
+//
+// RADIX WARNING (rb4-1). Every equate below is defined under `.RADIX 16`, set at
+// RBARON.MAC:74 and unbroken until the vertex island at :6217. The digits are HEX.
+// This block was previously transcribed as DECIMAL, from a doc that cited the DECOY
+// BUILD — a 10-SEP-81 image that never shipped, whose line numbers run 4 short of the
+// real one. Read the region, not the digits.
 
-/** P.OLIM — outer weave-window limit, GMLEVL-indexed (R2BRON.MAC:2935). */
+/** P.OLIM — outer weave-window limit, GMLEVL-indexed (RBARON.MAC:2939, .RADIX 16 region). */
 export const P_OLIM: readonly number[] = Object.freeze([0x40, 0x80, 0x120, 0x1a0, 0x200])
 
-/** P.ILIM — inner weave-window limit, GMLEVL-indexed (R2BRON.MAC:2952). */
+/** P.ILIM — inner weave-window limit, GMLEVL-indexed (RBARON.MAC:2945, .RADIX 16 region). */
 export const P_ILIM: readonly number[] = Object.freeze([0x20, 0x30, 0x80, 0x120, 0x160])
 
-/** P.INDP — the depth a plane enters at, far from the eye (NWPLNE, R2BRON.MAC:2237). */
-export const P_INDP = 1080
+/**
+ * P.INDP — the depth a plane enters at, far from the eye (STPLNE).
+ * RBARON.MAC:464 `P.INDP =1080`, .RADIX 16 region (set at :74) → 0x1080 = 4224.
+ * Read as decimal 1080 we spawned every plane 3.9× too close.
+ */
+export const P_INDP = 0x1080
 
-/** ACCEL — the per-calc-frame ΔX weave acceleration (findings §3). */
-export const ACCEL = 30
+/**
+ * ACCEL — the per-calc-frame ΔX weave acceleration (P.WCHK).
+ * RBARON.MAC:465 `ACCEL =30`, .RADIX 16 region (set at :74) → 0x30 = 48.
+ * Read as decimal 30 the weave built turn-rate at 62.5% of arcade rate — and since
+ * bank ∝ ΔX, the planes banked shallower too.
+ */
+export const ACCEL = 0x30
+
+/**
+ * P.MNDP — the closest a plane bores in before the fly-by becomes a returning pass.
+ * RBARON.MAC:469 `P.MNDP =140`, .RADIX 16 region (set at :74) → 0x140 = 320.
+ * The SAME ROM equate as `P_MNDP` in returning-ace.ts — aliased to it rather than
+ * re-typed, so one ROM constant cannot hold two values again (it held 140 in both
+ * places, and both were wrong).
+ */
+export const MIN_DEPTH = P_MNDP
 
 /** The RANDOM roll: 25 % chance of a lone plane (findings §3). rb2-7 branches on it. */
 export const LONE_PLANE_CHANCE = 0.25
@@ -59,12 +84,20 @@ const WEAVE_SPEED_CAP = 100
 /** Per-calc-frame closing speed — the plane bores in so DISCHK proximity sharpens. Inferred. */
 const CLOSE_SPEED = 8
 
-/** Closest the plane bores in here; the returning-ace pass past P.MNDP is rb2-8. Inferred. */
-const MIN_DEPTH = 140
-
-/** DISCHK band cutoffs by depth (inferred tunables — the ROM pins the scale fractions, not these). */
-const NEAR_DEPTH = 300
-const MID_DEPTH = 700
+/**
+ * DISCHK band cutoffs by depth — INFERRED tunables. DISCHK itself (RBARON.MAC:3468)
+ * branches on a distance FLAG (D6/D7 of TEMP3) and pins only the scale fractions
+ * (1.0 / 0.625 / 0.375); which depth raises which flag is not pinned here, so these
+ * cutoffs are ours. (Which fraction belongs to which band — ours are inverted — is rb4-5's.)
+ *
+ * rb4-1: they are now expressed as FRACTIONS OF P_INDP rather than as bare numbers.
+ * The old 300/700 were calibrated against the mis-read 1080-deep world; against the
+ * true 0x1080 = 4224 they left the plane's whole flight in 'far'/'mid' — it floored at
+ * P.MNDP = 320 and could never reach 'near' at all. Tying them to P_INDP means the depth
+ * scale and the bands can never drift apart again.
+ */
+const NEAR_DEPTH = P_INDP / 4 // 1056
+const MID_DEPTH = (P_INDP * 5) / 8 // 2640
 
 /** The entry flourish: the plane peels in banked a full 90°. */
 const SPAWN_BANK = Math.PI / 2

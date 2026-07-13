@@ -162,9 +162,11 @@ describe('returning-ace — ROM thresholds (findings §3 P.UPD0, §5 EOLSEQ)', (
 describe('returning-ace — closesPast (P.UPD0 fly-by trigger)', () => {
   it('does NOT trigger while the plane is still far (spawn depth is not a pass)', () => {
     const closesPast = need(m.closesPast, 'closesPast')
-    expect(closesPast(1080)).toBe(false) // P.INDP spawn depth
-    expect(closesPast(300)).toBe(false)
-    expect(closesPast(141)).toBe(false) // one unit shy of the threshold — not yet
+    // rb4-1 RE-BASELINE: the threshold is P.MNDP = 0x140 = 320, so these fixtures — which
+    // were keyed to the decimal 140 — all had to move OUT. 300 and 141 are now PAST it.
+    expect(closesPast(0x1080)).toBe(false) // P.INDP spawn depth (4224)
+    expect(closesPast(1000)).toBe(false)
+    expect(closesPast(0x141)).toBe(false) // one unit shy of the threshold — not yet
   })
 
   it('triggers exactly when the plane reaches / passes P.MNDP (boundary is inclusive)', () => {
@@ -223,9 +225,14 @@ describe('returning-ace — PLPOSZ close speed rises with GMLEVL (findings §3)'
     for (let lvl = 1; lvl < t.length; lvl++) {
       expect(Math.abs(t[lvl])).toBeGreaterThan(Math.abs(t[lvl - 1])) // strictly faster each level
     }
-    // Only GMLEVL 0..5 is reachable (PLNZD, RBARON.MAC:2409-2411): -0x04 .. -0x80.
+    // Only GMLEVL 0..5 is reachable (PLNZD, RBARON.MAC:2409-2411). The ROM byte at index 5
+    // is the literal `-50` — i.e. -0x50 = -80 decimal. (The table's LAST byte is the literal
+    // `-80` = -0x80 = -128, at index 8, which GMLEVL never reaches.) The audit's "4/frame at
+    // GMLEVL 0 to 80/frame at GMLEVL 5" quotes DECIMAL 80 = 0x50 — and the 20× ratio below
+    // only closes on that reading: 128/4 would be 32.
     expect(t[0]).toBe(-0x04)
-    expect(t[5]).toBe(-0x80)
+    expect(t[5]).toBe(-0x50)
+    expect(t[8]).toBe(-0x80) // the table's tail, beyond any reachable GMLEVL
     expect(Math.abs(t[5]) / Math.abs(t[0])).toBe(20) // the ROM's 20× ramp, not our 2.5×
   })
 
@@ -455,13 +462,14 @@ describe('returning-ace — integration with the REAL flight model + enemy weave
   })
 
   it('the REAL enemy weave bores in until closesPast fires — spawn is far, the floor triggers', () => {
-    // enemy.step closes the depth toward its MIN_DEPTH floor (= P.MNDP=140). closesPast is
-    // false at the far spawn and true once the plane reaches that floor: the P.UPD0 trigger
-    // is wired to the depth the real weave actually reaches.
+    // enemy.step closes the depth toward its MIN_DEPTH floor (= P.MNDP = 0x140 = 320).
+    // closesPast is false at the far spawn and true once the plane reaches that floor.
+    // rb4-1: the spawn depth is now 0x1080 = 4224, so the plane needs ~490 calc-frames to
+    // bore in at CLOSE_SPEED — the old 400-step budget no longer reached the floor.
     const closesPast = need(m.closesPast, 'closesPast')
     let e: Enemy = spawnEnemy(createRng(7), 0)
     expect(closesPast(e.depth)).toBe(false) // spawns far — no pass yet
-    for (let i = 0; i < 400; i++) e = stepEnemy(e, 0) // bore all the way in
+    for (let i = 0; i < 800; i++) e = stepEnemy(e, 0) // bore all the way in
     expect(closesPast(e.depth)).toBe(true) // reached the P.MNDP floor → the pass triggers
   })
 })

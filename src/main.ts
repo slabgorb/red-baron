@@ -228,7 +228,8 @@ function draw(
     ctx.restore()
   }
 
-  // the running score (rb2-6) — PLVALU accrues per kill (closer = more). A minimal
+  // the running score (rb2-6) — PLVALU accrues per kill (the lead counts DOWN as it
+  // closes; only a far/dim plane pays the full flat DRNPNT — rb4-1/CB-003). A minimal
   // readout until the ROM HUD glyph font (findings §7) arrives in a later story.
   ctx.save()
   ctx.fillStyle = '#33ff66'
@@ -336,7 +337,7 @@ window.addEventListener('resize', resize)
 
 let flight = INITIAL_FLIGHT
 let kills = 0 // OBJKLD — each kill bumps this; gmlevlForKills(kills) drives the GMLEVL ramp
-let score = 0 // running PLVALU total (closer kills score more)
+let score = 0 // running PLVALU total (a DISTANT lead is worth most — rb4-1/CB-003)
 let enemies: readonly Enemy[] = [] // the live wave (rb2-7); the schedule spawns the opening wave
 let blimp: Blimp | null = null // the drifting airship (rb2-13) — null when none is on screen (BLMOTN ~25% roll)
 let lives: Lives = initialLives() // the player's planes remaining (rb2-9) — the blimp's fire is the first wired damage

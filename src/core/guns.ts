@@ -15,14 +15,14 @@
 // it cannot skip past an enemy (the Red Baron analogue of the fast-projectile
 // tunnelling trap). Ticking shells per display frame would run them ~6× too fast.
 //
-// GUN.ST OVERHEAT (findings §5, NEWSHL/NWSHL1, R2BRON.MAC:2149-2233): GUN.ST climbs
+// GUN.ST OVERHEAT (NEWSHL/NWSHL1, RBARON.MAC:2153/2172): GUN.ST climbs
 // +1 per shot and cools ×3 when the trigger is released; an overheated gun locks
 // out (no new shells) until it has cooled. 13 shell slots; shells advance in Z and
-// expire at S.MAXZ=19. Hit test: CDSSET builds a rotated/projected min-max window
+// expire at S.MAXZ = 0x19 = 25. Hit test: CDSSET builds a rotated/projected min-max window
 // around the enemy; SHCDCK tests each PLAYER shell against it (enemy shells are
 // never passed here — this module holds only player shells).
 //
-// SCALE NOTE: the findings doc pins the ROM DATA (13 slots, S.MAXZ=19, 4× sub-step,
+// SCALE NOTE: the ROM pins the DATA (13 slots, S.MAXZ = 0x19 = 25, 4× sub-step,
 // +1 heat, ×3 cool) but NOT the overheat THRESHOLD, the shell SPEED, the collision
 // WINDOW size, or the depth→shell-Z projection. Those are chosen here within the
 // tested invariants (like enemy.ts's WEAVE_SPEED_CAP / LOD_DISTANCE) and flagged for
@@ -37,8 +37,12 @@ import type { Enemy } from './enemy'
 /** 13 shell slots — the most player shells that can be in flight at once (findings §5). */
 export const SHELL_SLOTS = 13
 
-/** S.MAXZ — a shell expires once it has advanced this far in Z (findings §5). */
-export const S_MAXZ = 19
+/**
+ * S.MAXZ — a shell expires once it has advanced this far in Z (PSTSHL).
+ * RBARON.MAC:492 `S.MAXZ =19`, .RADIX 16 region (set at :74) → 0x19 = 25.
+ * Read as decimal 19 our shells travelled 79% of the ROM's range and died 96 ms early.
+ */
+export const S_MAXZ = 0x19
 
 /** SHLMOT sub-steps each shell 4× per calc-frame (findings §1/§5, RBARON.MAC:5186-5198). */
 export const SHELL_SUBSTEPS = 4
