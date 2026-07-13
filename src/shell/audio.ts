@@ -300,6 +300,19 @@ export function createAudioEngine(): AudioEngine {
   let whineOsc: OscillatorNode | null = null
   let whineGain: GainNode | null = null
 
+  // These live OUTSIDE the shared voice registry (their oscillators free-run; the gain is
+  // the switch), so the engine cannot clear them for us when it recovers from a closed
+  // context. Left alone, they would survive a recovery still pointing at the DEAD context,
+  // and the `=== null` build gates in setEngine/setApproach would never re-fire: the gun
+  // would come back while the engine hum and the enemy-approach whine stayed silent for the
+  // rest of the session. Losing the whine matters — it is the only warning that a plane is
+  // on you. Half a recovery is worse than none: it looks like it works. (Review round 2.)
+  synth.onRebuild(() => {
+    humGain = null
+    whineOsc = null
+    whineGain = null
+  })
+
   return {
     resume(): void {
       synth.resume()
