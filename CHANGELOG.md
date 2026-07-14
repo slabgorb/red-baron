@@ -11,7 +11,7 @@ for the player. Purely internal work is summarised under *Internal*.
 Red Baron is still in active development — it is the newest cabinet in the arcade, and
 not yet feature-complete against the 1980 original.
 
-## [Unreleased]
+## [0.0.14] - 2026-07-14
 
 ### Fixed
 - **The planes fly the way they look.** Roughly thirty gameplay constants were read out of
