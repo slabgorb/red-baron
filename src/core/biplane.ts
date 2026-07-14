@@ -1,6 +1,6 @@
 // src/core/biplane.ts
 //
-// The enemy biplane: its authentic 3-D model, the built-in distance LOD, the
+// The enemy biplane: its authentic 3-D model, the near/far model switch, the
 // bank-∝-turn-rate coupling, and the pen-turtle render onto the rb1 scene
 // substrate (scene.ts). Story rb2-3.
 //
@@ -94,7 +94,14 @@ export const PLANE_POINTS: readonly Point3[] = [
 export const DRONE_POINTS: readonly Point3[] = PLANE_POINTS.slice(0, 29)
 
 // ─────────────────────────────────────────────────────────────────────────────
-// DISTANCE LOD
+// NEAR / FAR MODEL SWITCH
+//
+// ⚠ NOT THE ROM'S RULE. The ROM does not test distance anywhere in the picture
+// path: `DRNPIC` (RBARON.MAC:4961, .RADIX 16) selects the 29-point `.DRPNT` set
+// on `PLSTAT+6` bit 0x10 — "PLANE ROTATED" / "FACING AWAY" — an ORIENTATION bit.
+// The depth threshold below is ours, invented from a mis-reading of the findings
+// doc that rb4-2 has since retracted. Replacing it with the orientation bit is
+// rb4-13; until then this is a deliberate, documented divergence, not a citation.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** A resolved biplane at one level of detail: its vertex set + the list to draw. */

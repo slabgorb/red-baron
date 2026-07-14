@@ -8,14 +8,14 @@
 // (the Red Baron analogue of the Asteroids ÷4 trap). These constants let the
 // runnable cockpit's loop tick at the right rate.
 //
-// Cite: RBGRND.MAC:61,102,221-235; RBARON.MAC:620.
+// Cite: RBGRND.MAC:61,102,221-235; RBARON.MAC:621.
 //
 // PURE constants. No DOM, no time, no randomness.
 
 /** Hardware NMI: one tick every 4 ms (RBGRND.MAC:102 "[FROM HARDWARE]"). */
 export const MASTER_NMI_HZ = 250
 
-/** CALCNT 0x18 — the gameplay calculation frame divides the NMI by 24 (RBARON.MAC:620). */
+/** CALCNT 0x18 — the gameplay calculation frame divides the NMI by 24 (RBARON.MAC:621). */
 export const CALC_FRAME_NMIS = 24
 
 /** FRMECNT — the shipped VG display refresh divides the NMI by 4 (RBGRND.MAC:61). */

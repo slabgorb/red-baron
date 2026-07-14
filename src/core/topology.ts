@@ -289,7 +289,7 @@ export const BLIMP_PICTURE: VectorPicture = { points: BLIMP_POINTS, connect: DBL
 //
 // Transcribed from the canonical `RBGRND.MAC` (".TITLE RBGRND - RED BARON GROUND
 // SEQUENCE" — the shipped RBARON/RBGRND release set, byte-identical to
-// `R2GRND.MAC` across the whole SCAPE/PFOCOL block). The silhouettes and
+// `RBGRND.MAC` across the whole SCAPE/PFOCOL block). The silhouettes and
 // collision boxes sit in its "DISPLAY DB'S" section under `.RADIX 10`
 // (RBGRND.MAC:723-848), so every coordinate below is DECIMAL, exactly as written.
 //
@@ -362,7 +362,7 @@ export const SCAPE_SEG_BYTES: readonly number[] = [40, 30, 34, 28]
 // the collision-box macro (037007.XXX:14):
 //     .MACRO PFCOL .X,.Y  /  .WORD .X*8,.Y*8  /  .ENDM
 // each emitting the (X, Y) corner as two ×8-scaled words. We keep the logical
-// `[x, y]`. `GRDISP` (R2BRON.MAC:3880-3902) reads the entries in CONSECUTIVE PAIRS
+// `[x, y]`. `GRDISP` (RBARON.MAC:3885-3907) reads the entries in CONSECUTIVE PAIRS
 // as (min-corner, max-corner): the 24 entries are 12 axis-aligned boxes, each
 // `[Xmin,Ymin]` then `[Xmax,Ymax]` (every pair satisfies min ≤ max). Object type
 // indexes this table; type ≥ 4 = active gun emplacement (rb3-4 consumes it).

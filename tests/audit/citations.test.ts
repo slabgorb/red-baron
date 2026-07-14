@@ -6,9 +6,9 @@
 // is DELETED, not repaired: a miscited finding is one the auditor never actually
 // verified, and repairing it would launder a guess into evidence.
 //
-// The Atari source is copyrighted and never enters this repo. The source-side checks
-// therefore degrade gracefully when it is absent (CI), while the schema and our-side
-// checks still run.
+// The Atari source is a separate public checkout (`historicalsource/red-baron`) and is not
+// part of this repo, so the source-side checks degrade gracefully when it is absent (CI),
+// while the schema and our-side checks still run.
 //
 // ─── THIS FILE IS A SINGLE POINT OF FAILURE (rb4-1 REWORK 3, Reviewer finding 5) ─────
 //

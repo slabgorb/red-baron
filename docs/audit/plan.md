@@ -3,7 +3,7 @@
 **Date:** 2026-07-13
 **Trigger:** the game "seems way off" in play.
 **Method:** `rom-fidelity-audit` skill.
-**Source (LF, read-only, copyrighted — never copied into this repo):**
+**Source (LF, read-only — a separate checkout, not copied into this repo):**
 `/Users/slabgorb/Projects/red-baron-source-text`
 
 ---

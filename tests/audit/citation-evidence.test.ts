@@ -28,8 +28,8 @@
 //     · `class`                             — you cannot RECLASSIFY one (see below)
 //     · `ours`   (whole object, or null)    — you cannot re-point it at a friendlier line
 //     · `source` (whole object)             — ditto on the Atari side, which CI cannot
-//                                             byte-check (the source is copyrighted and
-//                                             never enters the repo), so the pin is its
+//                                             byte-check (the source is a separate checkout
+//                                             and is not in this repo), so the pin is its
 //                                             ONLY protection
 //
 //   CHECKED, for every finding on disk (old or newly added):
@@ -670,7 +670,7 @@ describe('the citation gate still means something after the sweep', () => {
     expect(
       evidenceDrift(audited, resourced).join('\n'),
       'a re-pointed `source` citation must be caught — CI cannot byte-check the Atari source ' +
-        '(it is copyrighted and never enters the repo), so this pin is its ONLY protection',
+        '(it is a separate checkout, not in this repo), so this pin is its ONLY protection',
     ).toMatch(/EN-001: `source` has been CHANGED/)
 
     // A SHADOW COPY: append a second, laundered EN-001 and leave the pristine one in place.
