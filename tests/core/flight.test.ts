@@ -40,19 +40,21 @@
 //   export function toEye(state: FlightState): Vec3            // eye world position [0, y, 0]
 //
 // WHY THIS SHAPE (cited — findings §2 "Player flight model"):
-//   * TURN/ROLL → PLDELX, a RATE WITH INERTIA. POT.X (R2BRON.MAC:5890-5919) eases
-//     PLDELX toward the commanded pot with 2 counts of hysteresis + step-limited
-//     acceleration — the yoke sets a *target turn-rate the plane ramps into*, not
-//     an instant heading.
-//   * PITCH → PLDELY, 11 DISCRETE STEPS. POTSCL (R2BRON.MAC:5831-5864) maps the
-//     pitch pot to index 0..10 into POTDLY: .4WORD -32,-23,-17,-10,-5,0,4,8,13,18,25
-//     (R2BRON.MAC:5923). Center = 0; ASYMMETRIC — dive (-32) is faster than climb (+25).
-//   * PFMOTN (R2BRON.MAC:3149-3262): PLDELX (×DISCHK) pans the world horizontally
-//     (heading/yaw); PFROTN = PLDELX × 8, clamped |·| ≤ 0x100, is the horizon-bank
+//   * TURN/ROLL → PLDELX, a RATE WITH INERTIA. POT.X (RBARON.MAC:5897-5926) eases
+//     PLDELX toward the commanded pot with 2 counts of hysteresis, stepping by the
+//     error arithmetically shifted right 3 (proportional) — the yoke sets a *target
+//     turn-rate the plane ramps into*, not an instant heading (rb4-5 AC4).
+//   * PITCH → PLDELY, 11 DISCRETE STEPS. POTSCL maps the pitch pot to index 0..10
+//     into POTDLY: `.4WORD -32.,-23.,-17.,-10.,-5,0,4,8,13.,18.,25.` (RBARON.MAC:5930).
+//     The `.4WORD` macro (RBARON.MAC:15-18) ×4's every operand, so the shipped table
+//     is [-128,-92,-68,-40,-20,0,16,32,52,72,100] (rb4-5 FL-001). Center = 0;
+//     ASYMMETRIC — dive (-128) is faster than climb (+100).
+//   * PFMOTN (RBARON.MAC:3149-3262): PLDELX (×DISCHK) pans the world horizontally
+//     (UNIV4X); PFROTN = PLDELX × 8, clamped |·| ≤ 0x100, is the horizon-bank
 //     roll; PLDELY (×DISCHK) adds to altitude I4YPOS, HARD-CLAMPED PLYMIN..PLYMAX.
-//   * DISCHK (R2BRON.MAC:3463-3491): player deltas scale by proximity of the nearest
-//     object — close ×1.0 / mid ×0.625 / far ×0.375. Apparent agility rises when
-//     something is near.
+//   * DISCHK (RBARON.MAC:3468-3496): player deltas scale by proximity of the nearest
+//     object — rb4-5 AC3: close ×0.375 / mid ×0.625 / far ×1.0. Control goes SLUGGISH
+//     when something is near (our shipped bands were inverted).
 //   * NO THROTTLE. Two pots (a flight yoke) + fire + start; forward motion is
 //     IMPLICIT AND CONSTANT — the pilot commands only turn and pitch (R2BRON.MAC:520,
 //     the epic "throttle" blurb was corrected).
@@ -77,7 +79,6 @@
 import { describe, it, expect, beforeAll } from 'vitest'
 import { transform, type Vec3, type Mat4 } from '@arcade/shared/math3d'
 import { flightView } from '../../src/core/camera'
-import { horizonSegments } from '../../src/core/horizon'
 
 // --- local mirrors of the RED contract (kept out of the static import graph so
 //     the file loads while src/core/flight.ts does not yet exist) ---
@@ -136,7 +137,7 @@ function need<T>(value: T | undefined, name: string): T {
   return value
 }
 
-/** Build a FlightInput; proximity defaults to 'near' (fast band) for terse tests. */
+/** Build a FlightInput; proximity defaults to 'near' (rb4-5: the SLOW ×0.375 band) for terse tests. */
 const IN = (turn: number, pitch: number, proximity: ProximityBand = 'near'): FlightInput => ({
   turn,
   pitch,
@@ -165,12 +166,19 @@ function withState(overrides: Partial<FlightState>): FlightState {
 // AC-1 — PLDELY pitch table (POTSCL / POTDLY)
 // ───────────────────────────────────────────────────────────────────────────
 describe('flight — PLDELY 11-step pitch table (POTSCL, findings §2)', () => {
-  const EXPECTED = [-32, -23, -17, -10, -5, 0, 4, 8, 13, 18, 25]
+  // rb4-5 FL-001: POTDLY is declared with the `.4WORD` macro (RBARON.MAC:15-18),
+  // which MULTIPLIES EVERY OPERAND BY 4. The shipped ROM table is the ×4 expansion
+  // of `.4WORD -32.,-23.,-17.,-10.,-5,0,4,8,13.,18.,25.` (RBARON.MAC:5930), NOT the
+  // raw operand list. Our clone transcribed the raw operands (an undecoded macro).
+  const RAW_OPERANDS = [-32, -23, -17, -10, -5, 0, 4, 8, 13, 18, 25]
+  const EXPECTED = RAW_OPERANDS.map((v) => v * 4) // [-128,-92,-68,-40,-20,0,16,32,52,72,100]
 
-  it('PITCH_TABLE is exactly the ROM POTDLY bytes (R2BRON.MAC:5923)', () => {
+  it('PITCH_TABLE is the ROM POTDLY bytes through the .4WORD ×4 macro (RBARON.MAC:5930)', () => {
     const table = need(f.PITCH_TABLE, 'PITCH_TABLE')
     expect([...table]).toEqual(EXPECTED)
     expect(table.length).toBe(11)
+    // refute the un-multiplied transcription that shipped (the FL-001 bug):
+    expect([...table]).not.toEqual(RAW_OPERANDS)
   })
 
   it('center pot maps to step 0 — level flight is a real value, not a default', () => {
@@ -178,13 +186,13 @@ describe('flight — PLDELY 11-step pitch table (POTSCL, findings §2)', () => {
     expect(need(f.pitchDelta, 'pitchDelta')(0)).toBe(0)
   })
 
-  it('full deflection hits the table extremes: dive = -32, climb = +25', () => {
+  it('full deflection hits the table extremes: dive = -128, climb = +100 (×4)', () => {
     const pitchDelta = need(f.pitchDelta, 'pitchDelta')
-    expect(pitchDelta(-1)).toBe(-32) // full nose-down
-    expect(pitchDelta(1)).toBe(25) // full nose-up
+    expect(pitchDelta(-1)).toBe(-128) // full nose-down  (-32 × 4)
+    expect(pitchDelta(1)).toBe(100) // full nose-up   (+25 × 4)
   })
 
-  it('ASYMMETRIC — a full dive (-32) is faster than a full climb (+25)', () => {
+  it('ASYMMETRIC — a full dive (-128) is faster than a full climb (+100)', () => {
     const pitchDelta = need(f.pitchDelta, 'pitchDelta')
     expect(Math.abs(pitchDelta(-1))).toBeGreaterThan(Math.abs(pitchDelta(1)))
   })
@@ -204,16 +212,16 @@ describe('flight — PLDELY 11-step pitch table (POTSCL, findings §2)', () => {
 
   it('out-of-range pots clamp to the table ends (the ROM pot is noise-filtered/calibrated)', () => {
     const pitchDelta = need(f.pitchDelta, 'pitchDelta')
-    expect(pitchDelta(5)).toBe(25) // past full up → clamps to +25
-    expect(pitchDelta(-5)).toBe(-32) // past full down → clamps to -32
+    expect(pitchDelta(5)).toBe(100) // past full up → clamps to +100 (+25 × 4)
+    expect(pitchDelta(-5)).toBe(-128) // past full down → clamps to -128 (-32 × 4)
   })
 
   it('rounds the pot to the NEAREST step (not floor/ceil) — pinned across a boundary', () => {
     // A shifted rounding rule would still be monotonic and in-table, so pin values
     // on both sides of a step midpoint (the sweep test alone can't catch this).
     const pitchDelta = need(f.pitchDelta, 'pitchDelta')
-    expect(pitchDelta(-0.74)).toBe(-23) // just below the 1→2 midpoint → step 1 (ceil would give -17)
-    expect(pitchDelta(-0.66)).toBe(-17) // just above it → step 2 (floor would give -23)
+    expect(pitchDelta(-0.74)).toBe(-92) // just below the 1→2 midpoint → step 1 (-23 × 4; ceil would give -68)
+    expect(pitchDelta(-0.66)).toBe(-68) // just above it → step 2 (-17 × 4; floor would give -92)
   })
 })
 
@@ -331,6 +339,71 @@ describe('flight — PLDELX turn-rate inertia + hysteresis (POT.X, findings §2)
 })
 
 // ───────────────────────────────────────────────────────────────────────────
+// rb4-5 AC4 — POT.X is PROPORTIONAL (arithmetic >>3), bounded [-16,+15], no MAX_TURN
+//
+// POT.X (RBARON.MAC:5897-5926): diff = POTVAL - PTRNGE/2 - PLDELX (target - current);
+// |diff| < 3 → leave alone (the 2-count hysteresis); else the step is `LSR LSR LSR`
+// = diff >> 3 (arithmetic — `ORA I,0E0` sign-extends negatives), bounded to [-16,+15]
+// (`CMP I,10` / sign-extend), with a ±1 floor for a non-zero diff that shifts to 0
+// (the `20$` branch). It is NOT the constant `min(TURN_ACCEL, |delta|)` ramp toward a
+// `turn × MAX_TURN` target our clone shipped — the step SHRINKS as PLDELX nears the
+// commanded rate, and there is no invented MAX_TURN=40 cap.
+//
+// These pin the LAW with input.turn = 0 (so the target is exactly 0 and the error is
+// exactly -turnRate — no dependence on Dev's pot→ROM-unit scale). The constant ramp
+// gives ±min(8,|error|); the ROM gives arithShr(error, 3). They diverge for |error|>8.
+// ───────────────────────────────────────────────────────────────────────────
+describe('rb4-5 AC4 — POT.X proportional turn step (arithmetic >>3, findings §2)', () => {
+  // turn = 0 ⇒ target = 0 ⇒ error = 0 - turnRate. step must be arithShr(error, 3).
+  const HOLD = (turnRate: number): number => need(f.step, 'step')(withState({ turnRate }), IN(0, 0)).turnRate
+
+  it('the step is the error arithmetically shifted right by 3 (proportional, not a constant ramp)', () => {
+    // error = -turnRate; step = error >> 3. A constant-8 ramp would give -8 for all of these.
+    expect(HOLD(80)).toBe(70) // error -80 → step -10 (ramp would give 72)
+    expect(HOLD(16)).toBe(14) // error -16 → step  -2 (ramp would give  8)
+    expect(HOLD(8)).toBe(7) //  error  -8 → step  -1 (ramp would give  0)
+    expect(HOLD(-80)).toBe(-70) // error +80 → step +10 (symmetric)
+  })
+
+  it('a non-zero error that shifts to zero still steps by ±1 (the POT.X 20$ floor)', () => {
+    // |error| in [3,7] shifts to 0; the ROM forces a unit step so PLDELX still creeps in.
+    expect(HOLD(-5)).toBe(-4) // error +5 → +1 floor
+    expect(HOLD(-4)).toBe(-3) // error +4 → +1 floor
+    expect(HOLD(5)).toBe(4) //  error -5 → -1
+  })
+
+  it('the deadband holds: |error| < 3 does not move PLDELX (2-count hysteresis)', () => {
+    expect(HOLD(2)).toBe(2) // |error| 2 < 3 → leave alone
+    expect(HOLD(-2)).toBe(-2)
+    expect(HOLD(0)).toBe(0)
+  })
+
+  it('the step magnitude is bounded to [-16, +15] no matter how large the error', () => {
+    // A huge error saturates the step, not the target — there is no MAX_TURN cap on
+    // where PLDELX may sit, only a bound on how fast it moves per frame.
+    expect(HOLD(200) - 200).toBe(-16) // error -200 → step floored at -16
+    expect(HOLD(-200) - -200).toBe(15) // error +200 → step capped at +15
+  })
+
+  it('approach to a held full turn DECELERATES (proportional), never a flat ramp', () => {
+    const step = need(f.step, 'step')
+    let s = base()
+    const inc: number[] = []
+    for (let i = 0; i < 12; i++) {
+      const before = s.turnRate
+      s = step(s, IN(1, 0))
+      inc.push(s.turnRate - before)
+    }
+    // Proportional control's per-frame increment shrinks EVERY frame while the error
+    // is large; a constant ramp holds it flat at the accel step (e.g. 8,8,8,8,8,…) and
+    // only drops at the tail. Comparing two EARLY frames catches it: the ramp is still
+    // flat at frame 2 (inc[0] == inc[2]), proportional has already decelerated.
+    expect(inc[0]).toBeGreaterThan(inc[2])
+    for (let i = 1; i < inc.length; i++) expect(inc[i]).toBeLessThanOrEqual(inc[i - 1])
+  })
+})
+
+// ───────────────────────────────────────────────────────────────────────────
 // AC-4 — I4YPOS altitude clamp (PLYMIN..PLYMAX)
 // ───────────────────────────────────────────────────────────────────────────
 describe('flight — I4YPOS altitude clamp (findings §2, §5)', () => {
@@ -382,11 +455,22 @@ describe('flight — I4YPOS altitude clamp (findings §2, §5)', () => {
 // AC-5 — DISCHK distance-scaled control feel
 // ───────────────────────────────────────────────────────────────────────────
 describe('flight — DISCHK distance-scaled feel (findings §2)', () => {
-  it('the three proximity bands are exactly near ×1.0 / mid ×0.625 / far ×0.375', () => {
+  // rb4-5 AC3: our DISCHK bands were INVERTED. The ROM (RBARON.MAC:3468-3496 +
+  // the D7=CLOSE / D6=MIDDLE / D5=FAR band flags at :3189) scales the player's
+  // deltas by CLOSE ×0.375 (BMI → "0.375 * VALUE"), MIDDLE ×0.625 (BVS → "0.625 *
+  // VALUE"), FAR ×1.0 (fall-through → "1.0 * VALUE"). Something CLOSE makes the
+  // controls SLUGGISH, not sharper — the opposite of what we shipped.
+  it('the three proximity bands are exactly near ×0.375 / mid ×0.625 / far ×1.0', () => {
     const d = need(f.DISCHK, 'DISCHK')
-    expect(d.near).toBe(1.0)
-    expect(d.mid).toBe(0.625)
-    expect(d.far).toBe(0.375)
+    expect(d.near).toBe(0.375) // CLOSE — D7 — BMI "0.375 * VALUE"
+    expect(d.mid).toBe(0.625) // MIDDLE — D6 — BVS "0.625 * VALUE"
+    expect(d.far).toBe(1.0) // FAR — D5 — fall-through "1.0 * VALUE"
+  })
+
+  it('the bands are ordered near < mid < far (close is the SLOW end, far is full control)', () => {
+    const d = need(f.DISCHK, 'DISCHK')
+    expect(d.near).toBeLessThan(d.mid)
+    expect(d.mid).toBeLessThan(d.far)
   })
 
   it('DISCHK covers exactly the three ProximityBand values (exhaustive union)', () => {
@@ -397,23 +481,24 @@ describe('flight — DISCHK distance-scaled feel (findings §2)', () => {
     }
   })
 
-  it('turning feels sharper when something is near — pan scales with proximity', () => {
+  it('controls go SLUGGISH when something is close — pan scales DOWN with proximity', () => {
     // Same turn command, three bands. The turnRate RAMP is proximity-independent;
-    // DISCHK scales the WORLD pan (heading), so near pans farther than far.
+    // DISCHK scales the WORLD pan (heading). With the ROM bands, FAR (×1.0) pans
+    // farthest and NEAR (×0.375) least — the reverse of the shipped bug.
     const near = run(base(), IN(1, 0, 'near'), 20).heading
     const mid = run(base(), IN(1, 0, 'mid'), 20).heading
     const far = run(base(), IN(1, 0, 'far'), 20).heading
-    expect(near).toBeGreaterThan(mid)
-    expect(mid).toBeGreaterThan(far)
-    expect(far).toBeGreaterThan(0)
+    expect(far).toBeGreaterThan(mid)
+    expect(mid).toBeGreaterThan(near)
+    expect(near).toBeGreaterThan(0)
   })
 
-  it('altitude change also scales with proximity (climb gains more altitude when near)', () => {
+  it('altitude change also scales with proximity (climb gains more altitude when FAR)', () => {
     const startAlt = base().altitude
     const near = run(base(), IN(0, 1, 'near'), 5).altitude - startAlt
     const far = run(base(), IN(0, 1, 'far'), 5).altitude - startAlt
-    expect(near).toBeGreaterThan(far)
-    expect(far).toBeGreaterThan(0)
+    expect(far).toBeGreaterThan(near)
+    expect(near).toBeGreaterThan(0)
   })
 })
 
@@ -441,80 +526,69 @@ describe('flight — turning pans the world, accumulating heading (UNIV4X, findi
 
 // ───────────────────────────────────────────────────────────────────────────
 // AC-7 — drives the rb1 flightView camera (the story title)
+//
+// rb4-5: the camera is TRANSLATION-based. The flight→camera bridge maps heading to
+// a LATERAL eye pan (UNIV4X) and altitude to eye height (I4YPOS); the ONLY rotation
+// left is the bank (roll). No yaw rotation, no transient camera pitch. The
+// depth-invariance of that translation is pinned behaviourally in camera-shape.test.ts;
+// here we pin the BRIDGE OUTPUT (toAttitude / toEye) that produces it.
 // ───────────────────────────────────────────────────────────────────────────
 describe('flight — drives the rb1 flightView camera (story title, findings §2)', () => {
-  const meanY = (att: Attitude): number => {
-    const segs = horizonSegments(att, 1)
-    expect(segs.length).toBe(1) // the horizon is in view for these attitudes
-    return (segs[0].y1 + segs[0].y2) / 2
-  }
-  const tilt = (att: Attitude): number => {
-    const segs = horizonSegments(att, 1)
-    expect(segs.length).toBe(1)
-    return segs[0].y1 - segs[0].y2 // 0 ⇒ flat horizon; sign ⇒ bank direction
-  }
+  /** roll of a state, robust to the interface dropping the (now-zero) pitch/yaw fields. */
+  const rollOf = (s: FlightState): number => need(f.toAttitude, 'toAttitude')(s).roll
+  const pitchOf = (s: FlightState): number => need(f.toAttitude, 'toAttitude')(s).pitch ?? 0
+  const yawOf = (s: FlightState): number => need(f.toAttitude, 'toAttitude')(s).yaw ?? 0
 
-  it('a neutral state maps to LEVEL attitude — wings level, nose level, dead ahead', () => {
-    const att = need(f.toAttitude, 'toAttitude')(base())
-    expect(att.roll).toBeCloseTo(0, 9)
-    expect(att.pitch).toBeCloseTo(0, 9)
-    expect(att.yaw).toBeCloseTo(0, 9)
+  it('a neutral state is wings-level with no roll', () => {
+    expect(rollOf(base())).toBeCloseTo(0, 9)
   })
 
-  it('roll follows the turn: banking tilts the real rb1 horizon, opposite ways L vs R', () => {
-    const toAttitude = need(f.toAttitude, 'toAttitude')
-    const flat = tilt(toAttitude(base()))
-    const rightTilt = tilt(toAttitude(withState({ turnRate: 20 })))
-    const leftTilt = tilt(toAttitude(withState({ turnRate: -20 })))
-    expect(Math.abs(flat)).toBeLessThan(1e-6) // level ⇒ flat horizon
-    expect(Math.abs(rightTilt)).toBeGreaterThan(1e-3) // a bank tilts it
-    expect(Math.sign(rightTilt)).toBe(-Math.sign(leftTilt)) // opposite banks tilt oppositely
+  it('the transient pitchRate produces NO camera pitch — climb/dive is I4YPOS, not a rotation', () => {
+    // The ROM never rotates for pitch; PLDELY only feeds I4YPOS. A state that differs
+    // ONLY in pitchRate must carry the same (zero) camera pitch.
+    expect(pitchOf(withState({ pitchRate: 18 }))).toBeCloseTo(0, 9)
+    expect(pitchOf(withState({ pitchRate: -23 }))).toBeCloseTo(0, 9)
   })
 
-  it("roll obeys the bank clamp — the horizon can't tilt past the 0x100 limit", () => {
-    const toAttitude = need(f.toAttitude, 'toAttitude')
-    const atLimit = Math.abs(need(f.toAttitude, 'toAttitude')(withState({ turnRate: 100 })).roll)
-    const beyond = Math.abs(toAttitude(withState({ turnRate: 1000 })).roll)
-    const modest = Math.abs(toAttitude(withState({ turnRate: 15 })).roll)
-    expect(atLimit).toBeGreaterThan(modest) // more turn ⇒ more roll...
-    expect(beyond).toBeCloseTo(atLimit, 6) // ...until the clamp saturates it
+  it('heading produces NO camera yaw — turning is the UNIV4X world pan, not a rotation', () => {
+    expect(yawOf(withState({ heading: 40 }))).toBeCloseTo(0, 9)
+    expect(yawOf(withState({ heading: -40 }))).toBeCloseTo(0, 9)
   })
 
-  it('pitch follows climb/dive: it slides the horizon vertically, opposite ways', () => {
-    const toAttitude = need(f.toAttitude, 'toAttitude')
-    const level = meanY(toAttitude(base()))
-    const climb = meanY(toAttitude(withState({ pitchRate: 18 })))
-    const dive = meanY(toAttitude(withState({ pitchRate: -23 })))
-    expect(climb).not.toBeCloseTo(level, 3) // climbing moves the horizon...
-    expect(Math.sign(climb - level)).toBe(-Math.sign(dive - level)) // ...dive moves it the other way
-  })
-
-  it('yaw pans without banking — a pure heading change keeps the horizon flat', () => {
-    const flatYawed = tilt(need(f.toAttitude, 'toAttitude')(withState({ heading: 0.5, turnRate: 0 })))
-    expect(Math.abs(flatYawed)).toBeLessThan(1e-6) // turning ≠ rolling
-  })
-
-  it('eye position is [0, altitude→y, 0] and climbing lifts the eye over the terrain', () => {
+  it('heading drives a LATERAL eye pan (UNIV4X): the eye slides in X, opposite ways L vs R', () => {
     const toEye = need(f.toEye, 'toEye')
-    const toAttitude = need(f.toAttitude, 'toAttitude')
-    const low = withState({ altitude: 100 })
-    const high = withState({ altitude: 700 })
-    const eLow = toEye(low)
-    const eHigh = toEye(high)
-    expect(eLow[0]).toBeCloseTo(0, 9) // no lateral eye translation (heading is a yaw, not a strafe)
-    expect(eLow[2]).toBeCloseTo(0, 9)
-    expect(eHigh[1]).toBeGreaterThan(eLow[1]) // higher altitude ⇒ higher eye
-    // ...and through the real camera, a fixed ground point sits lower when you're higher:
+    const level = toEye(base())
+    const right = toEye(withState({ heading: 40 }))
+    const left = toEye(withState({ heading: -40 }))
+    expect(Math.abs(right[0] - level[0])).toBeGreaterThan(1e-3) // the world pans laterally…
+    expect(Math.sign(right[0] - level[0])).toBe(-Math.sign(left[0] - level[0])) // …opposite ways
+  })
+
+  it('altitude drives eye HEIGHT (I4YPOS): climbing raises the eye', () => {
+    const toEye = need(f.toEye, 'toEye')
+    const eLow = toEye(withState({ altitude: 100 }))
+    const eHigh = toEye(withState({ altitude: 700 }))
+    expect(eHigh[1]).toBeGreaterThan(eLow[1])
+    // ...and through the real camera a fixed ground point sits lower when you're higher:
     const ground: Vec3 = [0, -40, -500]
-    const viaLow = transform(flightView(toAttitude(low), eLow), ground)
-    const viaHigh = transform(flightView(toAttitude(high), eHigh), ground)
+    const viaLow = transform(flightView(need(f.toAttitude, 'toAttitude')(withState({ altitude: 100 })), eLow), ground)
+    const viaHigh = transform(flightView(need(f.toAttitude, 'toAttitude')(withState({ altitude: 700 })), eHigh), ground)
     expect(viaHigh[1]).toBeLessThan(viaLow[1])
   })
 
-  it('the bridge yields a valid (finite) Math-Box view for a full maneuvering attitude', () => {
-    // A smoke check only — that a combined attitude does not produce NaN garbage.
-    // The CORRECTNESS of the compose (roll/pitch/yaw sign & order) is pinned by the
-    // horizon-tilt / horizon-slide / pure-yaw tests above, which drive the real camera.
+  it('roll follows the turn: banking rolls opposite ways L vs R and obeys the 0x100 clamp', () => {
+    const flat = Math.abs(rollOf(base()))
+    const rightTilt = rollOf(withState({ turnRate: 20 }))
+    const leftTilt = rollOf(withState({ turnRate: -20 }))
+    expect(flat).toBeLessThan(1e-6) // level ⇒ no roll
+    expect(Math.abs(rightTilt)).toBeGreaterThan(1e-3) // a bank rolls
+    expect(Math.sign(rightTilt)).toBe(-Math.sign(leftTilt)) // opposite banks roll oppositely
+    const atLimit = Math.abs(rollOf(withState({ turnRate: 100 })))
+    const beyond = Math.abs(rollOf(withState({ turnRate: 1000 })))
+    expect(beyond).toBeCloseTo(atLimit, 6) // ...saturates at the clamp
+  })
+
+  it('the bridge yields a valid (finite) Math-Box view for a full maneuvering state', () => {
     const s = withState({ turnRate: 15, pitchRate: 8, heading: 12, altitude: 400 })
     const view: Mat4 = flightView(need(f.toAttitude, 'toAttitude')(s), need(f.toEye, 'toEye')(s))
     expect(view.length).toBe(16)
