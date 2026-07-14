@@ -390,9 +390,18 @@ describe('AC2 — the trap header tells the truth about the decoy', () => {
   })
 
   it("warns that the decoy's load map signs the ship build's name", () => {
-    expect(trapHeader(), 'the header must warn that the decoy IDENTIFIES ITSELF as RBARON').toMatch(
-      /load map|\.MAP|object module/i,
+    // Assert the EVIDENCE, not a word near it. `/load map|\.MAP|object module/i` was matched by the
+    // token `.MAP` in "R2BRON.MAP" — so the entire warning, evidence block and all, could be deleted
+    // (or falsified to name a different module) and this stayed green (Reviewer, rb4-2 round 3).
+    // Third time this suite matched a token where it claimed to check a claim: `toContain('7')` was
+    // satisfied by `037007.XXX`, `\b2\b` by `(rb4-2)`, and `\.MAP` by `R2BRON.MAP`.
+    //
+    // This is the line the source-side group re-derives from R2BRON.MAP. It IS the trap: the decoy's
+    // own load map calls its object module RBARON.
+    expect(trapHeader(), "the header must SHOW the decoy's map identing itself as RBARON").toMatch(
+      /OBJ:R2BRON\s+RBARON/,
     )
+    expect(trapHeader(), 'and say what that means').toMatch(/load map|object module/i)
   })
 })
 
