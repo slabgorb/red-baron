@@ -91,7 +91,7 @@ function sourceLines(file: string): string[] {
 }
 
 /** 1-based, the way a citation reads. */
-const at = (lines: string[], n: number) => lines[n - 1]
+const at = (lines: readonly string[], n: number) => lines[n - 1]
 
 /** Every `.ts` under src/, as [repo-relative path, contents]. */
 function srcFiles(): Array<[string, string]> {
@@ -186,7 +186,7 @@ const ROM = {
 } as const
 
 /** Lines (1-based) at which two same-length files disagree. */
-function differingLines(a: string[], b: string[]): number[] {
+function differingLines(a: readonly string[], b: readonly string[]): number[] {
   const n = Math.max(a.length, b.length)
   const out: number[] = []
   for (let i = 0; i < n; i++) if (a[i] !== b[i]) out.push(i + 1)
