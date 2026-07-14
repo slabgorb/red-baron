@@ -11,6 +11,34 @@ for the player. Purely internal work is summarised under *Internal*.
 Red Baron is still in active development — it is the newest cabinet in the arcade, and
 not yet feature-complete against the 1980 original.
 
+## [Unreleased]
+
+### Fixed
+- **The planes fly the way they look.** Roughly thirty gameplay constants were read out of
+  the 1980 source as decimal when the source declares them **hexadecimal**. One
+  transcription error, about thirty casualties: enemy weave was 37% too slow, aircraft
+  spawned nearly **four times too close**, the fly-by trigger fired 2.3× too late, your guns
+  lost a fifth of their range, and the horizon sat four times too near. The vector shapes
+  were never wrong — the picture data really is decimal, and it was transcribed correctly.
+  That is exactly why the game *looked* right and *behaved* wrong.
+- A tracer is now drawn at the depth it actually kills at, and a blimp disappears when it
+  truly leaves the screen rather than at a fixed distance.
+
+## [0.0.13] - 2026-07-13
+
+Version bump only.
+
+## [0.0.12] - 2026-07-13
+
+### Internal
+- Red Baron's audio moved onto the arcade's shared synth. No sound changes — the same
+  voices and the same tunings.
+- An audit of this clone against the original 1980 Atari source, kept honest by a gate that
+  re-opens every citation on both sides. It found that the ROM's gameplay constants are
+  hexadecimal and that we had transcribed about thirty of them as decimal — the reason the
+  aircraft look right and fly wrong. **This release contains the audit only; no gameplay
+  code changed.** The correction itself is above, in *Unreleased*.
+
 ## [0.0.11] - 2026-07-12
 
 No player-visible changes. Documentation only.
