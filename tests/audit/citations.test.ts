@@ -9,6 +9,29 @@
 // The Atari source is copyrighted and never enters this repo. The source-side checks
 // therefore degrade gracefully when it is absent (CI), while the schema and our-side
 // checks still run.
+//
+// ─── THIS FILE IS A SINGLE POINT OF FAILURE (rb4-1 REWORK 3, Reviewer finding 5) ─────
+//
+// EVERY test below routes through one function: checkFindings(). That makes it a choke
+// point, and choke points get choked. One line inside it —
+//
+//     if (f.verdict === 'exempt') continue
+//
+// — using `verdict`, a key the finding schema ALREADY PERMITS, silently neutralises every
+// assertion in this file at once: the synthetic fixtures here carry no verdict, so they go
+// on passing while the real findings sail through unchecked. It would read as housekeeping
+// in a diff.
+//
+// Two things stop that, and neither of them lives here:
+//
+//   1. tests/audit/citation-evidence.test.ts re-implements the our-side byte comparison
+//      FROM SCRATCH, over the real findings, sharing no code with checkFindings(). That
+//      duplication is DELIBERATE. It MUST NOT be refactored to call checkFindings() — the
+//      moment it does, one line subverts both files and the audit is unguarded.
+//   2. The same file exercises checkFindings() against a synthetic laundered finding that
+//      CARRIES `verdict: 'exempt'`, so the neutralisation above turns the suite red.
+//
+// If you are here to make this file green, that is the file you must convince.
 
 import { describe, it, expect } from 'vitest'
 import { readFileSync, readdirSync, existsSync } from 'node:fs'
@@ -175,12 +198,29 @@ describe('checkFindings — schema', () => {
   })
 })
 
+/**
+ * The commit the audit was taken against (the squash of PR #20 on develop). The `ours`
+ * citations describe the code as it stood HERE.
+ *
+ * rb4-1 corrected ~30 of the very lines the audit indicts, and added a radix citation
+ * above each — which shifts every line below it. Checking `ours` against the WORKING TREE
+ * would therefore redden this gate for doing exactly what the audit asked, and the only
+ * way to green it would be to rewrite the findings to match the new code: laundering a
+ * guess into evidence, which is the one thing this checker exists to prevent.
+ *
+ * So the our-side check is pinned to the audit commit. Nothing is weakened — every line
+ * is still re-opened and compared byte-for-byte against real content at a real commit —
+ * and tests/audit/citation-evidence.test.ts independently guards that the findings
+ * themselves have not been edited.
+ */
+const AUDIT_COMMIT = '6038a07b9044f1add37fd12c217cd39ec1629439'
+
 describe('the committed findings', () => {
-  it('every findings file passes the schema + our-side citation checks', () => {
+  it('every findings file passes the schema + our-side citation checks, AS AUDITED', () => {
     if (!existsSync(findingsDir)) return
     const files = readdirSync(findingsDir).filter((f) => f.endsWith('.json'))
     const all = files.flatMap((f) => JSON.parse(readFileSync(join(findingsDir, f), 'utf8')))
-    expect(checkFindings(all, { repoRoot, sourceDir: null })).toEqual([])
+    expect(checkFindings(all, { repoRoot, sourceDir: null, oursRef: AUDIT_COMMIT })).toEqual([])
   })
 })
 
@@ -189,6 +229,6 @@ describe.skipIf(!sourceAvailable)('the committed findings — source side', () =
     if (!existsSync(findingsDir)) return
     const files = readdirSync(findingsDir).filter((f) => f.endsWith('.json'))
     const all = files.flatMap((f) => JSON.parse(readFileSync(join(findingsDir, f), 'utf8')))
-    expect(checkFindings(all, { repoRoot, sourceDir })).toEqual([])
+    expect(checkFindings(all, { repoRoot, sourceDir, oursRef: AUDIT_COMMIT })).toEqual([])
   })
 })

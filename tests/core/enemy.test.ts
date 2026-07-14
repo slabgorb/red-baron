@@ -96,6 +96,8 @@ interface EnemyModule {
   P_OLIM?: readonly number[]
   P_ILIM?: readonly number[]
   P_INDP?: number
+  /** P.MNDP — the plane's depth FLOOR. Re-exported by enemy.ts (its ROM name; rb4-1). */
+  P_MNDP?: number
   ACCEL?: number
   LONE_PLANE_CHANCE?: number
   spawn?: (rng: Rng, level?: number) => Enemy
@@ -207,12 +209,17 @@ describe('enemy — P.OLIM / P.ILIM window tables (findings §3, R2BRON.MAC:2935
 // AC-2 — ROM spawn/steer constants
 // ───────────────────────────────────────────────────────────────────────────
 describe('enemy — ROM constants P.INDP / ACCEL / lone-plane roll (findings §3)', () => {
-  it('P_INDP spawn depth is 1080 (NWPLNE, R2BRON.MAC:2237)', () => {
-    expect(need(m.P_INDP, 'P_INDP')).toBe(1080)
+  // rb4-1 RE-BASELINE. These two asserted the DECIMAL misreading and cited the DECOY
+  // build (R2BRON.MAC — never shipped). RBARON.MAC is `.RADIX 16` from :74, so the
+  // literals are HEX. Derivation is audited in tests/audit/radix-transcription.test.ts.
+  it('P_INDP spawn depth is 0x1080 = 4224 (P.INDP, RBARON.MAC:464, .RADIX 16)', () => {
+    expect(need(m.P_INDP, 'P_INDP')).toBe(0x1080)
+    expect(need(m.P_INDP, 'P_INDP')).not.toBe(1080) // the decimal misreading we shipped
   })
 
-  it('ACCEL — the ΔX weave acceleration per calc frame — is 30 (findings §3)', () => {
-    expect(need(m.ACCEL, 'ACCEL')).toBe(30)
+  it('ACCEL — the ΔX weave acceleration per calc frame — is 0x30 = 48 (RBARON.MAC:465, .RADIX 16)', () => {
+    expect(need(m.ACCEL, 'ACCEL')).toBe(0x30)
+    expect(need(m.ACCEL, 'ACCEL')).not.toBe(30) // the decimal misreading we shipped
   })
 
   it('LONE_PLANE_CHANCE is the 25 % RANDOM roll (findings §3)', () => {
@@ -323,6 +330,52 @@ describe('enemy — weaving window-follower steering (UPDPLN, findings §3)', ()
     expect(wide).toBeGreaterThan(olim0) // level 4 flies out past it
   })
 
+  it('a higher GMLEVL CLOSES faster — through step(), not just closeSpeed() in isolation', () => {
+    // rb4-1 REWORK 2 (Reviewer finding 5). The rework deleted the invented flat CLOSE_SPEED
+    // and wired the ROM's own PLPOSZ[GMLEVL] — which PLNZD stores as "PLANE MOTION DEPTH
+    // DELTA" (RBARON.MAC:2409-2411). enemy.ts:52 now claims deeper levels close "up to 20x
+    // faster", and that claim was only ever tested on closeSpeed() directly. The weave has a
+    // through-step() test (above); the closing rate — the thing the player actually feels —
+    // had none. So the plane's approach rate could be wired to anything and this suite would
+    // not have noticed.
+    const step = need(m.step, 'step')
+    const P_MNDP = need(m.P_MNDP, 'P_MNDP')
+
+    /** Calc-frames for a freshly-spawned plane at `level` to bore in to its P.MNDP floor. */
+    const framesToFloor = (level: number, cap = 4000): number => {
+      let e = spawnAt(7, level)
+      for (let f = 0; f < cap; f++) {
+        e = step(e, level)
+        if (e.depth <= P_MNDP + 1e-9) return f + 1
+      }
+      return cap
+    }
+
+    const slow = framesToFloor(0) // PLPOSZ[0] = -0x04
+    const fast = framesToFloor(5) // PLPOSZ[5] = -0x50 — twenty times the delta
+    expect(slow).toBeLessThan(4000) // it does arrive (a flat/zero rate would hit the cap)
+    expect(fast).toBeLessThan(slow) // …and the ace arrives first
+    // 20x the per-frame delta means ~1/20th the frames. Bound it loosely (the weave and the
+    // floor clamp cost a frame either side) but tightly enough that a flat rate cannot pass.
+    expect(slow / fast).toBeGreaterThan(10)
+  })
+
+  it('the plane never bores THROUGH the player — P.MNDP is a floor, not a waypoint', () => {
+    // The closing rate is now GMLEVL-indexed and the fastest is 20x the slowest, so the
+    // floor has to hold against a delta big enough to overshoot it in one frame.
+    const step = need(m.step, 'step')
+    const P_MNDP = need(m.P_MNDP, 'P_MNDP')
+    for (const level of [0, 3, 5]) {
+      let e = spawnAt(7, level)
+      for (let f = 0; f < 2000; f++) {
+        e = step(e, level)
+        expect(e.depth, `GMLEVL ${level} flew through the floor on frame ${f}`).toBeGreaterThanOrEqual(
+          P_MNDP - 1e-9,
+        )
+      }
+    }
+  })
+
   it('is a pure, deterministic step — same (enemy, level) gives the same next frame, input untouched', () => {
     const step = need(m.step, 'step')
     const e = spawnAt(3, 0)
@@ -343,6 +396,7 @@ describe('enemy — GMLEVL clamping & direct boundary reversal', () => {
 
   it('clamps an out-of-range GMLEVL — negative / >max / NaN / non-integer never read P_OLIM[undefined]', () => {
     const step = need(m.step, 'step')
+    const P_INDP = need(m.P_INDP, 'P_INDP')
     for (const bad of [-1, -100, 5, 99, Number.NaN, 2.7]) {
       const e = spawnAt(3, bad)
       expect(Number.isFinite(e.x)).toBe(true) // no NaN leak from a bad level index
@@ -350,6 +404,17 @@ describe('enemy — GMLEVL clamping & direct boundary reversal', () => {
       const s = step(e, bad) // stepping a degenerate level must also stay total + bounded
       expect(Number.isFinite(s.x)).toBe(true)
       expect(Math.abs(s.x)).toBeLessThanOrEqual(olimMax() + 1e-9)
+
+      // rb4-1 REWORK 2 (Reviewer finding 5). The rework wired `level` into the plane's
+      // CLOSING RATE (closeSpeed -> PLPOSZ[GMLEVL]), so a bad level index now reaches the
+      // DEPTH axis and not just x. And the two clamps live in different modules over
+      // different-length tables — enemy.ts clamps to P_OLIM (5), returning-ace.ts to
+      // PLPOSZ (9) — so `x` being safe is no longer evidence that `depth` is.
+      expect(Number.isFinite(s.depth), `a GMLEVL of ${String(bad)} leaked a non-finite depth`).toBe(
+        true,
+      )
+      expect(s.depth).toBeLessThanOrEqual(P_INDP)
+      expect(s.depth).toBeGreaterThan(0) // never dives through the player
     }
   })
 
