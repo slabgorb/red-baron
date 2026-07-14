@@ -9,6 +9,29 @@
 // The Atari source is copyrighted and never enters this repo. The source-side checks
 // therefore degrade gracefully when it is absent (CI), while the schema and our-side
 // checks still run.
+//
+// ─── THIS FILE IS A SINGLE POINT OF FAILURE (rb4-1 REWORK 3, Reviewer finding 5) ─────
+//
+// EVERY test below routes through one function: checkFindings(). That makes it a choke
+// point, and choke points get choked. One line inside it —
+//
+//     if (f.verdict === 'exempt') continue
+//
+// — using `verdict`, a key the finding schema ALREADY PERMITS, silently neutralises every
+// assertion in this file at once: the synthetic fixtures here carry no verdict, so they go
+// on passing while the real findings sail through unchecked. It would read as housekeeping
+// in a diff.
+//
+// Two things stop that, and neither of them lives here:
+//
+//   1. tests/audit/citation-evidence.test.ts re-implements the our-side byte comparison
+//      FROM SCRATCH, over the real findings, sharing no code with checkFindings(). That
+//      duplication is DELIBERATE. It MUST NOT be refactored to call checkFindings() — the
+//      moment it does, one line subverts both files and the audit is unguarded.
+//   2. The same file exercises checkFindings() against a synthetic laundered finding that
+//      CARRIES `verdict: 'exempt'`, so the neutralisation above turns the suite red.
+//
+// If you are here to make this file green, that is the file you must convince.
 
 import { describe, it, expect } from 'vitest'
 import { readFileSync, readdirSync, existsSync } from 'node:fs'

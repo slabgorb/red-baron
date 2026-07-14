@@ -28,8 +28,8 @@
 // PURE and deterministic. No DOM, no time, no randomness.
 
 import { type Point3, type ConnectOp, DB_MAP, DB_MAR, DB_LNS } from './topology'
-import { P_INDP } from './returning-ace'
 import { type SceneSegment, projectSegment } from './scene'
+import { frustumHalfHeight } from './screen'
 import { toAttitude } from './flight'
 import type { Mat4 } from '@arcade/shared/math3d'
 
@@ -104,23 +104,66 @@ export interface BiplaneModel {
 }
 
 /**
- * Camera depth at/beyond which the far drone LOD is used. The ROM pins the near-full /
- * far-drone SPLIT but not the switch distance (findings §7, "LOD reading inferred"), so the
- * FRACTION is a tunable — but it is a fraction OF THE DEPTH AXIS, not a bare number.
- *
- * rb4-1 REWORK 2. This was `1500`, and it was quietly dead. Under the misread axis the plane
- * spawned at 1080 — INSIDE the switch — so `biplaneLOD` returned the 42-vertex near model for
- * the plane's entire flight and the 29-vertex drone had never once rendered in the shipped
- * game. Correcting P.INDP to 4224 switched it on by accident: nobody chose it, nobody tested
- * it, and the switch distance was still calibrated against a world that no longer existed.
- *
- * 3/8 of the spawn depth = 1584, which is deliberately within a hair of the shipped 1500: the
- * ROM's near/far split is real (findings §7) and rb4-1's job is to DENOMINATE this number, not
- * to re-tune it. Whether 3/8 is the authentic fraction is a fidelity question this story does
- * not own — but it can no longer silently fall outside the plane's flight band, because the
- * band and the switch are now measured with the same ruler.
+ * The plane's WINGSPAN in world units, read off its own vertices (top wing, x = ±40 → 80).
+ * Derived, never typed: it is the ruler the LOD threshold is a fraction of, and a ruler that
+ * can disagree with the model it measures is worthless.
  */
-export const LOD_DISTANCE = (P_INDP * 3) / 8 // 1584
+export const PLANE_SPAN = Math.max(...PLANE_POINTS.map((p) => Math.abs(p[0]))) * 2 // 80
+
+/**
+ * THE LOD THRESHOLD — and the only unit an LOD can honestly be written in: APPARENT SIZE.
+ *
+ * The drone model exists to drop 13 back-face vertices and 24 strokes once the plane is too
+ * small on screen for them to read. That is a statement about the SCREEN, not about the depth
+ * axis. So it is written as one: the far/drone LOD takes over once the plane's projected
+ * wingspan falls below this fraction of the frame's HALF-HEIGHT — i.e. below 4% of the
+ * screen's height. (Half-height, not half-width, because {@link frustumHalfHeight} does not
+ * depend on the aspect: the LOD must not change when the player widens the window.)
+ *
+ * rb4-1 REWORK 3, and this is Reviewer finding 4. The old constant was `LOD_DISTANCE =
+ * P_INDP * 3 / 8 = 1584` — it referenced the axis, it passed the "not a bare decimal" regex,
+ * and it was still worth nothing, because the guard was the ONLY thing looking at it. The
+ * Reviewer's proof: `LOD_DISTANCE = 1500 + 0 * P_INDP` restores the pre-sweep value, satisfies
+ * every assertion in the registry, and ships 799/799 green. Its behavioural tests passed
+ * IDENTICALLY at 1500 and at 1584 — they only ever asked that the switch land somewhere inside
+ * the flight band, and both do.
+ *
+ * The fix is not a tighter regex. It is to give the number a MEANING, so that the value can be
+ * measured instead of merely bounded. Ask what an LOD switch is actually FOR, denominate it in
+ * that, and derive the depth. Now 1500 genuinely fails: at 1500 the plane's projected wingspan
+ * is 0.0924 of the half-height, not 0.08, and tests/core/depth-scale.test.ts REGISTRY 6/7
+ * measures that span through the REAL projection of the REAL PLANE_POINTS. There is a number
+ * to be wrong about at last.
+ *
+ * HONEST: 0.08 is a PLAYTEST choice, not a ROM byte — the ROM ships both models but does not
+ * pin the switch (findings §7). What the suite pins is the RELATION (the switch happens at a
+ * known apparent size), not the value. Retuning it is legitimate and must be done HERE, in
+ * screen units; the depth follows. What is no longer possible is for the depth axis to move
+ * underneath it and change what the player sees while every test stays green.
+ */
+export const LOD_APPARENT_SPAN = 0.08
+
+/**
+ * Camera depth at/beyond which the far drone LOD is used — DERIVED from the apparent-size
+ * threshold above, not chosen. `apparentSpan(d) = PLANE_SPAN / frustumHalfHeight(d)`, so the
+ * switch depth is where that equals LOD_APPARENT_SPAN. ≈ 1732.
+ *
+ * (Pre-sweep it was a bare 1500 and it was quietly DEAD: the plane spawned at the misread 1080
+ * — inside the switch — so `biplaneLOD` returned the 42-vertex model for the plane's entire
+ * flight and the 29-vertex drone had never once rendered in the shipped game. The radix sweep
+ * switched it on by accident. It is now switched on ON PURPOSE, at a chosen apparent size, and
+ * REGISTRY 6/7 proves the drone actually draws at spawn and the full plane at the floor.)
+ */
+export const LOD_DISTANCE = PLANE_SPAN / LOD_APPARENT_SPAN / frustumHalfHeight(1)
+
+/**
+ * The plane's projected wingspan at `depth`, as a fraction of the frame's half-height — the
+ * quantity {@link LOD_DISTANCE} is defined by. Exported so the suite can measure the switch in
+ * the unit it is written in, rather than re-deriving the arithmetic it is checking.
+ */
+export function apparentSpan(depth: number): number {
+  return PLANE_SPAN / frustumHalfHeight(depth)
+}
 
 /** Near/full plane: all 42 vertices, back faces (DB.MAP→DB.MAR fall-through) + struts. */
 const NEAR_MODEL: BiplaneModel = {

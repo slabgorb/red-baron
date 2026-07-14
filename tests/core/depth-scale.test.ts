@@ -82,15 +82,21 @@ import { fileURLToPath } from 'node:url'
 
 import { P_INDP, proximityBand } from '../../src/core/enemy'
 import { P_MNDP } from '../../src/core/returning-ace'
-import { S_MAXZ, S_DPTH, SHELL_RANGE_DEPTH } from '../../src/core/guns'
-import { LOD_DISTANCE, biplaneLOD } from '../../src/core/biplane'
+import {
+  S_MAXZ, S_DPTH, SHELL_RANGE_DEPTH, shellSegments, shellDepth, type Shell,
+} from '../../src/core/guns'
+import { LOD_DISTANCE, LOD_APPARENT_SPAN, apparentSpan, biplaneLOD, PLANE_POINTS } from '../../src/core/biplane'
 import { spawn as spawnBlimp } from '../../src/core/blimp'
+import { sceneProjection, projectSegment } from '../../src/core/scene'
 import { scoreKill, DRONE_SCORE } from '../../src/core/scoring'
 import { approachWhine } from '../../src/shell/audio'
 import { createRng } from '@arcade/shared/rng'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const srcRoot = join(repoRoot, 'src')
+
+/** The reference frame these registry entries are measured in (rb4-1: see screen-scale.test.ts). */
+const ASPECT = 16 / 9
 
 /** Every .ts file under src/, recursively. */
 function srcFiles(dir: string = srcRoot): readonly string[] {
@@ -182,19 +188,30 @@ describe('REGISTRY 2/7 — enemy.NEAR_DEPTH / MID_DEPTH: the DISCHK bands (the m
   })
 })
 
-describe('REGISTRY 3/7 — main.SHELL_DRAW_FAR: the tracer is drawn where it kills [HIGH]', () => {
-  // The full behavioural seam test lives in tests/core/tracer-seam.test.ts — this entry
-  // is the registry's claim on the constant. See that file for the kill-and-draw proof.
-  it('main.ts holds NO private copy of the gun reach — the copy is the bug', () => {
-    const main = readFileSync(join(srcRoot, 'main.ts'), 'utf8')
+describe('REGISTRY 3/7 — SHELL_DRAW_FAR: the tracer is drawn where it kills [HIGH]', () => {
+  // THE CONSTANT NO LONGER EXISTS, and that is the fix. It was a hand-copied mirror of the gun's
+  // reach living in main.ts, whose comment promised it would track SHELL_RANGE_DEPTH; it did not,
+  // because copies do not track anything. The conversion is now a FUNCTION in the module that
+  // owns the shell (guns.shellDepth), and the projection that spends it (guns.shellSegments) has
+  // moved out of main.ts to sit beside it — so there is nothing left to keep in sync.
+  //
+  // THIS ENTRY USED TO BE TWO REGEXES OVER main.ts ("no SHELL_DRAW_FAR", "no 800"). They are
+  // DELETED. The Reviewer defeated them, and their replacement is in tests/core/tracer-seam.ts:
+  // fire real shells at a real plane, take the Hit, and RECOVER THE DEPTH FROM THE DRAWN
+  // GEOMETRY. What is left here is the registry's own one-line claim, stated the same way — as a
+  // measurement, not as a spelling.
+  it('a spent shell is DRAWN at the gun\'s reach — measured off the projected tracer', () => {
+    const proj = sceneProjection(ASPECT)
+    const spent: Shell = { x: 4, y: 0, z: S_MAXZ, gun: 'right', active: true }
+    const [seg] = shellSegments(spent, proj)
+    // ndc.x = mvp[0] * x / depth  =>  depth = mvp[0] * x / ndc.x   (x = ±MUZZLE_X, never 0)
+    const drawnDepth = (proj[0] * spent.x) / seg.x1
     expect(
-      main,
-      'SHELL_DRAW_FAR was a hand-copied mirror of SHELL_RANGE_DEPTH. It drifted, because ' +
-        'copies drift. Delete it and read the shell depth from core/guns.',
-    ).not.toMatch(/SHELL_DRAW_FAR/)
-    expect(main, 'the invented 800 reach must not survive anywhere in main.ts').not.toMatch(
-      /\b800\b/,
-    )
+      drawnDepth,
+      'a shell at S.MAXZ is at the end of its range; it must be DRAWN at SHELL_RANGE_DEPTH ' +
+        '(6400), not at the invented 800 the shipped mirror drew it at.',
+    ).toBeCloseTo(SHELL_RANGE_DEPTH, 6)
+    expect(drawnDepth).toBeCloseTo(shellDepth(S_MAXZ), 6) // …the same number the gun kills with
   })
 })
 
@@ -246,7 +263,7 @@ describe('REGISTRY 5/7 — blimp.CRUISE_DEPTH: the airship cruises mid-field, as
   it('spawns in the mid-field of the axis, not in the player\'s face', () => {
     // "Mid-field" is a range, not a number — Dev picks the number; the property is that it
     // is genuinely mid-field on the CORRECTED axis, and derived from it.
-    const blimp = spawnBlimp(createRng(3))
+    const blimp = spawnBlimp(createRng(3), ASPECT)
     expect(
       blimp.depth,
       `the airship's own comment calls its cruise depth "a visible mid-field distance". On the ` +
@@ -256,7 +273,7 @@ describe('REGISTRY 5/7 — blimp.CRUISE_DEPTH: the airship cruises mid-field, as
   })
 
   it('stays inside the gun\'s reach — a blimp you cannot shoot is not a target', () => {
-    const blimp = spawnBlimp(createRng(3))
+    const blimp = spawnBlimp(createRng(3), ASPECT)
     expect(blimp.depth).toBeLessThan(SHELL_RANGE_DEPTH)
   })
 
@@ -268,13 +285,33 @@ describe('REGISTRY 5/7 — blimp.CRUISE_DEPTH: the airship cruises mid-field, as
   })
 })
 
-describe('REGISTRY 6/7 — biplane.LOD_DISTANCE: the far/drone LOD was DEAD, and the sweep woke it', () => {
-  // FOUND BY THE SWEEP. main.ts:198 feeds enemy.depth to biplaneLOD.
+describe('REGISTRY 6/7 — biplane.LOD_DISTANCE: the switch has a SIZE, not just a range [MEDIUM]', () => {
+  // FOUND BY THE SWEEP, then found WANTING by the Reviewer (finding 4) — and he was right.
   //
-  // Old axis: plane spawned at 1080 < 1500 -> ALWAYS the 42-vertex near model. The 29-vertex
-  // drone model had NEVER RENDERED in the shipped game. The radix sweep silently turned it on.
-  // The ROM does have the split (findings §7), so having it fire is right — but it must be a
-  // DECISION, denominated in the axis, not an accident of a constant nobody re-read.
+  // Old axis: the plane spawned at 1080 < 1500, so biplaneLOD returned the 42-vertex near model
+  // for the plane's entire flight and the 29-vertex drone had NEVER RENDERED in the shipped game.
+  // The radix sweep switched it on by accident. Round 2 "fixed" that by writing
+  // LOD_DISTANCE = P_INDP * 3 / 8 — which references the axis, satisfies the bare-decimal guard,
+  // and is still worth NOTHING, because:
+  //
+  //     LOD_DISTANCE = 1500 + 0 * P_INDP
+  //
+  // restores the pre-sweep value, passes every assertion this registry entry had, and ships
+  // green. The three tests below (in/inside the band, drone at spawn, plane at the floor) hold
+  // IDENTICALLY at 1500 and at 1584. They only ever asked the number to land SOMEWHERE inside
+  // the flight envelope, and every number in a 3,900-unit interval does.
+  //
+  // A bound is not a property. So the constant was given a MEANING instead: an LOD switch is a
+  // statement about APPARENT SIZE — "swap to the cheap model once the plane is too small on
+  // screen for the detail to read". That is written in screen units (LOD_APPARENT_SPAN: a
+  // fraction of the frame's half-height) and the DEPTH IS DERIVED FROM IT. Now there is a number
+  // to be wrong about, and it is measured through the real projection of the real vertices.
+  //
+  // HONEST — read this before treating the green as coverage: what is pinned is the RELATION
+  // (the switch happens at a known apparent size), NOT the value. 0.08 is a playtest choice; the
+  // ROM ships both models but does not pin the switch (findings §7). Retuning it in SCREEN units
+  // is legitimate and the depth will follow. What is now impossible is the actual bug: the depth
+  // axis moving underneath the constant and changing what the player sees, silently, in green.
   it('both LODs actually fire during a real approach — the switch is inside the flight band', () => {
     expect(LOD_DISTANCE).toBeGreaterThan(P_MNDP) // else the plane is ALWAYS a drone
     expect(LOD_DISTANCE).toBeLessThan(P_INDP) // else the drone model is dead code (the old bug)
@@ -285,7 +322,35 @@ describe('REGISTRY 6/7 — biplane.LOD_DISTANCE: the far/drone LOD was DEAD, and
     expect(biplaneLOD(P_MNDP).points).toHaveLength(42) // on top of you
   })
 
-  it('is not a bare decimal — it is denominated in the axis', () => {
+  it('THE PROPERTY 1500 FAILS: the switch happens at the plane\'s stated APPARENT SIZE', () => {
+    // Measure the plane's wingspan where the LOD flips — not from the constant, but by
+    // PROJECTING ITS REAL VERTICES through the REAL sceneProjection, the way it is drawn.
+    const projectedSpanAt = (depth: number): number => {
+      const proj = sceneProjection(ASPECT)
+      const halfSpan = Math.max(...PLANE_POINTS.map((p) => Math.abs(p[0]))) // wing tip, x = 40
+      const seg = projectSegment([-halfSpan, 0, -depth], [halfSpan, 0, -depth], proj)
+      // NDC width in units of the frame's HALF-HEIGHT (aspect-free — undo the /aspect in mvp[0]).
+      return Math.abs(seg!.x2 - seg!.x1) * ASPECT
+    }
+
+    expect(
+      projectedSpanAt(LOD_DISTANCE),
+      'at the LOD switch the plane must subtend exactly LOD_APPARENT_SPAN of the frame — that ' +
+        'is what LOD_DISTANCE is DEFINED as, and this measures it through the real projection.',
+    ).toBeCloseTo(LOD_APPARENT_SPAN, 6)
+
+    // …and the same number, straight out of the module's own helper (so the definition and the
+    // drawing cannot part company either).
+    expect(apparentSpan(LOD_DISTANCE)).toBeCloseTo(LOD_APPARENT_SPAN, 6)
+
+    // THE REFUTATION. This is the assertion the round-2 constant could not have made. At the
+    // pre-sweep 1500 the plane subtends 0.0924 of the frame, not 0.08 — a different apparent
+    // size, and now a different, FAILING number. `LOD_DISTANCE = 1500 + 0 * P_INDP` dies here.
+    expect(projectedSpanAt(1500)).not.toBeCloseTo(LOD_APPARENT_SPAN, 3)
+    expect(projectedSpanAt(1584)).not.toBeCloseTo(LOD_APPARENT_SPAN, 3) // …and so does 3/8 P_INDP
+  })
+
+  it('is not a bare decimal — it is denominated in APPARENT SIZE, and derived from it', () => {
     const biplane = readFileSync(join(srcRoot, 'core', 'biplane.ts'), 'utf8')
     expect(
       biplane,
@@ -293,6 +358,10 @@ describe('REGISTRY 6/7 — biplane.LOD_DISTANCE: the far/drone LOD was DEAD, and
         'flight band, but it landed there BY ACCIDENT. Denominate it so the next sweep cannot ' +
         'silently move it in or out of range.',
     ).not.toMatch(/LOD_DISTANCE\s*=\s*\d+\s*$/m)
+    // …and the honest form: it is DERIVED from the screen threshold, not fitted to it.
+    expect(biplane, 'LOD_DISTANCE must be derived from LOD_APPARENT_SPAN').toMatch(
+      /LOD_DISTANCE\s*=\s*[^\n]*LOD_APPARENT_SPAN/,
+    )
   })
 })
 
@@ -407,10 +476,28 @@ const NOT_A_DEPTH: ReadonlyMap<string, string> = new Map([
       'not a distance. Same word, different axis, no relation to P_INDP.',
   ],
   [
-    'ENTRY_X_RANGE',
-    'blimp.ts — the lateral entry window in screen-window X. The X axis, not the depth axis.',
+    'ENTRY_NDC_RANGE',
+    'blimp.ts — the lateral entry window, in NDC. Not the depth axis — the SCREEN axis, which ' +
+      'is the second class of denominated constant and has its own registry: ' +
+      'tests/core/screen-scale.test.ts. (It was ENTRY_X_RANGE, a bare 120 world units, and it ' +
+      'was one of the constants that broke when the depth axis moved — see finding 1.)',
   ],
-  ['SPAWN_Y_RANGE', 'blimp.ts / enemy.ts — the vertical spawn spread in screen-window Y.'],
+  [
+    'SPAWN_NDC_Y_RANGE',
+    'blimp.ts — the vertical spawn spread, in NDC. SCREEN axis; registered in screen-scale.ts.',
+  ],
+  [
+    'SPAWN_Y_RANGE',
+    'enemy.ts — the vertical spawn spread in screen-window Y. Not a depth. It IS on the screen ' +
+      'axis, and it is NOT yet denominated there — see screen-scale.ts, which registers it and ' +
+      'says so out loud rather than letting it pass as classified.',
+  ],
+  [
+    'LOD_APPARENT_SPAN',
+    'biplane.ts — trips this sweep on `^LOD_`, but it is not a depth at all: it is the LOD ' +
+      "switch's threshold in APPARENT SIZE (a fraction of the frame's half-height). It is what " +
+      'LOD_DISTANCE (a real depth, registry 6/7) is DERIVED FROM. Screen axis — screen-scale.ts.',
+  ],
 ])
 
 /**
@@ -443,6 +530,10 @@ const REGISTERED: ReadonlySet<string> = new Set([
   'SHELL_RANGE_DEPTH',
   'NEAR_DEPTH',
   'MID_DEPTH',
+  // SHELL_DRAW_FAR — a TOMBSTONE. The constant is gone (rb4-1 round 3): a hand-copied mirror of
+  // the gun reach cannot be made safe, only deleted. The conversion is guns.shellDepth and the
+  // projection that spends it is guns.shellSegments, both tested. Kept in the set so that
+  // reintroducing the NAME re-arms the bare-decimal guard on it instantly.
   'SHELL_DRAW_FAR',
   'WHINE_HALF_DEPTH',
   'CRUISE_DEPTH',
@@ -528,6 +619,18 @@ describe('COMPLETENESS — every depth-denominated constant is enumerated, or th
       'PFOBIZ_DEPTHS',
       'BONUS_DEPTH_MSB', // scoring.ts — the ROM's own depth-MSB gate (PLNSCR)
       'HORZ',
+      // rb4-1 round 3 — two OBJECT DIMENSIONS that legitimately appear in depth arithmetic.
+      // Neither is a position on the depth axis; both are LENGTHS read off a model's own
+      // vertices, and both are classified in the screen registry (screen-scale.test.ts).
+      //
+      //   PLANE_SPAN        biplane.ts — the plane's wingspan (80 units, from PLANE_POINTS).
+      //                     Divided BY the frustum at a depth to get apparent size; it is the
+      //                     numerator, not the axis.
+      //   BLIMP_HULL_RADIUS blimp.ts — the airship's bounding radius (40, from BLIMP_POINTS).
+      //                     Added to a depth to reach the FAR side of the hull, so the despawn
+      //                     never deletes an airship whose tail is still on screen.
+      'PLANE_SPAN',
+      'BLIMP_HULL_RADIUS',
     ])
 
     const unannounced: string[] = []

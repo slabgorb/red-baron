@@ -35,6 +35,8 @@
 // PURE and deterministic. No DOM, no time, no randomness.
 
 import type { Enemy } from './enemy'
+import { projectSegment, type SceneSegment } from './scene'
+import type { Mat4, Vec3 } from '@arcade/shared/math3d'
 
 // ─── ROM-exact data (findings §5, §1) ────────────────────────────────────────
 
@@ -78,6 +80,21 @@ export const S_DPTH = 0x100
  * UNREACHABLE — the best a lead could ever be worth was 10 points. The radix sweep made
  * that visible by correcting the depth scale underneath an invented constant that was
  * never rescaled.
+ *
+ * NO SIM CONSUMER, ON PURPOSE (rb4-1 review finding 7). Nothing in src/ reads this, and
+ * that is correct rather than dead: the SIM counts range in the ROM's own unit, Z counts
+ * (`step` expires a shell at `z >= S_MAXZ`), because that is literally what PSTSHL does.
+ * `S_MAXZ x S_DPTH` and `z >= S_MAXZ` are the SAME statement in two units, and rewriting the
+ * expiry as `shellDepth(z) > SHELL_RANGE_DEPTH` would only launder the ROM's arithmetic
+ * through a multiply and a divide to reach the same branch.
+ *
+ * It is retained deliberately as the AUDITED ROM-DERIVATION ANCHOR: it is the one place the
+ * gun's reach is stated in DEPTH, the unit every other object in the game is measured in, so
+ * the reach can be compared against P.INDP (the spawn) and against the flat-300 gate without
+ * anyone re-deriving `0x19 x 0x100` by hand — which is precisely the re-derivation that
+ * produced the invented 800. Its consumers are the suite and the audit registry
+ * (tests/core/depth-scale.test.ts REGISTRY 1/7, tests/core/engagement.test.ts). Do not
+ * "wire it up" to justify its existence, and do not delete it because grep says it is unused.
  */
 export const SHELL_RANGE_DEPTH = S_MAXZ * S_DPTH // 6400
 
@@ -102,18 +119,55 @@ const GUN_OVERHEAT_LIMIT = 30
 /** Z advanced per sub-step; SHELL_SPEED × SHELL_SUBSTEPS is the per-calc-frame travel. Inferred. */
 const SHELL_SPEED = 1
 
-/** CDSSET collision half-window in screen-window X — you must roughly aim. Inferred/playtest. */
+/**
+ * CDSSET collision half-window in X — you must roughly aim. Inferred/playtest.
+ *
+ * rb4-1 REWORK 3, and the Reviewer put this in the second bug class (the SCREEN-SPACE class),
+ * so it gets an explicit ruling rather than a shrug: IT IS NOT A SCREEN CONSTANT, and it must
+ * NOT be rescaled with the depth axis.
+ *
+ * The test is "what is this number a fraction OF?" A screen constant is a fraction of the
+ * FRAME, and the frame's world extent grows with depth (screen.ts) — so it has to be
+ * denominated in the projection or it silently changes meaning. This is a fraction of the
+ * TARGET: `collides` bounds `shell.x - enemy.x`, an offset between two objects in the world,
+ * and the object it is sized against is the plane's own hull — PLANE_POINTS spans x ±40,
+ * y ±20 (biplane.ts). A ±32 box around the plane is roughly the plane. Model and hitbox are
+ * carried through the SAME perspective divide, so they shrink together: the hitbox tracks the
+ * plane's apparent size at every depth, automatically, forever. That is the definition of a
+ * number that already knows its unit.
+ *
+ * Multiplying it by 3.91 with the depth axis would have made the gun hit planes it visibly
+ * missed — the exact mirror-image of the bug this story is about. Pinned behaviourally in
+ * tests/core/screen-scale.test.ts (NOT_A_SCREEN_CONSTANT).
+ */
 const WINDOW_X = 32
-/** …and in screen-window Y. */
+/** …and in Y. Also object-space: the plane's hull is y ±20, so ±32 wraps it. Inferred. */
 const WINDOW_Y = 32
 /**
  * …and in shell-Z. Must be ≥ SHELL_SPEED / 2 so successive sub-step windows overlap and
  * a target between two sub-steps can never be tunnelled (2·WINDOW_Z ≥ SHELL_SPEED). Inferred.
+ * Denominated in shell-Z COUNTS — the ROM's own range unit (S.MAXZ), not in depth and not in
+ * screen: it moves only if SHELL_SPEED moves, which is the invariant it is written against.
  */
 const WINDOW_Z = 1
 
-/** L/R muzzle offset from the boresight (the two guns sit either side of centre). Inferred. */
+/**
+ * L/R muzzle offset from the boresight — the two guns sit either side of centre. Inferred.
+ *
+ * Also NOT a screen constant (Reviewer's second class). It is where the barrels ARE, in the
+ * world, 4 units off the eye's centreline: a shell keeps this x for its whole flight, so its
+ * tracer converges on the vanishing point as it recedes, which is what a bullet fired down a
+ * boresight does. Rescaling it with the depth axis would move the guns off the aeroplane.
+ */
 const MUZZLE_X = 4
+
+/**
+ * The tracer streak trails this far behind the shell's nose, so the bullet reads as MOTION
+ * rather than as a dot. One shell-Z COUNT — the ROM's own range unit, the same unit S.MAXZ
+ * and SHELL_SPEED are in, and the granularity of one collision sub-step. Inferred (the ROM's
+ * tracer is a hardware artefact, not a byte).
+ */
+const TRACER_TRAIL_Z = 1
 
 // ─── state ───────────────────────────────────────────────────────────────────
 
@@ -199,6 +253,52 @@ const depthToShellZ = (depth: number): number => depth / S_DPTH
  * and the seam is closed BY CONSTRUCTION rather than by two constants agreeing to.
  */
 export const shellDepth = (z: number): number => z * S_DPTH
+
+// ─── the tracer: the RENDER arm of the fork, brought home (rb4-1 REWORK 3) ─────
+
+/**
+ * Project a player shell to the short glowing tracer streak the cockpit strokes.
+ *
+ * REWORK 3, AND THIS IS THE WHOLE FINDING. Exporting `shellDepth` (rework 2) fixed the
+ * ARITHMETIC but left the STRUCTURE that produced the bug exactly where it was: the call
+ * site — `shellSegments` — still lived in main.ts, which touches `document` at module scope
+ * and therefore cannot be imported under vitest's node environment. So the seam was guarded
+ * only by four regexes over main.ts's SOURCE TEXT, and the Reviewer walked around all four in
+ * under a minute:
+ *
+ *     const DRAW_REACH = SHELL_RANGE_DEPTH / 8   // arithmetically 800; no literal, no banned name
+ *     function shellSegments(shell, viewProj) {
+ *       void shellDepth(0)                       // a dead call, and the /shellDepth\s*\(/ regex is happy
+ *       const wd = (shell.z / S_MAXZ) * DRAW_REACH
+ *       ...
+ *     }
+ *
+ * The rejected bug, restored, with the suite green. A guard you can walk around in sixty
+ * seconds is not a guard — and it never could be, because a regex can only ask what the code
+ * SAYS, and the bug is about what the code DOES.
+ *
+ * So the function moves to where a test can call it. It is a pure function of (shell, mvp) —
+ * it always was — and it belongs beside `shellDepth` and `depthToShellZ`, in the module that
+ * owns the Shell, one line from the conversion it must agree with. tests/core/tracer-seam.ts
+ * now fires REAL shells at a REAL enemy through fire()/step(), takes the Hit, and RECOVERS
+ * the depth from the projected geometry these segments carry — asserting that the depth the
+ * bullet is DRAWN at is the depth it KILLED at. That test cannot be satisfied by a dead call.
+ *
+ * (biplane.ts sets the house precedent: the plane's model and its `renderModel` walk live in
+ * one core module. The shell now does the same.)
+ *
+ * The streak runs from the shell's nose back TRACER_TRAIL_Z counts. (x, y) are world-window
+ * units — the space the enemy lives in — carried straight through, since a shell fired down
+ * the boresight does not manoeuvre.
+ */
+export function shellSegments(shell: Shell, viewProj: Mat4): readonly SceneSegment[] {
+  const nose = shellDepth(shell.z)
+  const tail = shellDepth(Math.max(0, shell.z - TRACER_TRAIL_Z))
+  const front: Vec3 = [shell.x, shell.y, -nose]
+  const back: Vec3 = [shell.x, shell.y, -tail]
+  const seg = projectSegment(front, back, viewProj)
+  return seg ? [seg] : []
+}
 
 // ─── firing: NEWSHL / GUN.ST (one calc-frame of the trigger — findings §5) ────
 
