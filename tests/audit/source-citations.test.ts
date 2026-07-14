@@ -43,8 +43,9 @@
 // Every ROM fact lives ONCE, in the `ROM` object below. Two gates hold it down:
 //
 //   1. `the byte-of-record` re-derives all of it from the real Atari source. So no number
-//      here is a number a human typed — it is one the ROM agreed to. The source is
-//      copyrighted and stays out of this repo, so this group SKIPS in CI.
+//      here is a number a human typed — it is one the ROM agreed to. The source is a
+//      separate checkout (`historicalsource/red-baron`, public) that is not part of this
+//      repo, so this group SKIPS in CI.
 //
 //   2. Everything else asserts the DOC and `src/` against `ROM`, needs no quarry, and
 //      therefore runs on EVERY PUSH.
@@ -148,7 +149,7 @@ const namesDecoy = (text: string) => /R2BRON|R2GRND/i.test(text)
  *   1. `the byte-of-record` group below re-derives every one of these from the actual Atari
  *      source and fails if a single one is wrong. So these are not numbers somebody typed —
  *      they are numbers the ROM agreed to. That group needs the quarry, so it runs on a
- *      developer's machine and SKIPS in CI (the source is copyrighted; it is not in this repo).
+ *      developer's machine and SKIPS in CI (the source is a separate checkout, not in this repo).
  *
  *   2. Every doc-side and src-side group asserts the DOC against these constants, and needs no
  *      quarry at all. So it runs on EVERY PUSH.

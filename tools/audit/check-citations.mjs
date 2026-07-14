@@ -210,7 +210,7 @@ function unusableRefError(ref, st) {
  * @param opts.repoRoot   absolute path to the red-baron repo
  * @param opts.sourceDir  absolute path to the LF Atari source, or null to skip
  *                        source-side byte checks (e.g. in CI, where it is absent
- *                        — the source is copyrighted and never enters the repo)
+ *                        — the source is a separate checkout, not part of this repo)
  * @param opts.oursRef    git ref the audit was taken against. When given, `ours` lines
  *                        are read from that commit instead of the working tree, so the
  *                        evidence stays verifiable after the code it indicts is fixed.
