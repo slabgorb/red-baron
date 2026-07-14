@@ -44,7 +44,7 @@
   },
   "ours": {
    "file": "src/main.ts",
-   "line": 467,
+   "line": 474,
    "verbatim": "        enemies = spawnWave(createRng((Date.now() + kills) >>> 0), score, gmlevlForKills(kills))"
   },
   "recommendation": "fix",

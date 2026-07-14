@@ -23,9 +23,9 @@
 // PLANE1/PLANE2 formation, PLNXCG lead promotion, and the MODECT/MCOUNT schedule
 // (stepWaveClock) that brings the next wave in after its inter-wave gap (waves.ts).
 
-import { flightView, type Attitude } from './core/camera'
+import { flightView } from './core/camera'
 import { horizonSegments } from './core/horizon'
-import { INITIAL_FLIGHT, step, toAttitude, controlBand, type FlightInput } from './core/flight'
+import { INITIAL_FLIGHT, step, toAttitude, toEye, controlBand, type FlightInput, type FlightState } from './core/flight'
 import { step as stepEnemy, proximityBand, type Enemy } from './core/enemy'
 import {
   spawnWave, promoteLead, INITIAL_WAVE_CLOCK, stepWaveClock,
@@ -156,7 +156,7 @@ function drawWreck(wreck: Wreck, projView: Mat4, width: number, height: number):
 }
 
 function draw(
-  attitude: Attitude,
+  flight: FlightState,
   enemies: readonly Enemy[],
   blimp: Blimp | null,
   mountains: readonly Mountain[],
@@ -176,18 +176,25 @@ function draw(
   ctx.shadowColor = '#33ff66'
   ctx.shadowBlur = 8
 
-  // the tilting horizon
-  strokeSegments(horizonSegments(attitude, aspect), width, height)
+  // rb4-5: the camera TRANSLATES the world. Turning is the UNIV4X lateral eye pan and
+  // altitude is the I4YPOS eye height (both from toEye); the ONLY rotation is the bank.
+  const attitude = toAttitude(flight)
+  const eye = toEye(flight)
+
+  // the tilting horizon — at the finite depth HORZ, sliding with altitude (rb4-5).
+  strokeSegments(horizonSegments({ roll: attitude.roll, altitude: flight.altitude }, aspect), width, height)
 
   // the scrolling ground-wave landscape (rb3-3) — up to 4 SCAPE mountains falling
-  // from the horizon, projected through the SAME rb1 substrate as everything else.
+  // from the horizon, projected through the SAME substrate as everything else.
   // Empty (renders nothing) outside a ground wave.
-  strokeSegments(mountainSegments(mountains, attitude, [0, 0, 0], aspect), width, height)
+  strokeSegments(mountainSegments(mountains, attitude, eye, aspect), width, height)
 
-  // the wave — each live plane is a camera-relative screen-window object (x, y) at
-  // `depth`, banked, tilting with the player's attitude. MVP = projection · view · model;
-  // the LOD is picked by depth (biplaneLOD). Downed planes fall away as UPPLEX wrecks
-  // (rb2-6) that coexist with the survivors still weaving (rb2-7 multi-plane waves).
+  // the wave — each live plane is a CAMERA-RELATIVE screen-window object (x, y) at
+  // `depth`, banked, tilting with the player's attitude. Unlike the world-anchored
+  // mountains/horizon, motion objects are already in view-relative coords, so they take
+  // ONLY the bank (eye at the origin) — the UNIV4X/I4YPOS world pan must not drift them
+  // off as the pilot turns or climbs. MVP = projection · view · model; the LOD is picked
+  // by depth (biplaneLOD). Downed planes fall away as UPPLEX wrecks (rb2-6).
   const view = flightView(attitude, [0, 0, 0])
   const projView = multiply(sceneProjection(aspect), view)
   for (const wreck of wrecks) {
@@ -487,7 +494,7 @@ function frame(nowMs: number): void {
     nearestDepth: nearestDepth(enemies),
   })
 
-  draw(toAttitude(flight), enemies, blimp, mountains, wrecks, guns.shells, guns.overheated, score)
+  draw(flight, enemies, blimp, mountains, wrecks, guns.shells, guns.overheated, score)
   // SH2-14: the pause overlay dims the frozen scene and draws the keybind card over
   // it — drawn last (over the whole world) and only while paused. red-baron draws in
   // device pixels (no dpr pre-scale), so it takes canvas.width/height directly.

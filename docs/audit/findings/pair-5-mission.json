@@ -391,7 +391,7 @@
     },
     "ours": {
       "file": "src/core/scene.ts",
-      "line": 33,
+      "line": 45,
       "verbatim": "const FAR = 20000"
     },
     "recommendation": "fix",

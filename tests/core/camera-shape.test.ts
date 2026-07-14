@@ -96,7 +96,7 @@ let scene: SceneModule = {}
 let hz: HorizonModule = {}
 
 beforeAll(async () => {
-  try { f = (await import('../../src/core/flight')) as FlightModule } catch { f = {} }
+  try { f = (await import('../../src/core/flight')) as unknown as FlightModule } catch { f = {} }
   try { cam = (await import('../../src/core/camera')) as CameraModule } catch { cam = {} }
   try { scene = (await import('../../src/core/scene')) as SceneModule } catch { scene = {} }
   try { hz = (await import('../../src/core/horizon')) as HorizonModule } catch { hz = {} }

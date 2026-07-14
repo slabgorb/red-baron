@@ -123,7 +123,7 @@ let f: FlightModule = {}
 
 beforeAll(async () => {
   try {
-    f = (await import('../../src/core/flight')) as FlightModule
+    f = (await import('../../src/core/flight')) as unknown as FlightModule
   } catch {
     f = {}
   }
@@ -317,16 +317,17 @@ describe('flight — PLDELX turn-rate inertia + hysteresis (POT.X, findings §2)
   })
 
   it('holds turnRate inside the TURN_HYSTERESIS deadband, eases just outside it (POT.X)', () => {
-    // The deadband is the point of hysteresis — a change within TURN_HYSTERESIS
-    // counts of the target must NOT be chased (deleting the deadband would make
-    // this ease anyway). Seed states exactly at, and one past, the deadband edge.
+    // The deadband is the point of hysteresis — a change within TURN_HYSTERESIS counts of
+    // the TARGET must NOT be chased. rb4-5: under the proportional POT.X the full-yoke
+    // equilibrium settles `hyst` counts SHORT of the commanded range, so the deadband must
+    // be read at the commanded target — command centre (turn 0 → target 0) to isolate it
+    // scale-free: within `hyst` of 0 PLDELX holds, one count past it eases toward 0.
     const step = need(f.step, 'step')
     const hyst = need(f.TURN_HYSTERESIS, 'TURN_HYSTERESIS')
-    const target = run(base(), IN(1, 0), 100).turnRate // full-yoke settled target
-    // exactly `hyst` counts below target → inside the deadband → PLDELX must NOT move
-    expect(step(withState({ turnRate: target - hyst }), IN(1, 0)).turnRate).toBe(target - hyst)
-    // one count further → outside the deadband → PLDELX eases toward the target
-    expect(step(withState({ turnRate: target - hyst - 1 }), IN(1, 0)).turnRate).toBeGreaterThan(target - hyst - 1)
+    expect(step(withState({ turnRate: hyst }), IN(0, 0)).turnRate).toBe(hyst) // |err| = hyst → hold
+    expect(step(withState({ turnRate: -hyst }), IN(0, 0)).turnRate).toBe(-hyst)
+    // one count further → outside the deadband → PLDELX eases back toward the target (0)
+    expect(Math.abs(step(withState({ turnRate: hyst + 1 }), IN(0, 0)).turnRate)).toBeLessThan(hyst + 1)
   })
 
   it('clamps an out-of-range turn command to the yoke limits (mirrors pitchDelta)', () => {

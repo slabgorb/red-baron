@@ -72,15 +72,18 @@ describe('scene — sceneProjection (the one perspective matrix)', () => {
 })
 
 describe('scene — projectSegment (world → NDC substrate)', () => {
-  it('an on-axis segment straight ahead projects to the NDC centre line (x ≈ 0, y ≈ 0)', () => {
+  it('an on-axis segment straight ahead projects to the horizontal centre, lifted by the constant HORIZN offset (rb4-5)', () => {
     const proj = need(scene.sceneProjection, 'sceneProjection')(ASPECT)
     const seg = need(scene.projectSegment, 'projectSegment')([0, 0, -400], [0, 0, -800], proj)
     expect(seg).not.toBeNull()
     if (seg) {
-      expect(seg.x1).toBeCloseTo(0, 5)
-      expect(seg.y1).toBeCloseTo(0, 5)
+      expect(seg.x1).toBeCloseTo(0, 5) // on the horizontal centre line
       expect(seg.x2).toBeCloseTo(0, 5)
-      expect(seg.y2).toBeCloseTo(0, 5)
+      // rb4-5 AC5: HORIZN is added to every projected Y — a constant, depth-INDEPENDENT
+      // lift, so both endpoints share one Y (no perspective spread) and it is NOT the raw
+      // centre 0. (POSITH's `ADC I,HORIZN` after the divide, RBGRND.MAC:303.)
+      expect(seg.y1).toBeCloseTo(seg.y2, 5)
+      expect(Math.abs(seg.y1)).toBeGreaterThan(1e-3)
     }
   })
 

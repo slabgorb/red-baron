@@ -12,8 +12,8 @@
   },
   "ours": {
    "file": "src/core/flight.ts",
-   "line": 44,
-   "verbatim": "  -32, -23, -17, -10, -5, 0, 4, 8, 13, 18, 25,"
+   "line": 49,
+   "verbatim": "  -128, -92, -68, -40, -20, 0, 16, 32, 52, 72, 100,"
   },
   "recommendation": "fix",
   "size": "s"
@@ -31,8 +31,8 @@
   },
   "ours": {
    "file": "src/core/flight.ts",
-   "line": 63,
-   "verbatim": "  near: 1.0,"
+   "line": 74,
+   "verbatim": "  near: 0.375,"
   },
   "recommendation": "fix",
   "size": "s"
@@ -50,8 +50,8 @@
   },
   "ours": {
    "file": "src/core/flight.ts",
-   "line": 76,
-   "verbatim": "export const GROUND_CONTROL_BAND: ProximityBand = 'far'"
+   "line": 87,
+   "verbatim": "export const GROUND_CONTROL_BAND: ProximityBand = 'mid'"
   },
   "recommendation": "fix",
   "size": "s"
@@ -69,7 +69,7 @@
   },
   "ours": {
    "file": "src/core/flight.ts",
-   "line": 182,
+   "line": 209,
    "verbatim": "    altitude: clamp(state.altitude + pitchRate * scale, ALT_MIN, ALT_MAX),"
   },
   "recommendation": "fix",
@@ -88,8 +88,8 @@
   },
   "ours": {
    "file": "src/core/flight.ts",
-   "line": 161,
-   "verbatim": "  return current + Math.sign(delta) * Math.min(TURN_ACCEL, Math.abs(delta))"
+   "line": 185,
+   "verbatim": "  let step = diff >> 3 // arithmetic shift right by 3 (JS >> is arithmetic)"
   },
   "recommendation": "fix",
   "size": "s"
@@ -107,8 +107,8 @@
   },
   "ours": {
    "file": "src/core/flight.ts",
-   "line": 160,
-   "verbatim": "  if (Math.abs(delta) <= TURN_HYSTERESIS) return current // hysteresis: don't chase"
+   "line": 184,
+   "verbatim": "  if (Math.abs(diff) < TURN_HYSTERESIS + 1) return current // deadband: |diff| < 3 → leave alone"
   }
  },
  {
@@ -124,7 +124,7 @@
   },
   "ours": {
    "file": "src/core/flight.ts",
-   "line": 154,
+   "line": 172,
    "verbatim": "  return clamp(turnRate * 8, -BANK_LIMIT, BANK_LIMIT)"
   }
  },
@@ -141,7 +141,7 @@
   },
   "ours": {
    "file": "src/core/flight.ts",
-   "line": 95,
+   "line": 112,
    "verbatim": "const ROLL_SCALE = Math.PI / 1024"
   }
  },
@@ -158,7 +158,7 @@
   },
   "ours": {
    "file": "src/core/flight.ts",
-   "line": 53,
+   "line": 58,
    "verbatim": "export const ALT_MAX = 0x180 * 4 // 1536"
   }
  },
@@ -175,7 +175,7 @@
   },
   "ours": {
    "file": "src/core/flight.ts",
-   "line": 131,
+   "line": 149,
    "verbatim": "  altitude: 0x0210,"
   }
  },
@@ -192,8 +192,8 @@
   },
   "ours": {
    "file": "src/core/flight.ts",
-   "line": 91,
-   "verbatim": "const MAX_TURN = 40"
+   "line": 107,
+   "verbatim": "const POT_RANGE = 40"
   },
   "recommendation": "fix",
   "size": "m"
@@ -211,7 +211,7 @@
   },
   "ours": {
    "file": "src/core/flight.ts",
-   "line": 145,
+   "line": 163,
    "verbatim": "  const index = clamp(Math.round((pitchPot + 1) * 5), 0, PITCH_TABLE.length - 1)"
   }
  },
@@ -228,8 +228,8 @@
   },
   "ours": {
    "file": "src/core/flight.ts",
-   "line": 197,
-   "verbatim": "    yaw: state.heading * YAW_SCALE,"
+   "line": 222,
+   "verbatim": "  return { roll: pfrotn(state.turnRate) * ROLL_SCALE }"
   },
   "recommendation": "fix",
   "size": "l"
@@ -247,8 +247,8 @@
   },
   "ours": {
    "file": "src/core/flight.ts",
-   "line": 196,
-   "verbatim": "    pitch: state.pitchRate * PITCH_SCALE,"
+   "line": 222,
+   "verbatim": "  return { roll: pfrotn(state.turnRate) * ROLL_SCALE }"
   },
   "recommendation": "fix",
   "size": "m"
@@ -266,8 +266,8 @@
   },
   "ours": {
    "file": "src/core/camera.ts",
-   "line": 47,
-   "verbatim": "  return viewMatrix(eye, orientation)"
+   "line": 40,
+   "verbatim": "  return viewMatrix(eye, rotationZ(attitude.roll))"
   },
   "coverage_review": "FALSE CONFIRMED (Phase 3). Confirms a transform pipeline our code does not actually run; contradicted by FL-013/FL-014. Reclassed DIVERGENCE.",
   "recommendation": "fix",
@@ -301,8 +301,8 @@
   },
   "ours": {
    "file": "src/core/horizon.ts",
-   "line": 35,
-   "verbatim": "  const mvp = multiply(sceneProjection(aspect), flightView(attitude, EYE_AT_ORIGIN))"
+   "line": 38,
+   "verbatim": "  const mvp = multiply(sceneProjection(aspect), flightView({ roll: view.roll }, eye))"
   },
   "recommendation": "fix",
   "size": "s"
@@ -320,7 +320,7 @@
   },
   "ours": {
    "file": "src/core/flight.ts",
-   "line": 105,
+   "line": 123,
    "verbatim": "/** One calc-frame of pilot input \u2014 two pots + the DISCHK band. No throttle. */"
   }
  },
@@ -337,7 +337,7 @@
   },
   "ours": {
    "file": "src/main.ts",
-   "line": 374,
+   "line": 381,
    "verbatim": "    flight = step(flight, input)"
   }
  },

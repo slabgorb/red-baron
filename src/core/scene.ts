@@ -16,6 +16,7 @@
 // PURE and deterministic. No DOM, no time, no randomness.
 
 import { perspective, type Mat4, type Vec3 } from '@arcade/shared/math3d'
+import { HORIZN } from './topology'
 
 /** One projected edge in NDC space ([-1, 1] is the visible square). */
 export interface SceneSegment {
@@ -24,6 +25,17 @@ export interface SceneSegment {
   readonly x2: number
   readonly y2: number
 }
+
+/**
+ * ROM screen half-height, in the VG screen units HORIZN is expressed in. The ROM adds
+ * HORIZN = $40 = 64 to the divided screen-Y of EVERY object (POSITH, RBGRND.MAC:303);
+ * our screen is NDC [-1, 1], so the offset is HORIZN / ROM_SCREEN_HALF. The exact
+ * ROM-unit → NDC scale is not byte-pinned (rb4-5 Dev seam) — 512 keeps the horizon a
+ * short lift above centre, matching the ROM's low-altitude look.
+ */
+const ROM_SCREEN_HALF = 512
+/** HORIZN as an NDC screen-Y offset added to every projected point (rb4-5 AC5). */
+const HORIZN_NDC = HORIZN / ROM_SCREEN_HALF
 
 /** Vertical field of view of the cockpit — a 60° window over the vector world. */
 const VERTICAL_FOV = Math.PI / 3
@@ -48,13 +60,20 @@ function toClip(mvp: Mat4, v: Vec3): { x: number; y: number; w: number } {
 }
 
 /**
- * Project a world-space segment through an MVP into an NDC `SceneSegment`.
- * Returns null when both endpoints are behind the eye (clip w ≤ 0) — the
+ * Project a world-space segment through an MVP into an NDC `SceneSegment`. After the
+ * perspective divide the constant HORIZN screen offset is added to Y — the ROM's
+ * `ADC I,HORIZN` in POSITH (RBGRND.MAC:303), a depth-independent lift applied to every
+ * object. Returns null when both endpoints are behind the eye (clip w ≤ 0) — the
  * substrate never strokes a perspective-mirrored ghost.
  */
 export function projectSegment(a: Vec3, b: Vec3, mvp: Mat4): SceneSegment | null {
   const ca = toClip(mvp, a)
   const cb = toClip(mvp, b)
   if (ca.w <= 0 && cb.w <= 0) return null
-  return { x1: ca.x / ca.w, y1: ca.y / ca.w, x2: cb.x / cb.w, y2: cb.y / cb.w }
+  return {
+    x1: ca.x / ca.w,
+    y1: ca.y / ca.w + HORIZN_NDC,
+    x2: cb.x / cb.w,
+    y2: cb.y / cb.w + HORIZN_NDC,
+  }
 }

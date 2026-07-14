@@ -1,44 +1,43 @@
 // src/core/horizon.ts
 //
-// THE tilting horizon — Red Baron's signature over its Battlezone hardware twin
-// (Battlezone had only yaw, so its horizon never banked). "Banking tilts the
-// entire horizon/scene" (findings §2, PFROTN roll); "the horizon tilt falls out
-// of rotationZ in the view matrix" (design brief §3).
+// THE tilting horizon — Red Baron's signature over its Battlezone hardware twin.
+// rb4-5 REWRITE: the ROM horizon is NOT "at infinity". It sits at the FINITE depth
+// HORZ = $1000 = 4096 (RBARON.MAC:451, "HORIZON DEPTH") on the ground plane, and it
+// MOVES WITH ALTITUDE — climbing (raising the I4YPOS eye height) drops it, diving
+// raises it. The only ROTATION is the bank (PFROTN, rotationZ). There is no pitch
+// rotation; the vertical slide falls out of the eye-height translation.
 //
-// The horizon sits at infinity, so it depends only on ATTITUDE (never on eye
-// position/altitude — altitude moves terrain, not the horizon). It is built as a
-// pair of points on the horizon circle at screen-azimuths ±HALF_SPAN, centred on
-// the current heading so the line spans the view at any yaw, then projected
-// through the shared camera + scene substrate. Under perspective the image of a
-// plane-at-infinity is a straight line, so two endpoints define it exactly:
-// level → flat & centred, roll → tilts by the bank angle, pitch → slides
-// vertically, yaw → pans but stays level.
-//
-// SCOPE: the horizon LINE — foundation. The HORIZN=$40 screen offset and the
-// SCAPE mountain silhouettes (findings §4/§7) are rb2's ground wave.
+// It is drawn as a horizontal line on the ground plane (world Y = 0) at depth HORZ,
+// spanning far enough in world-X to cross the whole view, then carried through the
+// shared camera + scene substrate (which applies the perspective divide and the
+// HORIZN screen offset). level → flat, roll → tilts by the bank, altitude → slides.
 //
 // PURE and deterministic. No DOM, no time, no randomness.
 
 import { multiply, type Vec3 } from '@arcade/shared/math3d'
-import { flightView, type Attitude } from './camera'
+import { flightView } from './camera'
 import { projectSegment, sceneProjection, type SceneSegment } from './scene'
+import { HORZ } from './topology'
+import { ALT_TO_Y } from './flight'
 
-/** How far out the horizon points sit — effectively "at infinity" for projection. */
-const HORIZON_DISTANCE = 10000
-/** Azimuth half-width of the drawn horizon, centred on the heading (±40°). */
-const HORIZON_HALF_SPAN = (40 * Math.PI) / 180
+/** Half the horizontal extent of the drawn horizon line, in world-X at depth HORZ —
+ *  wide enough that both endpoints project well past the screen edges at any aspect. */
+const HORIZON_HALF_WIDTH = HORZ * 2
 
-const EYE_AT_ORIGIN: Vec3 = [0, 0, 0]
+/** The rb4-5 horizon view: the bank (roll) and the eye height (altitude / I4YPOS). */
+export interface HorizonView {
+  readonly roll: number
+  readonly altitude: number
+}
 
 /** The tilting horizon as NDC segments for the shell to stroke. */
-export function horizonSegments(attitude: Attitude, aspect: number): readonly SceneSegment[] {
-  const mvp = multiply(sceneProjection(aspect), flightView(attitude, EYE_AT_ORIGIN))
-  // A horizon point at a given SCREEN azimuth: subtract the heading so the drawn
-  // span stays centred on where the pilot is looking, whatever the yaw.
-  const point = (screenAz: number): Vec3 => {
-    const a = screenAz - attitude.yaw
-    return [Math.sin(a) * HORIZON_DISTANCE, 0, -Math.cos(a) * HORIZON_DISTANCE]
-  }
-  const seg = projectSegment(point(-HORIZON_HALF_SPAN), point(HORIZON_HALF_SPAN), mvp)
+export function horizonSegments(view: HorizonView, aspect: number): readonly SceneSegment[] {
+  // the eye rises with altitude (I4YPOS); the horizon lies on the ground plane (Y=0)
+  // at the finite depth HORZ, so a higher eye sees it lower on screen.
+  const eye: Vec3 = [0, view.altitude * ALT_TO_Y, 0]
+  const mvp = multiply(sceneProjection(aspect), flightView({ roll: view.roll }, eye))
+  const left: Vec3 = [-HORIZON_HALF_WIDTH, 0, -HORZ]
+  const right: Vec3 = [HORIZON_HALF_WIDTH, 0, -HORZ]
+  const seg = projectSegment(left, right, mvp)
   return seg ? [seg] : []
 }

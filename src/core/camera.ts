@@ -1,48 +1,41 @@
 // src/core/camera.ts
 //
-// The roll/pitch/yaw flight camera — "the cockpit IS the camera" (findings §2).
+// The flight camera — "the cockpit IS the camera" (findings §2). rb4-5 REWRITE:
+// the 1980 Red Baron ROM has NO YAW ROTATION and NO PITCH ROTATION. Turning adds
+// PLDELX to the linear universe-X UNIV4X and draws objects at (X − UNIV4X);
+// climb/dive adds PLDELY to the eye height I4YPOS, subtracted from every object's Y.
+// Both are TRANSLATIONS of the world about a fixed eye, not rotations of the camera.
+// The ONLY rotation is the bank — PFROTN, a single Z rotation (RBARON.MAC:3196-3262).
 //
-// Built on the SHARED Math Box (@arcade/shared/math3d): Red Baron is the first
-// native @arcade/shared consumer and does NOT re-port math3d (epic ruling). The
-// camera composes `rotationZ(roll) ∘ rotationX(pitch) ∘ rotationY(yaw)` into the
-// shared `viewMatrix` (design brief §3) — "the horizon tilt falls out of
-// rotationZ." Unlike Battlezone's `tankView` (whose +Z-into-monitor ROM world
-// needed a heading+π bridge), Red Baron's model space already puts the nose at
-// −Z (findings §8), which MATCHES the shared Math Box's −Z-forward eye space — so
-// no sign bridge is applied: forward = −Z, right = +X, up = +Y.
+// So this camera composes ONLY `rotationZ(roll)` and translates by −eye. The pilot's
+// turn (UNIV4X) and altitude (I4YPOS) arrive as the EYE position (flight.ts toEye);
+// the downstream perspective divide (scene.ts) turns that eye translation into the
+// ROM's (X − UNIV4X)/depth pan. No rotationX(pitch), no rotationY(yaw) remain.
 //
-// SCOPE: this is the camera the flight model DRIVES. The authentic dynamics that
-// produce the attitude (PLDELX turn-rate inertia, the 11-step PLDELY pitch table,
-// PFROTN = PLDELX×8 bank coupling, the I4YPOS altitude clamp — findings §2) are
-// rb2's "flight model", not the rb1 foundation.
+// Built on the SHARED Math Box (@arcade/shared/math3d): Red Baron does NOT re-port
+// math3d (epic ruling). Model space already puts the nose at −Z (findings §8), which
+// matches the shared eye space, so no sign bridge is applied.
 //
 // PURE and deterministic. No DOM, no time, no randomness.
 
-import { multiply, rotationX, rotationY, rotationZ, viewMatrix, type Mat4, type Vec3 } from '@arcade/shared/math3d'
+import { rotationZ, viewMatrix, type Mat4, type Vec3 } from '@arcade/shared/math3d'
 
-/** The pilot's flight attitude — the three rotation angles of the cockpit. Radians. */
+/** The pilot's flight attitude. The bank (roll) is the ONLY rotation — turning and
+ *  climbing are eye translations, not rotations (rb4-5). Radians. */
 export interface Attitude {
-  /** Bank. Tilts the horizon about the line of flight (rotationZ). */
+  /** Bank. Tilts the horizon about the line of flight (rotationZ, PFROTN). */
   readonly roll: number
-  /** Climb/dive. Swings the horizon vertically (rotationX). */
-  readonly pitch: number
-  /** Turn/heading. Pans the world horizontally (rotationY). */
-  readonly yaw: number
 }
 
-/** Straight, level flight: no bank, no pitch, dead ahead. */
-export const LEVEL: Attitude = { roll: 0, pitch: 0, yaw: 0 }
+/** Straight, level flight: no bank. */
+export const LEVEL: Attitude = { roll: 0 }
 
 /**
  * The camera view matrix for a flight attitude at an eye position, on the shared
- * Math Box. Orientation is `rotationZ(roll) ∘ rotationX(pitch) ∘ rotationY(yaw)`;
- * `viewMatrix` inverts the camera's world placement. LEVEL at the origin yields
- * IDENTITY — a cockpit that isn't moving is a no-op view.
+ * Math Box. Orientation is `rotationZ(roll)` ONLY — the single Z bank; `viewMatrix`
+ * inverts the camera's world placement (translate by −eye). LEVEL at the origin
+ * yields IDENTITY. Turning and climbing move the `eye`, never the rotation.
  */
 export function flightView(attitude: Attitude, eye: Vec3): Mat4 {
-  const orientation = multiply(
-    multiply(rotationZ(attitude.roll), rotationX(attitude.pitch)),
-    rotationY(attitude.yaw),
-  )
-  return viewMatrix(eye, orientation)
+  return viewMatrix(eye, rotationZ(attitude.roll))
 }
