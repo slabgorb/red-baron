@@ -30,7 +30,8 @@
 //   }
 //
 //   export function shouldSpawnBlimp(roll: number): boolean  // the ~25 % roll: roll < BLIMP_SPAWN_CHANCE
-//   export function spawn(rng: Rng): Blimp                    // side entry, drifting across; consumes the Rng
+//   export function spawn(rng: Rng, aspect: number): Blimp    // side entry, drifting across; consumes the Rng
+//                                                             // (rb4-1 added `aspect` — see ASPECT below)
 //   export function step(blimp: Blimp): Blimp                 // one calc-frame of steady drift
 //   export function blimpFires(frame: number): boolean        // ÷2 FRAME cadence; ALWAYS a threat (no level gate)
 //
@@ -90,12 +91,29 @@ interface Blimp {
 interface BlimpModule {
   BLIMP_SPAWN_CHANCE?: number
   shouldSpawnBlimp?: (roll: number) => boolean
-  spawn?: (rng: Rng) => Blimp
+  spawn?: (rng: Rng, aspect: number) => Blimp
   step?: (blimp: Blimp) => Blimp
   blimpFires?: (frame: number) => boolean
 }
 
 let m: BlimpModule = {}
+
+/**
+ * rb4-1: `spawn` now takes the FRAME'S ASPECT as well as the Rng, and every call site in this
+ * file passes it. That is a signature change, not a weakened test — the assertions below are
+ * untouched, and they all still hold.
+ *
+ * Why it had to change: the blimp's entry position is a claim about the SCREEN ("enters near a
+ * screen edge, drifts across"), and where a world x lands on screen depends on the depth it is
+ * seen at AND on how wide the window is. Written as a bare world number it was correct only at
+ * the cruise depth it happened to be fitted to — and when rb4-1 moved that depth, the airship
+ * started entering near the middle of the screen and being deleted in plain view. The entry is
+ * now denominated in the projected frame, so it needs the frame. See src/core/screen.ts and
+ * tests/core/screen-scale.test.ts, which pins the behaviour this arity buys.
+ *
+ * A 16:9 reference frame, so the seeded expectations here are stable.
+ */
+const ASPECT = 16 / 9
 
 beforeAll(async () => {
   try {
@@ -113,8 +131,8 @@ function need<T>(value: T | undefined, name: string): T {
   return value
 }
 
-/** A fresh seeded blimp; a fixed seed keeps each test deterministic. */
-const spawnAt = (seed = 1): Blimp => need(m.spawn, 'spawn')(createRng(seed))
+/** A fresh seeded blimp in the reference frame; a fixed seed keeps each test deterministic. */
+const spawnAt = (seed = 1): Blimp => need(m.spawn, 'spawn')(createRng(seed), ASPECT)
 
 /** Override Blimp fields while carrying whatever extra fields Dev adds (robust hand-build). */
 const withBlimp = (overrides: Partial<Blimp>, seed = 1): Blimp => ({ ...spawnAt(seed), ...overrides })
@@ -411,7 +429,7 @@ describe('blimp — spawn: a single motion object entering from a side (borrows 
   it('advances the Rng seed — spawn is not a no-op on the generator', () => {
     const rng = createRng(1234)
     const before = rng.seed
-    need(m.spawn, 'spawn')(rng)
+    need(m.spawn, 'spawn')(rng, ASPECT)
     expect(rng.seed).not.toBe(before)
   })
 })
