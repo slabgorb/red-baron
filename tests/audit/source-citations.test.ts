@@ -38,16 +38,35 @@
 //    and then imports the OTHER one, claiming the watchdog trips at `CALFLG >= 0x40`.
 //    It is off by 21x, and it came from the build that never shipped.
 //
-// ─── WHAT THIS SUITE ASSERTS ─────────────────────────────────────────────────────────
+// ─── HOW THIS SUITE IS BUILT (and why it is built that way) ──────────────────────────
 //
-// The source-side groups re-open the quarry and DERIVE the truth (symbol definition
-// lines, diff counts, verbatim bytes) rather than trusting a number typed by a human.
-// A fact the doc states must equal a fact the SOURCE yields. That is the whole point:
-// this story exists because someone typed a number they had not re-read.
+// Every ROM fact lives ONCE, in the `ROM` object below. Two gates hold it down:
 //
-// The Atari source is copyrighted and stays out of this repo, so the source-side groups
-// skip when the quarry is absent (CI), exactly as tests/audit/citations.test.ts does.
-// The doc-side and src-side greps need no quarry and always run.
+//   1. `the byte-of-record` re-derives all of it from the real Atari source. So no number
+//      here is a number a human typed — it is one the ROM agreed to. The source is
+//      copyrighted and stays out of this repo, so this group SKIPS in CI.
+//
+//   2. Everything else asserts the DOC and `src/` against `ROM`, needs no quarry, and
+//      therefore runs on EVERY PUSH.
+//
+// The first draft of this file collapsed those two jobs into one and paid for it twice
+// (both caught by the Reviewer, by MUTATION rather than by reading):
+//
+//   * `expect(header).toContain(String(diff.length))` — i.e. `toContain('7')` — was
+//     satisfied by `037007.XXX` sitting in the header. A doc claiming the builds differ
+//     in NINE lines passed 25/25. The guard on the story's headline number was scenery.
+//     Numbers are now matched to their CLAIM (`\b7\s+lines\b`), never merely "present".
+//
+//   * 20 of 25 tests sat inside `skipIf(!sourceAvailable)` — including pure greps that
+//     never needed the source at all. In CI the doc could revert the watchdog to 0x40,
+//     restore every stale line number, and re-assert the distance LOD, all on green.
+//     A recurrence guard that only runs on one laptop does not guard the recurrence.
+//
+// Two rules follow, and they are the ones to keep:
+//   — Assert a claim WHERE IT IS MADE. Scope to the trap header / the retraction blockquote;
+//     a stray `D4` in the sound section must not be able to vouch for the LOD section.
+//   — Ban the CLAIM, not the PHRASE. `/distance LOD/i` blocks two words; "level of detail
+//     by depth" says the same false thing and walks straight through.
 
 import { describe, it, expect } from 'vitest'
 import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs'
@@ -88,8 +107,13 @@ function srcFiles(): Array<[string, string]> {
   return out
 }
 
-/** A citation: a quarry module and the line(s) it points at. */
-const CITATION = /\b([A-Z0-9]{3,8}\.(?:MAC|MAP|XXX|COM))\s*:\s*(\d+)(?:\s*-\s*(\d+))?/g
+/**
+ * A citation: a quarry module and the line(s) it points at.
+ *
+ * CASE-INSENSITIVE on purpose (Reviewer, rb4-2). Uppercase-only, a decoy citation written
+ * `r2bron.mac:100` walks straight through the only two gates that run in CI.
+ */
+const CITATION = /\b([A-Z0-9]{3,8}\.(?:MAC|MAP|XXX|COM))\s*:\s*(\d+)(?:\s*-\s*(\d+))?/gi
 
 /** The build that actually shipped — RBARON.COM's link list, plus the picture/char ROMs. */
 const SHIPPED = [
@@ -97,7 +121,56 @@ const SHIPPED = [
   'VGUT.MAC', 'TCN65.MAC', 'VGMC.MAC', 'VGAN.MAC', 'STATE2.MAC',
   '037007.XXX', '037006.XXX', 'RBARON.MAP', 'RBARON.COM',
 ]
-const isDecoyModule = (m: string) => /^R2(BRON|GRND)\./.test(m)
+const isShipped = (m: string) => SHIPPED.includes(m.toUpperCase())
+const isDecoyModule = (m: string) => /^R2(BRON|GRND)\./i.test(m)
+const DECOY_NAME = /R2BRON|R2GRND/gi
+
+/**
+ * ─── THE ROM, AS FACTS ───────────────────────────────────────────────────────────────
+ *
+ * Every number the doc is allowed to state about the ROM lives here ONCE.
+ *
+ * Two gates hold it in place, and you need BOTH, because each covers the other's blind spot:
+ *
+ *   1. `the byte-of-record` group below re-derives every one of these from the actual Atari
+ *      source and fails if a single one is wrong. So these are not numbers somebody typed —
+ *      they are numbers the ROM agreed to. That group needs the quarry, so it runs on a
+ *      developer's machine and SKIPS in CI (the source is copyrighted; it is not in this repo).
+ *
+ *   2. Every doc-side and src-side group asserts the DOC against these constants, and needs no
+ *      quarry at all. So it runs on EVERY PUSH.
+ *
+ * That split is deliberate and it is the point (Reviewer, rb4-2). Before it, the doc-side checks
+ * sat inside the source-gated blocks purely because they had a source-derived sibling — so 20 of
+ * 25 tests skipped in CI, and the doc could have reverted the watchdog to 0x40, restored every
+ * stale line number, and re-asserted the distance LOD on a green build. The recurrence guard is
+ * the entire justification for this story; it has to run where the regressions actually land.
+ */
+const ROM = {
+  /** RBARON.MAC, counted with universal newlines, in the LF byte-of-record. */
+  rbaronLines: 6294,
+  /** The only three `.RADIX` directives in the file. */
+  radixSwitches: [74, 6217, 6281],
+  /** The lone decimal island: the vertex/POINTP tables. */
+  island: { from: 6217, to: 6280 },
+  /** Symbol definition lines (RBARON.MAC) — and the stale line the CRLF sibling reports. */
+  defs: {
+    CALCNT: { line: 621, stale: 620, text: 'CALCNT\t=18' },
+    BNRCNT: { line: 622, stale: 621 },
+    MAIN: { line: 763, stale: 761 },
+    SHLAUN: { line: 4027, stale: 4022 },
+  },
+  /** `INC FRAME`, the game-logic frame tick. */
+  incFrame: { line: 870, stale: 868 },
+  /** RBARON vs R2BRON: this many lines differ, and every one is a checksum byte. */
+  decoyDiffCount: 7,
+  /** RBGRND vs R2GRND: exactly these lines — the frame divider, and the watchdog. */
+  groundDiffLines: [61, 197],
+  /** RBGRND.MAC:197 — `CMP I,3`. The decoy says `CMP I,40` (= 0x40 = 64). Off by 21x. */
+  watchdog: 3,
+  /** DRNPIC: the plane model is selected on PLSTAT+6 bit 0x10 — orientation, NOT distance. */
+  drnpic: { line: 4961, bit: '0x10' },
+} as const
 
 /** Lines (1-based) at which two same-length files disagree. */
 function differingLines(a: string[], b: string[]): number[] {
@@ -107,169 +180,192 @@ function differingLines(a: string[], b: string[]): number[] {
   return out
 }
 
-// ─────────────────────────────────────────────────────────────────────────────────────
-// AC-adjacent, and the root cause: the quarry we resolve against must be the CITABLE
-// copy. Every other source-side assertion below is worthless if this one does not hold —
-// pointed at the CRLF sibling, they would all "confirm" the very line numbers this story
-// exists to correct.
-// ─────────────────────────────────────────────────────────────────────────────────────
-describe.skipIf(!sourceAvailable)('the quarry is the CITABLE copy, not the CRLF sibling', () => {
-  /**
-   * The byte-of-record fingerprint. Five anchors spread across RBARON.MAC: the line
-   * count, the radix switch at the top, the CALCNT equate that timing.ts cites, and both
-   * edges of the lone decimal island. The CRLF sibling fails every one of them below :74.
-   */
-  function fingerprintErrors(lines: string[]): string[] {
-    const errors: string[] = []
-    const want: Array<[number, string]> = [
-      [74, '\t.RADIX 16'],
-      [621, 'CALCNT\t=18'],
-      [6217, '\t.RADIX 10'],
-      [6281, '\t.RADIX 16'],
-    ]
-    if (lines.length !== 6294) errors.push(`RBARON.MAC has ${lines.length} lines, expected 6294`)
-    for (const [n, text] of want) {
-      if (at(lines, n) !== text) {
-        errors.push(`RBARON.MAC:${n} is ${JSON.stringify(at(lines, n))}, expected ${JSON.stringify(text)}`)
-      }
-    }
-    return errors
-  }
 
-  it('RBARON.MAC fingerprints as the LF byte-of-record', () => {
-    expect(fingerprintErrors(sourceLines('RBARON.MAC'))).toEqual([])
+/** The doc's delimited decoy warning. Scoped, so a stray mention elsewhere cannot satisfy it. */
+function trapHeader(): string {
+  const text = doc()
+  const start = text.indexOf('<!-- decoy-trap:start -->')
+  const end = text.indexOf('<!-- decoy-trap:end -->')
+  return start >= 0 && end > start ? text.slice(start, end) : ''
+}
+
+/**
+ * The §7 retraction blockquote, and nothing else.
+ *
+ * Scoped for the same reason `trapHeader()` is (Reviewer, rb4-2): asserting "the doc mentions D4"
+ * against the WHOLE doc passed even with the retraction gutted, because §6's unrelated
+ * "**D4-D7** explosion level" satisfied it. A claim must be proven where it is made.
+ */
+function lodRetraction(): string {
+  const lines = doc().split('\n')
+  const i = lines.findIndex((l) => l.includes('RETRACTED (rb4-2)'))
+  if (i < 0) return ''
+  const out: string[] = []
+  for (let j = i; j < lines.length && lines[j].startsWith('>'); j++) out.push(lines[j])
+  return out.join('\n')
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────
+// GATE 1 — the ROM constants above are the ROM's, not a human's.
+//
+// Needs the quarry, so it SKIPS in CI. Everything below this group is enforced against
+// `ROM` unconditionally, so the doc is guarded on every push regardless.
+// ─────────────────────────────────────────────────────────────────────────────────────
+describe.skipIf(!sourceAvailable)('the byte-of-record — every ROM constant re-derived from source', () => {
+  it('the quarry is the CITABLE copy, not the CRLF sibling', () => {
+    const rbaron = sourceLines('RBARON.MAC')
+    expect(rbaron.length, 'RBARON.MAC line count').toBe(ROM.rbaronLines)
+    expect(at(rbaron, 74)).toBe('\t.RADIX 16')
+    expect(at(rbaron, ROM.defs.CALCNT.line)).toBe(ROM.defs.CALCNT.text)
+    // The stale line the CRLF sibling reports for CALCNT is NOT the CALCNT equate.
+    expect(at(rbaron, ROM.defs.CALCNT.stale)).not.toMatch(/CALCNT/)
   })
 
   it('the fingerprint REJECTS a form-feed-glued copy (the sibling that poisoned the doc)', () => {
-    // Reproduce the sibling's defect in memory: glue each page break back onto the line
-    // that follows it, which is precisely the transform that loses the 8 lines. If this
-    // passes the fingerprint, the fingerprint is decoration and the gate above is a lie.
-    const glued = readFileSync(join(SOURCE_DIR, 'RBARON.MAC'), 'latin1')
-      .split(/\r\n|\r|\n/)
-    const collapsed: string[] = []
-    for (let i = 0; i < glued.length; i++) {
-      // The LF copy renders a page break as an empty line preceding the .SBTTL/.TITLE.
-      // The sibling carries \x0c as a prefix on that heading instead — one line, not two.
-      if (glued[i] === '' && /^\x0c?\t\.(SBTTL|TITLE)/.test(glued[i + 1] ?? '')) continue
-      collapsed.push(glued[i])
+    // Reproduce the sibling's defect in memory: glue each page break back onto the heading that
+    // follows it — the transform that loses the 8 lines. If a glued copy still fingerprints as
+    // the byte-of-record, this whole group is decoration.
+    const real = sourceLines('RBARON.MAC')
+    const glued: string[] = []
+    for (let i = 0; i < real.length; i++) {
+      if (real[i] === '' && /^\x0c?\t\.(SBTTL|TITLE)/.test(real[i + 1] ?? '')) continue
+      glued.push(real[i])
     }
-    expect(collapsed.length).toBeLessThan(glued.length)
-    expect(fingerprintErrors(collapsed)).not.toEqual([])
+    expect(glued.length).toBeLessThan(real.length)
+    expect(glued.length).not.toBe(ROM.rbaronLines)
+    expect(at(glued, ROM.defs.CALCNT.line)).not.toBe(ROM.defs.CALCNT.text)
   })
 
-  it('CALCNT sits at :621 in the citable copy and :620 in the glued one — the off-by-one, explained', () => {
-    const lines = sourceLines('RBARON.MAC')
-    expect(at(lines, 621)).toBe('CALCNT\t=18')
-    // The stale citation the doc (and timing.ts) carry. It is NOT the CALCNT equate.
-    expect(at(lines, 620)).not.toMatch(/CALCNT/)
+  it('the radix switches are exactly where ROM says, and the decimal island is lone', () => {
+    const rbaron = sourceLines('RBARON.MAC')
+    const switches = rbaron
+      .map((l, i) => [i + 1, l] as const)
+      .filter(([, l]) => /^\s*\.RADIX/.test(l))
+      .map(([n]) => n)
+    expect(switches).toEqual([...ROM.radixSwitches])
+    expect(at(rbaron, ROM.island.from)).toBe('\t.RADIX 10')
+    expect(at(rbaron, ROM.island.to + 1)).toBe('\t.RADIX 16')
+  })
+
+  it('every symbol sits at the line ROM claims for it', () => {
+    const rbaron = sourceLines('RBARON.MAC')
+    for (const [sym, { line }] of Object.entries(ROM.defs)) {
+      expect(at(rbaron, line), `${sym} must be defined at RBARON.MAC:${line}`).toMatch(
+        new RegExp(`^${sym}[:\\t =]`),
+      )
+    }
+    expect(at(rbaron, ROM.incFrame.line)).toBe('\tINC FRAME')
+  })
+
+  it('RBARON vs R2BRON differ in ROM.decoyDiffCount lines, and every one is a checksum byte', () => {
+    const rbaron = sourceLines('RBARON.MAC')
+    const r2bron = sourceLines('R2BRON.MAC')
+    const diff = differingLines(rbaron, r2bron)
+    for (const n of diff) {
+      expect(
+        `${at(rbaron, n)}${at(r2bron, n)}`,
+        `RBARON.MAC:${n} differs from the decoy and is NOT a checksum byte — the decoy is not benign`,
+      ).toMatch(/CHKSM/)
+    }
+    expect(diff.length).toBe(ROM.decoyDiffCount)
+  })
+
+  it('RBGRND vs R2GRND differ in exactly the frame divider and the watchdog', () => {
+    const rbgrnd = sourceLines('RBGRND.MAC')
+    const r2grnd = sourceLines('R2GRND.MAC')
+    expect(differingLines(rbgrnd, r2grnd)).toEqual([...ROM.groundDiffLines])
+    expect(at(rbgrnd, 61)).toBe('\tFRMECNT=4')
+    expect(at(r2grnd, 61)).toBe('\tFRMECNT=5')
+    expect(at(rbgrnd, 197)).toBe(`\tCMP I,${ROM.watchdog}`)
+    expect(at(r2grnd, 197)).toBe('\tCMP I,40')
+    expect(at(rbgrnd, 196)).toMatch(/LDA CALFLG/)
+    expect(at(rbgrnd, 198)).toMatch(/3\*CALCULATION LOOP TIME/)
+  })
+
+  it("the decoy's own load map identifies its object module as RBARON", () => {
+    expect(sourceLines('R2BRON.MAP').find((l) => /^OBJ:R2BRON\s+RBARON\b/.test(l))).toBeTruthy()
+  })
+
+  it('DRNPIC selects the model on the orientation bit — there is no distance test', () => {
+    const rbaron = sourceLines('RBARON.MAC')
+    expect(at(rbaron, ROM.drnpic.line)).toBe('DRNPIC:\tLDA PLSTAT+6\t\t;PLANE ROTATED')
+    // `AND I,10` in a .RADIX 16 region is 0x10 — bit D4. The radix trap of this story, in one
+    // instruction: read as decimal it is nonsense.
+    expect(at(rbaron, ROM.drnpic.line + 1)).toBe('\tAND I,10')
+    expect(parseInt('10', 16)).toBe(Number(ROM.drnpic.bit))
+    expect(rbaron.slice(ROM.drnpic.line, ROM.drnpic.line + 18).join('\n')).toMatch(/\.DRPNT/)
   })
 })
 
 // ─────────────────────────────────────────────────────────────────────────────────────
-// AC1 — every fact re-sourced to the shipped build; zero references to R2BRON/R2GRND.
-// AC2 — except inside one loud, delimited header that names the trap.
+// AC1/AC2 — the decoy is cited nowhere, and named only inside its own warning.
+// Runs in CI.
 // ─────────────────────────────────────────────────────────────────────────────────────
 describe('AC1/AC2 — the decoy build is cited nowhere', () => {
   it('no citation anywhere in the doc or src names the decoy build', () => {
     const offenders: string[] = []
     for (const [path, text] of [['docs/red-baron-1980-source-findings.md', doc()] as [string, string], ...srcFiles()]) {
       for (const m of text.matchAll(CITATION)) {
-        if (isDecoyModule(m[1])) {
-          offenders.push(`${path}: ${m[0]} (line ${text.slice(0, m.index).split('\n').length})`)
-        }
+        if (isDecoyModule(m[1])) offenders.push(`${path}: ${m[0]}`)
       }
     }
     expect(offenders, `citations to a build that never shipped:\n${offenders.join('\n')}`).toEqual([])
   })
 
-  it('src/ does not mention the decoy build at all — not even in prose', () => {
+  it('src/ does not mention the decoy build at all — not even in prose, not in any case', () => {
     const offenders = srcFiles()
-      .filter(([, text]) => /R2BRON|R2GRND/.test(text))
-      .map(([path, text]) => `${path} (${text.match(/R2BRON|R2GRND/g)?.length} mentions)`)
+      .filter(([, text]) => DECOY_NAME.test(text))
+      .map(([path]) => path)
     expect(offenders, `src/ must cite the ROM, never the decoy:\n${offenders.join('\n')}`).toEqual([])
   })
 
   it('the doc names the decoy ONLY inside its delimited trap header', () => {
     const text = doc()
-    // A single, machine-checkable region. Anything naming the decoy outside it is a
-    // fact still sourced to the build that never shipped.
     const start = text.indexOf('<!-- decoy-trap:start -->')
     const end = text.indexOf('<!-- decoy-trap:end -->')
     expect(start, 'the doc must carry a <!-- decoy-trap:start --> marker').toBeGreaterThan(-1)
     expect(end, 'the doc must carry a <!-- decoy-trap:end --> marker').toBeGreaterThan(start)
 
     const outside = text.slice(0, start) + text.slice(end)
-    const strays = [...outside.matchAll(/R2BRON|R2GRND/g)].map(
-      (m) => `line ${outside.slice(0, m.index).split('\n').length}: ${m[0]}`,
-    )
-    expect(strays, `decoy named outside the trap header:\n${strays.join('\n')}`).toEqual([])
+    expect([...outside.matchAll(DECOY_NAME)].map((m) => m[0]), 'decoy named outside the trap header').toEqual([])
   })
 })
 
 // ─────────────────────────────────────────────────────────────────────────────────────
-// AC2 — and the header must be TRUE. Every number below is DERIVED from the quarry, so
-// the doc cannot state a figure nobody re-read. (The story briefs "14 lines"; the source
-// says 7. The suite believes the source.)
+// AC2 — the trap header states the ROM's facts. Every number is checked AGAINST ITS CLAIM,
+// not merely "appears somewhere": `toContain('7')` was satisfied by `037007.XXX`, and a header
+// claiming NINE differing lines passed 25/25 (Reviewer, rb4-2). Runs in CI.
 // ─────────────────────────────────────────────────────────────────────────────────────
-describe.skipIf(!sourceAvailable)('AC2 — the trap header tells the truth about the decoy', () => {
-  const trapHeader = () => {
-    const text = doc()
-    const start = text.indexOf('<!-- decoy-trap:start -->')
-    const end = text.indexOf('<!-- decoy-trap:end -->')
-    return start >= 0 && end > start ? text.slice(start, end) : ''
-  }
-
-  it('RBARON vs R2BRON differ ONLY in checksum bytes — and the header says how many', () => {
-    const rbaron = sourceLines('RBARON.MAC')
-    const r2bron = sourceLines('R2BRON.MAC')
-    const diff = differingLines(rbaron, r2bron)
-
-    // Derived, not asserted: every differing line is a ROM self-test checksum byte.
-    // That is what makes the decoy so convincing — its CODE is the shipped code.
-    for (const n of diff) {
-      expect(
-        `${at(rbaron, n)}${at(r2bron, n)}`,
-        `RBARON.MAC:${n} differs from R2BRON and is NOT a checksum byte — the decoy is not benign after all`,
-      ).toMatch(/CHKSM/)
-    }
-    expect(diff.length).toBe(7)
-
+describe('AC2 — the trap header tells the truth about the decoy', () => {
+  it('states how many lines differ — attached to the claim, not loose in the prose', () => {
     const header = trapHeader()
-    expect(header, 'the header must state how many lines differ').toContain(String(diff.length))
-    expect(header, 'the header must say the differences are checksum bytes').toMatch(/checksum/i)
-    // The brief's "14" is a double-count of a unified diff (7 removed + 7 added).
-    expect(header, 'the header must not repeat the "14 lines" double-count').not.toMatch(/\b14\b/)
+    expect(header, 'the trap header must exist').not.toBe('')
+    expect(
+      header,
+      `the header must say the builds differ in ${ROM.decoyDiffCount} LINES (a bare "${ROM.decoyDiffCount}" ` +
+        'anywhere is not a claim — 037007.XXX contains one)',
+    ).toMatch(new RegExp(`\\b${ROM.decoyDiffCount}\\s+lines\\b`, 'i'))
+    expect(header, 'and that those differences are checksum bytes').toMatch(/checksum/i)
+    expect(header, 'the "14 lines" double-count must not return').not.toMatch(/\b14\s+lines\b/i)
   })
 
-  it('RBGRND vs R2GRND differ in exactly TWO lines — FRMECNT *and* the watchdog', () => {
-    const rbgrnd = sourceLines('RBGRND.MAC')
-    const r2grnd = sourceLines('R2GRND.MAC')
-    const diff = differingLines(rbgrnd, r2grnd)
-
-    expect(diff).toEqual([61, 197])
-    expect(at(rbgrnd, 61)).toBe('\tFRMECNT=4')
-    expect(at(r2grnd, 61)).toBe('\tFRMECNT=5')
-    expect(at(rbgrnd, 197)).toBe('\tCMP I,3')
-    expect(at(r2grnd, 197)).toBe('\tCMP I,40')
-
+  it('names BOTH ground-module differences — the divider and the watchdog', () => {
     const header = trapHeader()
-    expect(header, 'the header must name the frame divider').toMatch(/FRMECNT/)
-    expect(header, 'the header must name the SECOND difference — the watchdog').toMatch(/CALFLG|watchdog/i)
-    expect(header, 'the header must give the shipped cadence').toMatch(/62\.5/)
-    expect(header, 'the header must give the decoy cadence').toMatch(/\b50\b/)
-
-    // The doc's standing claim — that the builds differ in ONE substantive value — is
-    // the sentence that let the watchdog lie in. It must not survive.
+    expect(header, 'the frame divider').toMatch(/FRMECNT/)
+    expect(header, 'the SECOND difference — the watchdog').toMatch(/CALFLG|watchdog/i)
+    expect(header, 'the shipped cadence').toMatch(/62\.5\s*Hz/i)
+    expect(header, 'the decoy cadence').toMatch(/\b50\s*Hz/i)
+    // The sentence that let the watchdog lie in. Assert the positive fact too, so a reword of
+    // the negative cannot resurrect the claim.
     expect(doc(), 'the "one substantive value" claim is refuted by RBGRND:197').not.toMatch(
-      /one substantive value/i,
+      /one substantive value|a single (substantive|meaningful) (value|way|difference)/i,
+    )
+    expect(header, 'the header must say there are TWO substantive differences').toMatch(
+      /\bTWO\b|\b2\b/i,
     )
   })
 
-  it("the decoy's own load map calls its object module RBARON — and the header warns of it", () => {
-    const map = sourceLines('R2BRON.MAP')
-    const identLine = map.find((l) => /^OBJ:R2BRON\s+RBARON\b/.test(l))
-    expect(identLine, 'R2BRON.MAP must identify its object module as RBARON').toBeTruthy()
-
+  it("warns that the decoy's load map signs the ship build's name", () => {
     expect(trapHeader(), 'the header must warn that the decoy IDENTIFIES ITSELF as RBARON').toMatch(
       /load map|\.MAP|object module/i,
     )
@@ -277,177 +373,130 @@ describe.skipIf(!sourceAvailable)('AC2 — the trap header tells the truth about
 })
 
 // ─────────────────────────────────────────────────────────────────────────────────────
-// The watchdog — the one fact the doc actually imported from the decoy. 0x40 = 64;
-// the shipped build says 3. Off by 21x.
+// The watchdog — the one fact the doc actually imported from the decoy. Runs in CI.
 // ─────────────────────────────────────────────────────────────────────────────────────
-describe.skipIf(!sourceAvailable)('the watchdog claim is re-sourced to the shipped build', () => {
-  it('the shipped watchdog trips at CALFLG >= 3 (RBGRND.MAC:197), not 0x40', () => {
-    const rbgrnd = sourceLines('RBGRND.MAC')
-    expect(at(rbgrnd, 196)).toMatch(/LDA CALFLG/)
-    expect(at(rbgrnd, 197)).toBe('\tCMP I,3')
-    expect(at(rbgrnd, 198)).toMatch(/3\*CALCULATION LOOP TIME/)
+describe('the watchdog claim is re-sourced to the shipped build', () => {
+  /** 0x40, $40, 40h, 64, "sixty-four" — the threshold that never shipped, however it is spelled. */
+  const DECOY_THRESHOLD = /CALFLG\s*[≥>]=?\s*(\$|0x|#)?\s*(40|64)\b|sixty[- ]?four missed|64 missed frames/i
+
+  it('the doc states CALFLG >= 3 and never the decoy threshold', () => {
+    const text = doc()
+    expect(text, 'the 0x40 threshold came from R2GRND — it never ran').not.toMatch(DECOY_THRESHOLD)
+    expect(text, `the doc must state the shipped threshold: CALFLG >= ${ROM.watchdog}`).toMatch(
+      new RegExp(`CALFLG\\s*(&gt;=|>=|≥)\\s*${ROM.watchdog}\\b`),
+    )
   })
 
-  it('the doc no longer claims the 0x40 / 64-missed-frame threshold', () => {
-    const text = doc()
-    expect(text, 'the 0x40 watchdog threshold came from R2GRND — it never shipped').not.toMatch(
-      /CALFLG\s*[≥>]=?\s*(0x40|40|64)/i,
-    )
-    expect(text, 'the doc must not still claim ~64 missed frames').not.toMatch(/64 missed frames/i)
-    expect(text, 'the doc must state the shipped threshold: CALFLG >= 3').toMatch(
-      /CALFLG\s*(&gt;=|>=|≥)\s*3\b/,
-    )
+  it('no src comment carries the decoy threshold, however it is spelled', () => {
+    const offenders = srcFiles()
+      .filter(([, text]) => DECOY_THRESHOLD.test(text))
+      .map(([path]) => path)
+    expect(offenders, `src/ repeats the retracted watchdog:\n${offenders.join('\n')}`).toEqual([])
   })
 })
 
 // ─────────────────────────────────────────────────────────────────────────────────────
-// AC3 — the radix rule, stated ONCE, correctly, with the per-region table.
+// AC3 — the radix rule, stated once, correctly, with the region table. Runs in CI.
 // ─────────────────────────────────────────────────────────────────────────────────────
-describe.skipIf(!sourceAvailable)('AC3 — the radix rule is stated once, and it is right', () => {
-  it('the region boundaries are exactly where the doc will claim they are', () => {
-    const rbaron = sourceLines('RBARON.MAC')
-    expect(at(rbaron, 74)).toBe('\t.RADIX 16')
-    expect(at(rbaron, 6217)).toBe('\t.RADIX 10')
-    expect(at(rbaron, 6281)).toBe('\t.RADIX 16')
-    // The decimal island is the vertex table and NOTHING else: :6217-6280 inclusive.
-    const switches = rbaron
-      .map((l, i) => [i + 1, l] as const)
-      .filter(([, l]) => /^\s*\.RADIX/.test(l))
-      .map(([n]) => n)
-    expect(switches, 'exactly three radix switches — any more and the island is not lone').toEqual([
-      74, 6217, 6281,
-    ])
-  })
-
-  it('the doc names the lone decimal island :6217-6280 and the trailing-dot escape', () => {
+describe('AC3 — the radix rule is stated once, and it is right', () => {
+  it('names the hex region, the lone decimal island, and the trailing-dot escape', () => {
     const text = doc()
-    expect(text, 'the doc must state where the hex region begins').toMatch(/RBARON\.MAC:74/)
-    expect(text, 'the doc must name the decimal island start').toMatch(/6217/)
-    expect(text, 'the doc must name the decimal island end').toMatch(/6280/)
-    expect(text, 'the doc must state the trailing-dot decimal escape').toMatch(/trailing (dot|period)/i)
+    expect(text, 'where the hex region begins').toMatch(new RegExp(`RBARON\\.MAC:${ROM.radixSwitches[0]}`))
+    expect(text, 'the decimal island start').toMatch(new RegExp(`\\b${ROM.island.from}\\b`))
+    expect(text, 'the decimal island end').toMatch(new RegExp(`\\b${ROM.island.to}\\b`))
+    expect(text, 'the trailing-dot decimal escape').toMatch(/trailing (dot|period)/i)
   })
 
   it('states the radix rule ONCE — not once correctly and again wrongly', () => {
-    const statements = doc().match(/trailing (dot|period)/gi) ?? []
-    expect(statements.length, 'the radix rule must be stated exactly once').toBe(1)
+    expect((doc().match(/trailing (dot|period)/gi) ?? []).length).toBe(1)
   })
 })
 
 // ─────────────────────────────────────────────────────────────────────────────────────
-// AC4 — the line citations. Each expected line is DERIVED by finding where the source
-// actually defines the symbol; nothing here is a number I typed and hoped about.
+// AC4 — the line citations. Enforced against ROM, so it runs in CI. Runs in CI.
 // ─────────────────────────────────────────────────────────────────────────────────────
-describe.skipIf(!sourceAvailable)('AC4 — every cited line is the line the source really uses', () => {
-  /** Where the quarry DEFINES a symbol (label or equate), 1-based. */
-  function definitionLine(file: string, symbol: string): number {
-    const lines = sourceLines(file)
-    const n = lines.findIndex((l) => new RegExp(`^\\s*${symbol}[:\\t =]`).test(l))
-    expect(n, `${symbol} must be defined in ${file}`).toBeGreaterThan(-1)
-    return n + 1
-  }
+describe('AC4 — every cited line is the line the source really uses', () => {
+  const cases = Object.entries(ROM.defs).map(([symbol, d]) => ({ symbol, ...d }))
 
-  // The §1 symbols the doc cites AT THEIR DEFINITION. The stale column is what the doc
-  // carries today — copied from the CRLF sibling, and wrong by the staircase.
-  const CASES: Array<{ symbol: string; file: string; stale: number }> = [
-    { symbol: 'CALCNT', file: 'RBARON.MAC', stale: 620 },
-    { symbol: 'BNRCNT', file: 'RBARON.MAC', stale: 621 },
-    { symbol: 'MAIN', file: 'RBARON.MAC', stale: 761 },
-    { symbol: 'SHLAUN', file: 'RBARON.MAC', stale: 4022 },
-  ]
-
-  it.each(CASES)('$symbol is cited at its real definition line, not the stale one', ({ symbol, file, stale }) => {
-    const truth = definitionLine(file, symbol)
-    expect(truth, `${symbol} moved — the staircase says the stale citation cannot be right`).not.toBe(stale)
-
+  it.each(cases)('$symbol is cited at its real line, not the stale one', ({ symbol, line, stale }) => {
     // Only the doc lines that actually discuss this symbol may speak for it.
     const rows = doc()
       .split('\n')
-      .filter((l) => l.includes(symbol) && new RegExp(`${file}\\s*:\\s*\\d`).test(l))
-    expect(rows.length, `the doc must cite ${symbol} against ${file} somewhere`).toBeGreaterThan(0)
+      .filter((l) => l.includes(symbol) && /RBARON\.MAC\s*:\s*\d/.test(l))
+    expect(rows.length, `the doc must cite ${symbol} against RBARON.MAC somewhere`).toBeGreaterThan(0)
 
-    const citedNumbers = rows.flatMap((l) =>
-      [...l.matchAll(new RegExp(`${file}\\s*:\\s*(\\d+)`, 'g'))].map((m) => Number(m[1])),
-    )
-    expect(citedNumbers, `${symbol} must be cited at ${file}:${truth}`).toContain(truth)
-    expect(citedNumbers, `${symbol} must no longer be cited at the stale ${file}:${stale}`).not.toContain(stale)
+    const cited = rows.flatMap((l) => [...l.matchAll(/RBARON\.MAC\s*:\s*(\d+)/g)].map((m) => Number(m[1])))
+    expect(cited, `${symbol} must be cited at RBARON.MAC:${line}`).toContain(line)
+    expect(cited, `${symbol} must no longer be cited at the stale RBARON.MAC:${stale}`).not.toContain(stale)
   })
 
   it('the `INC FRAME` use-site is cited where it actually is', () => {
-    const rbaron = sourceLines('RBARON.MAC')
-    const truth = rbaron.findIndex((l) => /^\s*INC FRAME\b/.test(l)) + 1
-    expect(at(rbaron, truth)).toBe('\tINC FRAME')
-
     const rows = doc().split('\n').filter((l) => /INC FRAME|`FRAME`/.test(l) && /RBARON\.MAC\s*:\s*\d/.test(l))
     const cited = rows.flatMap((l) => [...l.matchAll(/RBARON\.MAC\s*:\s*(\d+)/g)].map((m) => Number(m[1])))
-    expect(cited, `INC FRAME lives at RBARON.MAC:${truth}`).toContain(truth)
-    expect(cited, 'the stale :868 came from the CRLF sibling').not.toContain(868)
+    expect(cited, `INC FRAME lives at RBARON.MAC:${ROM.incFrame.line}`).toContain(ROM.incFrame.line)
+    expect(cited, 'the stale citation came from the CRLF sibling').not.toContain(ROM.incFrame.stale)
   })
 
-  it('src/core/timing.ts cites CALCNT at RBARON.MAC:621 — byte-verified', () => {
-    const rbaron = sourceLines('RBARON.MAC')
-    expect(at(rbaron, 621)).toBe('CALCNT\t=18')
-
+  it('src/core/timing.ts cites CALCNT at its real line', () => {
     const timing = readFileSync(join(repoRoot, 'src', 'core', 'timing.ts'), 'utf8')
-    expect(timing, 'timing.ts must cite the real CALCNT line').toMatch(/RBARON\.MAC:621/)
-    expect(timing, 'the stale :620 was copied verbatim out of the poisoned doc').not.toMatch(
-      /RBARON\.MAC:620/,
+    expect(timing, 'timing.ts must cite the real CALCNT line').toMatch(
+      new RegExp(`RBARON\\.MAC:${ROM.defs.CALCNT.line}`),
+    )
+    expect(timing, 'the stale line was copied verbatim out of the poisoned doc').not.toMatch(
+      new RegExp(`RBARON\\.MAC:${ROM.defs.CALCNT.stale}`),
     )
   })
 })
 
 // ─────────────────────────────────────────────────────────────────────────────────────
-// AC5 — the "distance LOD" is retracted. The ROM picks the plane model on an ORIENTATION
-// BIT. No distance test exists in the picture path.
+// AC5 — the "distance LOD" is retracted. Runs in CI.
 // ─────────────────────────────────────────────────────────────────────────────────────
-describe.skipIf(!sourceAvailable)('AC5 — the model is chosen on PLSTAT+6 bit 0x10, not on distance', () => {
-  it('DRNPIC branches on the "PLANE ROTATED" bit — and the bit is 0x10, because the region is hex', () => {
-    const rbaron = sourceLines('RBARON.MAC')
-    expect(at(rbaron, 4961)).toBe('DRNPIC:\tLDA PLSTAT+6\t\t;PLANE ROTATED')
-    // `AND I,10` inside a .RADIX 16 region is 0x10 — bit D4. Read as decimal it is
-    // nonsense, which is the radix trap of this very story, in one instruction.
-    expect(at(rbaron, 4962)).toBe('\tAND I,10')
-    // The far/drone point-list is selected on that branch — not on any depth compare.
-    const picturePath = rbaron.slice(4960, 4979).join('\n')
-    expect(picturePath, 'the drone point-list is the far model').toMatch(/\.DRPNT/)
+describe('AC5 — the model is chosen on an orientation bit, not on distance', () => {
+  /**
+   * The claim, not the phrase. `/distance LOD/i` blocked two words; "level of detail by depth"
+   * restates the same falsehood and walks through (Reviewer, rb4-2).
+   */
+  const DEPTH_CLAIM =
+    /distance[- ]?(based\s+)?LOD|LOD[^.\n]{0,30}(distance|depth)|(distance|depth)[- ][a-z]*\s*(LOD|level of detail)|level of detail[^.\n]{0,30}(distance|depth)/i
+
+  it('the doc no longer claims the model is chosen by distance', () => {
+    // Scoped OUT of the retraction blockquote, which necessarily describes the claim it kills.
+    const text = doc().split('\n').filter((l) => !l.startsWith('>')).join('\n')
+    expect(text, 'the ROM has no distance test in the picture path').not.toMatch(DEPTH_CLAIM)
   })
 
-  it('the doc no longer claims a built-in DISTANCE LOD', () => {
-    const text = doc()
-    expect(text, 'the ROM has no distance test in the picture path').not.toMatch(/distance LOD/i)
-    expect(text, 'the "distant plane" reading was inferred, and it was wrong').not.toMatch(
-      /Built-in\s+\n?distance/i,
-    )
+  it('the retraction names the real selector, IN THE PASSAGE THAT MAKES THE CLAIM', () => {
+    const passage = lodRetraction()
+    expect(passage, 'the doc must carry a §7 retraction').not.toBe('')
+    expect(passage, 'the state byte').toMatch(/PLSTAT\+6/)
+    expect(passage, 'the bit — 0x10 / D4').toMatch(/0x10|\bD4\b|bit 4/i)
+    expect(passage, 'the routine').toMatch(/DRNPIC/)
+    expect(passage, 'the real line').toMatch(new RegExp(`RBARON\\.MAC:${ROM.drnpic.line}`))
   })
 
-  it('the doc states the real selector, and cites it', () => {
-    const text = doc()
-    expect(text, 'the doc must name the state byte').toMatch(/PLSTAT\+6/)
-    expect(text, 'the doc must name the bit (0x10 / D4)').toMatch(/0x10|D4|bit 4/i)
-    expect(text, 'the doc must cite DRNPIC, where the branch lives').toMatch(/DRNPIC/)
-    expect(text, 'the doc must cite the real line').toMatch(/RBARON\.MAC:496[12]/)
+  it('no src comment restates the retracted claim', () => {
+    const offenders = srcFiles()
+      .filter(([, text]) => {
+        // biplane.ts documents the divergence on purpose; what it must NOT do is cite it as the ROM's.
+        const asRomFact = /ROM[^.\n]{0,40}(distance|depth)[^.\n]{0,30}(LOD|model)/i
+        return asRomFact.test(text)
+      })
+      .map(([path]) => path)
+    expect(offenders, `src/ presents a depth LOD as the ROM's rule:\n${offenders.join('\n')}`).toEqual([])
   })
 })
 
 // ─────────────────────────────────────────────────────────────────────────────────────
-// AC6 — code comments no longer carry the poison forward.
+// AC6 — code comments cite the shipped build. Runs in CI.
 // ─────────────────────────────────────────────────────────────────────────────────────
-describe('AC6 — src/ comments cite the ROM, not the decoy and not a retracted claim', () => {
+describe('AC6 — src/ comments cite the ROM, and only the build that shipped', () => {
   it('every ROM citation in src/ names a module that actually shipped', () => {
     const offenders: string[] = []
     for (const [path, text] of srcFiles()) {
       for (const m of text.matchAll(CITATION)) {
-        if (!SHIPPED.includes(m[1])) offenders.push(`${path}: ${m[0]}`)
+        if (!isShipped(m[1])) offenders.push(`${path}: ${m[0]}`)
       }
     }
     expect(offenders, `src/ cites modules outside the shipped build:\n${offenders.join('\n')}`).toEqual([])
-  })
-
-  it('no src comment repeats a claim this story retracts', () => {
-    const offenders: string[] = []
-    for (const [path, text] of srcFiles()) {
-      if (/distance LOD/i.test(text)) offenders.push(`${path}: repeats the retracted "distance LOD" claim`)
-      if (/CALFLG\s*[≥>]=?\s*(0x40|64)/i.test(text)) offenders.push(`${path}: repeats the 0x40 watchdog`)
-    }
-    expect(offenders, offenders.join('\n')).toEqual([])
   })
 })
