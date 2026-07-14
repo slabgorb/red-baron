@@ -6,13 +6,13 @@
 // a starfield, and ENDLFE decrements your planes: respawn (briefly untouchable)
 // if any remain, else the game is over.
 //
-// LIVES & RESPAWN (EOLSEQ→ENDLFE, findings §5, R2BRON.MAC:1055-1210): "on death the
+// LIVES & RESPAWN (EOLSEQ→ENDLFE, findings §5, RBARON.MAC:1057-1212): "on death the
 // windshield bullet-hole graphics step in (side = ENSIDE), the horizon scrolls down
 // and the playfield spins with a spiral sound, then a starfield + plane-explosion;
 // ENDLFE does DEC LIVES → INITIAL respawn if any remain, else high-score entry.
 // Initial lives from options INITLF: .BYTE 2,3,4,5."
 //
-// RESPAWN SPAWN-GRACE (GMINIT/INITIAL, findings §5, R2BRON.MAC:1215-1291): "on
+// RESPAWN SPAWN-GRACE (GMINIT/INITIAL, findings §5, RBARON.MAC:1217-1293): "on
 // (re)spawn, PLSTAT+7 = WO.CNT(5) disables enemy planes for 5 frames ... resets eye
 // altitude I4YPOS=0x0210." (Analogous to Battlezone's rez_protect spawn grace.)
 //
@@ -35,7 +35,7 @@
 
 // ─── ROM-exact constants (findings §5) ───────────────────────────────────────
 
-/** INITLF — options-indexed initial lives (R2BRON.MAC, `.BYTE 2,3,4,5`). */
+/** INITLF — options-indexed initial lives (RBARON.MAC, `.BYTE 2,3,4,5`). */
 export const INITLF: readonly number[] = Object.freeze([2, 3, 4, 5])
 
 /** WO.CNT — respawn spawn-grace: enemy planes disabled for 5 frames on (re)spawn (PLSTAT+7). */
