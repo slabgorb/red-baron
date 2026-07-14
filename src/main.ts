@@ -33,20 +33,21 @@ import {
 } from './core/waves'
 import { biplaneLOD, renderModel } from './core/biplane'
 import {
-  shouldSpawnBlimp, spawn as spawnBlimp, step as stepBlimp, blimpFires, type Blimp,
+  shouldSpawnBlimp, spawn as spawnBlimp, step as stepBlimp, blimpFires,
+  reapBlimp, blimpSegments, blimpTarget, type Blimp,
 } from './core/blimp'
 import { initialLives, loseLife, type Lives } from './core/lives'
 import { initialMountains, stepMountain, mountainSegments, type Mountain } from './core/landscape'
-import { sceneProjection, projectSegment, type SceneSegment } from './core/scene'
+import { sceneProjection, type SceneSegment } from './core/scene'
 import { SIM_TIMESTEP_S } from './core/timing'
-import { INITIAL_GUNS, fire, step as stepGuns, S_MAXZ, type Guns, type Shell } from './core/guns'
-import { explode, stepWreck, EXPL2_FRAMES, type Wreck } from './core/explosion'
+import { INITIAL_GUNS, fire, step as stepGuns, shellSegments, type Guns, type Shell } from './core/guns'
+import { explode, stepWreck, type Wreck } from './core/explosion'
+import { wreckSegments } from './core/wreck-render'
 import { scoreKill, gmlevlForKills } from './core/scoring'
-import { EXPLOSION_PIECES, BLIMP_PICTURE } from './core/topology'
 import type { GameEvent } from './core/events'
 import { createAudioEngine } from './shell/audio'
 import { playEventSounds, updateContinuousSounds } from './shell/audio-dispatch'
-import { multiply, translation, rotationZ, rotationY, type Vec3, type Mat4 } from '@arcade/shared/math3d'
+import { multiply, translation, rotationZ, type Mat4 } from '@arcade/shared/math3d'
 import { createRng, nextFloat } from '@arcade/shared/rng'
 import { INITIAL_PAUSED, isPauseKey, togglePaused } from '@arcade/shared/pause'
 import { drawEscOverlay } from '@arcade/shared/esc-overlay'
@@ -54,36 +55,45 @@ import { drawEscOverlay } from '@arcade/shared/esc-overlay'
 const canvas = document.getElementById('game') as HTMLCanvasElement
 const ctx = canvas.getContext('2d')
 
-/**
- * World depth a shell at z = S.MAXZ is drawn at — mirrors guns.ts's internal
- * SHELL_RANGE_DEPTH so a tracer appears at the same depth as the enemy it will hit.
- */
-const SHELL_DRAW_FAR = 800
-
-/** Each of the four PIECE0-3 debris fragments flies out along a distinct diagonal. Inferred. */
-const DEBRIS_DIRS: readonly (readonly [number, number])[] = [
-  [-1, 1],
-  [1, 1],
-  [-1, -1],
-  [1, -1],
-]
-/** Window units each debris fragment spreads per exploding frame — the burst expands. Inferred. */
-const DEBRIS_SPREAD = 4
-
-/**
- * The BLIMP_PICTURE ROM geometry is authored NOSE-ON along local z; a quarter-turn yaw
- * presents the airship's flank (BROADSIDE), the way the cabinet frames the drifting
- * Zeppelin. Inferred — the source pins the geometry, not the presentation pose.
- */
-const BLIMP_YAW = Math.PI / 2
-
-/**
- * Screen-window |x| past which the drifting blimp has left the frame and is despawned.
- * blimp.step is unbounded by design (it never reverses), so main.ts owns the bound: the
- * airship enters at |x| ≤ ENTRY_X_MIN+RANGE (300) and drifts across, so this sits well
- * beyond the entry band. Inferred (BLMOTN off-screen bound is not byte-transcribed).
- */
-const BLIMP_DESPAWN_X = 640
+// ─── NO GEOMETRY IS AUTHORED IN THIS FILE (rb4-1 REWORK 3 — read this before adding any) ───
+//
+// THREE constants used to live right here, and TWO of them were shipped bugs:
+//
+//   SHELL_DRAW_FAR = 800   a hand-copied mirror of the gun's reach. When the reach was
+//                          corrected against the ROM (800 -> 6400) the copy stayed behind, and
+//                          a shell that KILLED the plane at depth 4224 was DRAWN at 528.
+//   BLIMP_DESPAWN_X = 640  "screen-window |x| past which the blimp has left the frame" — true
+//                          at its old cruise depth, and at the corrected depth it is ndc 0.295,
+//                          so the airship was DELETED IN THE MIDDLE OF THE SCREEN.
+//   DEBRIS_SPREAD = 4      window units per frame, so the explosion's size on screen was decided
+//                          by how far away the plane happened to die. At spawn depth: invisible.
+//
+// They rotted HERE and nowhere else, and that is not a coincidence. Every excuse for it rested on
+// one sentence, which this file used to carry as gospel: "main.ts touches `document` at module
+// scope, so under vitest it CANNOT BE IMPORTED — every line in it is unreachable from every test."
+//
+// THAT SENTENCE WAS A LIE, AND IT WAS THE MOST EXPENSIVE LINE IN THE REPO. Believing it is why
+// every guard on this file was a REGEX over its source text — and a regex can only ask what the
+// code SAYS, while the bug is always what the code DOES. Round 2's four regexes were walked around
+// in a minute. Round 3's were walked around in one line (`|| Math.abs(drifted.x) > 640`), with the
+// suite 832/832 green, by a Reviewer who never touched a test or a core file.
+//
+// `document` and `window` are just globals. tests/cockpit-loop.test.ts STUBS THEM, imports this
+// module, captures the rAF callback, and DRIVES THE REAL LOOP — the real accumulator, the real
+// calc-frames, the real despawn — against a fake canvas that records every stroke. main.ts is
+// now the most-observed file in the game, not the least. Anything you write here that changes
+// what the player sees will be seen.
+//
+// The pure geometry stays GONE all the same — in core, where it is denominated, cited and reusable:
+//
+//   guns.shellSegments        the tracer     (beside the depth<->z conversion it must agree with)
+//   blimp.blimpSegments       the airship    (beside the hull its despawn reasons about)
+//   blimp.reapBlimp           the despawn    (the DECISION, not a predicate to argue with)
+//   wreck-render.wreckSegments the debris    (burst denominated in the frame it bursts into)
+//
+// DO NOT WRITE A DISTANCE, A DESPAWN BOUND, OR A SPREAD IN THIS FILE. If you need one, it is a
+// pure function of the sim state and it belongs in core with a test on it. What is left here is
+// canvas, keyboard, audio and the loop.
 
 /**
  * Chance a blimp shot connects on one of its ÷2 fire-frames. `blimpFires` is a deterministic
@@ -117,42 +127,16 @@ function strokeSegments(segs: readonly SceneSegment[], width: number, height: nu
 }
 
 /**
- * Project a player shell to a short glowing tracer streak. The shell's z (0..S.MAXZ)
- * maps to a world depth; the streak trails one z-unit behind so it reads as motion.
- * The shell's (x, y) are world-window units — the same space the enemy lives in.
+ * The LIVE viewport's aspect ratio — the frame every screen-space question is asked against.
+ *
+ * rb4-1: this is not just a render number any more. "Has the blimp left the frame?" and "where
+ * does the blimp ENTER the frame?" are questions about the SCREEN, and the screen's world
+ * extent depends on how wide the window is (screen.ts). So the sim loop asks them with the
+ * aspect the player is actually looking at, rather than with a world constant fitted once
+ * against a depth that has since moved. A degenerate canvas (height 0, pre-layout) reads 1.
  */
-function shellSegments(shell: Shell, viewProj: Mat4): readonly SceneSegment[] {
-  const wd = (shell.z / S_MAXZ) * SHELL_DRAW_FAR
-  const wdBack = (Math.max(0, shell.z - 1) / S_MAXZ) * SHELL_DRAW_FAR
-  const front: Vec3 = [shell.x, shell.y, -wd]
-  const back: Vec3 = [shell.x, shell.y, -wdBack]
-  const seg = projectSegment(front, back, viewProj)
-  return seg ? [seg] : []
-}
-
-/**
- * Draw the downed enemy (rb2-6): a spinning biplane while it FALLS, then the four
- * authentic PIECE0-3 explosion-debris models bursting outward while it EXPLODES
- * (findings §3). Nothing once the wreck is 'done'. renderModel accepts any
- * {points, connect} picture, so the topology debris pieces render like the plane.
- */
-function drawWreck(wreck: Wreck, projView: Mat4, width: number, height: number): void {
-  if (wreck.phase === 'falling') {
-    const model = multiply(translation(wreck.x, wreck.y, -wreck.depth), rotationZ(wreck.spin))
-    strokeSegments(renderModel(biplaneLOD(wreck.depth), multiply(projView, model)), width, height)
-    return
-  }
-  if (wreck.phase === 'exploding') {
-    const spread = (EXPL2_FRAMES - wreck.timer) * DEBRIS_SPREAD // grows as the burst opens
-    EXPLOSION_PIECES.forEach((piece, i) => {
-      const [dx, dy] = DEBRIS_DIRS[i]
-      const model = multiply(
-        translation(wreck.x + dx * spread, wreck.y + dy * spread, -wreck.depth),
-        rotationZ(wreck.spin),
-      )
-      strokeSegments(renderModel(piece, multiply(projView, model)), width, height)
-    })
-  }
+function viewAspect(): number {
+  return canvas.height === 0 ? 1 : canvas.width / canvas.height
 }
 
 function draw(
@@ -170,7 +154,7 @@ function draw(
   ctx.fillStyle = '#000'
   ctx.fillRect(0, 0, width, height)
 
-  const aspect = height === 0 ? 1 : width / height
+  const aspect = viewAspect()
   ctx.strokeStyle = '#33ff66'
   ctx.lineWidth = 2
   ctx.shadowColor = '#33ff66'
@@ -189,27 +173,29 @@ function draw(
   // the LOD is picked by depth (biplaneLOD). Downed planes fall away as UPPLEX wrecks
   // (rb2-6) that coexist with the survivors still weaving (rb2-7 multi-plane waves).
   const view = flightView(attitude, [0, 0, 0])
-  const projView = multiply(sceneProjection(aspect), view)
+  const projView: Mat4 = multiply(sceneProjection(aspect), view)
+
+  // the downed planes — falling/spinning, then bursting into the PIECE0-3 debris (rb2-6).
+  // The picture (and the burst's size, which is a SCREEN quantity) lives in core/wreck-render.
   for (const wreck of wrecks) {
-    drawWreck(wreck, projView, width, height)
+    strokeSegments(wreckSegments(wreck, projView), width, height)
   }
   for (const enemy of enemies) {
     const model = multiply(translation(enemy.x, enemy.y, -enemy.depth), rotationZ(enemy.bank))
     strokeSegments(renderModel(biplaneLOD(enemy.depth), multiply(projView, model)), width, height)
   }
 
-  // the drifting blimp (rb2-13) — the authentic BLIMP_PICTURE, yawed BROADSIDE (rotationY):
-  // the ROM geometry is authored nose-on along local z, so a quarter-turn yaw presents the
-  // airship's flank. It flies level (bank 0), drawn through the SAME projection substrate.
+  // the drifting blimp (rb2-13) — the authentic BLIMP_PICTURE yawed BROADSIDE, posed and
+  // projected by core/blimp. The airship is DESPAWNED by the same module (reapBlimp), so the
+  // thing that decides it has left the frame and the thing that draws it are one module — and
+  // the suite watches them agree, both in core (tests/core/screen-scale.test.ts) and through
+  // THIS function, in the booted cockpit (tests/cockpit-loop.test.ts).
   if (blimp !== null) {
-    const model = multiply(
-      translation(blimp.x, blimp.y, -blimp.depth),
-      multiply(rotationY(BLIMP_YAW), rotationZ(blimp.bank)),
-    )
-    strokeSegments(renderModel(BLIMP_PICTURE, multiply(projView, model)), width, height)
+    strokeSegments(blimpSegments(blimp, projView), width, height)
   }
 
-  // the player's tracers — bright bullets streaking out along the boresight (rb2-5)
+  // the player's tracers — bright bullets streaking out along the boresight (rb2-5), projected
+  // by core/guns through the SAME z→depth conversion `collides` kills with.
   for (const shell of shells) {
     strokeSegments(shellSegments(shell, projView), width, height)
   }
@@ -228,7 +214,8 @@ function draw(
     ctx.restore()
   }
 
-  // the running score (rb2-6) — PLVALU accrues per kill (closer = more). A minimal
+  // the running score (rb2-6) — PLVALU accrues per kill (the lead counts DOWN as it
+  // closes; only a far/dim plane pays the full flat DRNPNT — rb4-1/CB-003). A minimal
   // readout until the ROM HUD glyph font (findings §7) arrives in a later story.
   ctx.save()
   ctx.fillStyle = '#33ff66'
@@ -299,24 +286,6 @@ function nearestDepth(planes: readonly Enemy[]): number {
 }
 
 /**
- * Adapt the drifting blimp to the shared Enemy-shaped target the rb2-5 guns collision
- * (`stepGuns`/`collides`) and the rb2-6 explosion (`explode`) consume — the airship rides
- * the SAME kill pipeline as a plane. Its kill is valued on a dedicated 'blimp' score path
- * (flat 200), so the placeholder `kind` here is cosmetic to those geometry-only seams (rb2-13
- * AC-7: the Enemy-vs-Blimp kind is resolved by adapting at the main.ts boundary).
- */
-const blimpEnemy = (b: Blimp): Enemy => ({
-  kind: 'lead',
-  x: b.x,
-  y: b.y,
-  depth: b.depth,
-  deltaX: b.deltaX,
-  bank: b.bank,
-  side: b.side,
-  active: b.active,
-})
-
-/**
  * The pilot's yoke plus the DISCHK band. Normally the live band from the nearest enemy's
  * depth ('far' when clear); while a ground wave runs (GRMODE D7) the control is forced to
  * the slow band regardless of the nearest object (rb3-2, findings §2).
@@ -336,7 +305,7 @@ window.addEventListener('resize', resize)
 
 let flight = INITIAL_FLIGHT
 let kills = 0 // OBJKLD — each kill bumps this; gmlevlForKills(kills) drives the GMLEVL ramp
-let score = 0 // running PLVALU total (closer kills score more)
+let score = 0 // running PLVALU total (a DISTANT lead is worth most — rb4-1/CB-003)
 let enemies: readonly Enemy[] = [] // the live wave (rb2-7); the schedule spawns the opening wave
 let blimp: Blimp | null = null // the drifting airship (rb2-13) — null when none is on screen (BLMOTN ~25% roll)
 let lives: Lives = initialLives() // the player's planes remaining (rb2-9) — the blimp's fire is the first wired damage
@@ -358,6 +327,8 @@ function frame(nowMs: number): void {
 
   const input = readInput(enemies, grmode)
   const fireHeld = held.has(' ')
+  // The frame the sim's SCREEN-SPACE questions are asked against (the blimp's entry + despawn).
+  const aspect = viewAspect()
   // rb2-11: the sound moments this frame's calc-steps produce. red-baron has no
   // single stepGame, so the loop ASSEMBLES the event list from the signals it
   // already computes, then hands it to the shell's dispatch below.
@@ -398,22 +369,39 @@ function frame(nowMs: number): void {
     // ── the blimp (rb2-13): drift + fire, every calc-frame while present ──
     // The airship drifts one calc-frame (steady, non-weaving) and — on its ÷2 FRAME cadence —
     // fires at the player. A connecting shot (per-shot hit roll) costs a life through the REAL
-    // rb2-9 damage channel (loseLife), not a discarded bool. Its drift is unbounded by design,
-    // so main.ts DESPAWNS it once it has drifted off-screen (|x| past the bound).
+    // rb2-9 damage channel (loseLife), not a discarded bool.
+    //
+    // Its drift is unbounded by design, so it must be DESPAWNED once it has left the frame. THAT
+    // DECISION IS NOT TAKEN HERE. `reapBlimp` takes it, in core, in projected space, at the depth
+    // and aspect the airship is actually being seen at — and it hands back the airship or nothing.
+    // This line has no operator in it ON PURPOSE, and that is the whole lesson of rb4-1:
+    //
+    //   round 0  the bound was a world constant here      (|x| > 640 — deleted it mid-screen)
+    //   round 3  the bound moved to core, but the cockpit still held the BOOLEAN:
+    //              blimp = blimpOffScreen(drifted, aspect) ? null : drifted
+    //            …and the Reviewer poisoned it in one line, with the suite still 832/832 green:
+    //              blimp = (blimpOffScreen(...) || Math.abs(drifted.x) > REAP_LIMIT) ? null : drifted
+    //            A correct predicate `||`-ed with a rival bound is a rival bound. IMPORTING the
+    //            right function is not OBEYING it.
+    //   now      the cockpit gets the ANSWER, not an opinion. There is no boolean here to poison.
+    //
+    // DO NOT re-introduce a condition on this line. tests/cockpit-loop.test.ts boots this file and
+    // watches the real airship cross the real frame; screen-scale.test.ts's DECISION PATH guard
+    // rejects any write to `blimp` that is not a bare call to a core producer. Both will fail.
     if (blimp !== null) {
       const drifted = stepBlimp(blimp)
       if (blimpFires(simFrame) && nextFloat(blimpRng) < BLIMP_HIT_CHANCE) {
         lives = loseLife(lives).lives
         events.push({ type: 'player-hit' }) // the CRSHSN crash
       }
-      blimp = Math.abs(drifted.x) > BLIMP_DESPAWN_X ? null : drifted
+      blimp = reapBlimp(drifted, aspect)
     }
 
     // ── ONE shared collision pass (rb2-5): the player's shells vs the planes AND the blimp ──
-    // The blimp rides the shared guns seam via blimpEnemy(); it sits AFTER the planes in the
+    // The blimp rides the shared guns seam via blimpTarget(); it sits AFTER the planes in the
     // target list, so a hit on that index is the airship going down.
     const blimpTargetIndex = enemies.length
-    const targets: readonly Enemy[] = blimp !== null ? [...enemies, blimpEnemy(blimp)] : enemies
+    const targets: readonly Enemy[] = blimp !== null ? [...enemies, blimpTarget(blimp)] : enemies
     const shotResult = stepGuns(guns, targets)
     guns = shotResult.guns
     if (shotResult.hits.length > 0) {
@@ -425,7 +413,7 @@ function frame(nowMs: number): void {
         const points = scoreKill('blimp', downedBlimp.depth)
         score += points
         kills += 1
-        wrecks.push(explode(blimpEnemy(downedBlimp)))
+        wrecks.push(explode(blimpTarget(downedBlimp)))
         events.push({ type: 'enemy-destroyed', kind: 'blimp', points })
         blimp = null
         downed.delete(blimpTargetIndex)
@@ -469,7 +457,7 @@ function frame(nowMs: number): void {
       }
       // The BLMOTN ~25% roll: a blimp drifts in during the lull if the sky has none.
       if (wasDecision && blimp === null && shouldSpawnBlimp(nextFloat(blimpRng))) {
-        blimp = spawnBlimp(blimpRng)
+        blimp = spawnBlimp(blimpRng, aspect)
       }
     }
 

@@ -4,15 +4,15 @@
 // sky into MULTI-PLANE WAVES: score-scaled spawn counts, drone formation offsets, the
 // PLNXCG "shoot the lead, a wingman takes over" promotion, and the MODECT/MCOUNT wave
 // schedule that spaces waves at the calc-frame cadence. Grounded in findings §3 (enemy
-// behavior, NWPLNE/STPLNE, R2BRON.MAC:2237-2386) and §4 (wave sequence, MODECT/MCOUNT,
-// R2BRON.MAC:2254-2269, 1296-1297).
+// behavior, NWPLNE/STPLNE, RBARON.MAC:2241/2274) and §4 (wave sequence, MODECT/MCOUNT,
+// RBARON.MAC:157/1298).
 //
 // SCORE-SCALED COUNT + 25 % LONE ROLL (findings §3): "Score ≥ 1000 → up to 3 planes
 // (2 drones); ≥ 300 → ≥ 2 planes (1 drone)", and a RANDOM roll gives a 25 % lone plane
 // (enemy.ts LONE_PLANE_CHANCE) that can knock any high score down to one plane. Drones
 // fly the byte-pinned formation offsets PLANE1 -100,+100 / PLANE2 -100,-100.
 //
-// PLNXCG (findings §3, UPPLEX, R2BRON.MAC:2957-3030): killing the lead hands the fight
+// PLNXCG (UPPLEX, RBARON.MAC:2961/3139): killing the lead hands the fight
 // to a wingman — a surviving drone is promoted to the next lead.
 //
 // MODECT / MCOUNT (findings §4): a NEWCT countdown steps MODECT, whose LSB alternates
@@ -38,16 +38,24 @@ export const SCORE_2_PLANES = 300
 export const SCORE_3_PLANES = 1000
 
 /**
- * Drone formation offsets from the lead's spawn point (x, y): PLANE1 -100,+100 and
- * PLANE2 -100,-100 (findings §3, R2BRON.MAC). Two drones — the object budget is 1 lead
- * + 2 drones.
+ * Drone formation offsets from the lead's spawn point (x, y).
+ * RBARON.MAC:2480-2481, .RADIX 16 region (set at :74) — these are HEX:
+ *
+ *     PLANE1: .WORD -100,100     ->  -0x100, +0x100  =  -256, +256
+ *     PLANE2: .WORD -100,-100    ->  -0x100, -0x100  =  -256, -256
+ *
+ * The four bytes are copied into P.1ST/P.2ST as the drone's X and Y LSB/MSB
+ * (RBARON.MAC:2372-2373). Read as decimal 100 every drone flew 2.56× closer to its
+ * lead than the arcade's — the formation was far too tight.
  */
+const DRONE_OFFSET = 0x100
+
 export const DRONE_OFFSETS: readonly (readonly [number, number])[] = Object.freeze([
-  Object.freeze([-100, 100]) as readonly [number, number],
-  Object.freeze([-100, -100]) as readonly [number, number],
+  Object.freeze([-DRONE_OFFSET, DRONE_OFFSET]) as readonly [number, number],
+  Object.freeze([-DRONE_OFFSET, -DRONE_OFFSET]) as readonly [number, number],
 ])
 
-/** MCOUNT — inter-wave frame counts, cycled by wave index (findings §4, R2BRON.MAC:1296-1297). */
+/** MCOUNT — inter-wave frame counts, cycled by wave index (MCOUNT, RBARON.MAC:1298). */
 export const MCOUNT: readonly number[] = Object.freeze([4, 2, 3, 2, 1, 3, 4, 2])
 
 // ─── score-scaled wave size ───────────────────────────────────────────────────
@@ -143,7 +151,7 @@ export function stepWaveClock(clock: WaveClock): { clock: WaveClock; spawnPlaneW
 //
 // rb2-7 pinned the MODECT alternation but left the ground-parity slots as silent no-op
 // waits. rb3-2 makes them ACTIVE: a ground slot enters GRMODE, the mode byte INITGR sets
-// (R2BRON.MAC:1401-1407). The main loop reads GRMODE to skip new-plane generation and to
+// (GRMODE, RBARON.MAC:134). The main loop reads GRMODE to skip new-plane generation and to
 // force the slow control band (findings §2/§4).
 //
 // ⚠ .RADIX 16 HEX: the ROM's `GRMODE=0C0` is 0xC0 (= 192), NOT decimal 12. The RBARON.MAC
@@ -173,7 +181,7 @@ export function isGroundMode(grmode: number): boolean {
 
 /**
  * The INITGR/STPLNE branch: the MODECT LSB selects the GRMODE its wave slot enters
- * (findings §4, R2BRON.MAC:2254-2269). A plane slot (isPlaneWave) enters GRMODE_PLANE so
+ * (MODECT, RBARON.MAC:157). A plane slot (isPlaneWave) enters GRMODE_PLANE so
  * planes resume; a ground slot enters GRMODE_INITGR (0C0) so plane-generation is disabled
  * and control slows. Total — delegates to isPlaneWave, so it never returns NaN on any modect.
  */

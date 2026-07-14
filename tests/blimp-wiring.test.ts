@@ -82,12 +82,49 @@ describe('rb2-13 wiring — main.ts flies the blimp, not just biplane waves', ()
   })
 
   // ── AC-3 — renders BLIMP_PICTURE BROADSIDE with a yaw ────────────────────────
-  it('AC-3: renders the authentic BLIMP_PICTURE broadside — main.ts adds a yaw (rotationY)', () => {
+  //
+  // rb4-1 (round 3) MOVED THE AIRSHIP'S RENDER, so this AC now points at the module that owns
+  // it. Read this before assuming a test was weakened to go green — it was not; it was aimed at
+  // the code, and it got stronger on the way.
+  //
+  // WHY IT MOVED. rb4-1 found the blimp being DELETED IN THE MIDDLE OF THE SCREEN: its despawn
+  // bound (main.ts's `|x| > 640`) was a claim about the SCREEN written as a world constant, and
+  // when the cruise depth moved 600 -> 2112 it silently became ndc 0.295. Proving the fix means
+  // asserting "the airship is never despawned while it is still visible" — and "visible" is only
+  // answerable if a test can ask THE GAME what the airship looks like. main.ts touches `document`
+  // at module scope, so under vitest it cannot be imported at all. The pose therefore lives in
+  // src/core/blimp.ts now (`blimpSegments`), where tests/core/screen-scale.test.ts flies the whole
+  // crossing through it, frame by frame.
+  //
+  // AND LOOK WHAT THIS TEST WAS ACTUALLY CHECKING. When the render left main.ts, the
+  // `/\bBLIMP_PICTURE\b/` line below KEPT PASSING — satisfied by the word BLIMP_PICTURE sitting
+  // in an English COMMENT. Only the rotationY line noticed. That is the precise failure mode
+  // rb4-1 was rejected for three times: a guard that inspects what the code SAYS rather than what
+  // it DOES. So the claims are re-pointed at the file that now owns the geometry, and the wiring
+  // claim on main.ts is made structural: it must IMPORT blimpSegments, and `noUnusedLocals`
+  // (tsconfig.json) means an unused import is a TYPE ERROR — so importing it means drawing with it.
+  it('AC-3: renders the authentic BLIMP_PICTURE broadside — core/blimp yaws it (rotationY)', () => {
     // The ROM blimp geometry is authored NOSE-ON along local z; drawn as-is it faces the eye
-    // (a degenerate broadside). main.ts must yaw it — rotationY — to present the airship's flank.
-    // rotationZ (the bank main.ts already uses) is NOT a yaw; a Dev who reuses it draws it nose-on.
-    expect(/\bBLIMP_PICTURE\b/.test(mainText)).toBe(true)
-    expect(/\brotationY\b/.test(mainText)).toBe(true)
+    // (a degenerate broadside). It must be yawed — rotationY — to present the airship's flank.
+    // rotationZ (the bank) is NOT a yaw; code that reuses it draws the airship nose-on.
+    const blimpTs = readSrc('core/blimp.ts')
+    expect(/\bBLIMP_PICTURE\b/.test(blimpTs)).toBe(true)
+    expect(/\brotationY\b/.test(blimpTs)).toBe(true)
+    // …and it is a REAL yaw of the picture, not a mention: the pose composes rotationY into the
+    // model matrix that BLIMP_PICTURE is rendered through.
+    expect(/rotationY\s*\(/.test(blimpTs), 'core/blimp must CALL rotationY to pose the airship').toBe(true)
+    expect(/renderModel\s*\(\s*BLIMP_PICTURE/.test(blimpTs), 'and render the authentic picture').toBe(true)
+  })
+
+  it('AC-3: and the COCKPIT draws through it — main.ts imports core/blimp\'s blimpSegments', () => {
+    // The half this file has always been for: the tested core is worthless if main.ts never wires
+    // it in. With noUnusedLocals, importing it is calling it.
+    expect(
+      /import\s*\{[^}]*\bblimpSegments\b[^}]*\}\s*from\s*'\.\/core\/blimp'/s.test(mainText),
+      'main.ts must draw the airship through core/blimp.blimpSegments',
+    ).toBe(true)
+    // …and it must not have grown a rival pose of its own (the copy IS the bug — see rb4-1).
+    expect(/(?:function|const|let)\s+blimpSegments\b/.test(mainText)).toBe(false)
   })
 
   // ── AC-4 — fires ÷2 via a REAL enemy-shell → player-damage path ──────────────

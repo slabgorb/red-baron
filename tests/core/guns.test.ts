@@ -227,8 +227,12 @@ describe('guns — ROM constants (findings §5, §1)', () => {
     expect(need(m.SHELL_SLOTS, 'SHELL_SLOTS')).toBe(13)
   })
 
-  it('S_MAXZ — shells expire at 19 (findings §5)', () => {
-    expect(need(m.S_MAXZ, 'S_MAXZ')).toBe(19)
+  // rb4-1 RE-BASELINE: `S.MAXZ =19` sits in RBARON.MAC's `.RADIX 16` region (set at
+  // :74), so it is 0x19 = 25. Our shells travelled 19/24 of the ROM's range and died
+  // 96 ms early. Derivation audited in tests/audit/radix-transcription.test.ts.
+  it('S_MAXZ — shells expire at 0x19 = 25 (S.MAXZ, RBARON.MAC:492, .RADIX 16)', () => {
+    expect(need(m.S_MAXZ, 'S_MAXZ')).toBe(0x19)
+    expect(need(m.S_MAXZ, 'S_MAXZ')).not.toBe(19) // the decimal misreading we shipped
   })
 
   it('SHELL_SUBSTEPS — SHLMOT sub-steps 4× per calc-frame (findings §1/§5, RBARON.MAC:5186-5198)', () => {

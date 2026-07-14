@@ -84,8 +84,14 @@ function need<T>(value: T | undefined, name: string): T {
 
 // The enemy depth convention (enemy.ts): P_INDP=1080 is the far spawn depth, MIN_DEPTH=140
 // is as close as it bores in. So NEAR = small depth, FAR = large depth.
-const NEAR_DEPTH = 140
-const FAR_DEPTH = 1080
+// rb4-1 RE-BASELINE: both fixtures were the DECIMAL misreadings (P.MNDP =140 is
+// 0x140 = 320; P.INDP =1080 is 0x1080 = 4224). The ROM's bonus-depth gate is the
+// depth MSB against 0x10 (PLNSCR, RBARON.MAC:3039-3041), i.e. depth 0x1000 = 4096:
+// at or beyond it the plane is "dim" and pays the flat DRNPNT; inside it the plane
+// pays the (much smaller) PLVALU.
+const NEAR_DEPTH = 0x140 // 320 — P.MNDP, nose-to-nose
+const FAR_DEPTH = 0x1080 // 4224 — P.INDP, the spawn depth: DIM, beyond the bonus gate
+const BONUS_DEPTH = 0x1000 // 4096 — the PLNSCR gate (depth MSB = 0x10)
 const KINDS: readonly KillKind[] = ['lead', 'drone', 'blimp']
 
 /** The ROM PLNLVL table (findings §3): OBJKLD-indexed, value = GMLEVL, saturates at 5. */
@@ -115,23 +121,55 @@ describe('scoring — ROM constants (findings §4, §3)', () => {
 })
 
 // ───────────────────────────────────────────────────────────────────────────
-// AC-2 — PLVALU: a close LEAD kill is worth MORE than a far one (reward for closing)
+// AC-2 — PLVALU: the lead's value COUNTS DOWN as it closes (CB-003)
+//
+// rb4-1 RE-BASELINE — this block asserted the mechanism BACKWARDS. It was written from
+// the poisoned findings doc ("closer kills are worth more"). The ROM does the opposite,
+// and the primary source is unambiguous:
+//
+//   PLNSCR (RBARON.MAC:3038-3045):  LDA PLVALU / LDX PLSTAT+5 / CPX I,10 / BCC NWSCRE
+//     depth MSB >= 0x10  ->  falls through to DRNSCR: the FLAT DRNPNT, ";XTRA POINTS IF DIM"
+//     depth MSB <  0x10  ->  scores PLVALU instead
+//   PLVALU (RBARON.MAC:2710-2721):  depth_MSB x VALFRC, then DIVBY4 twice (= /16),
+//     floored at VALMIN. VALFRC starts at 7 (":5965  STA VALFRC ;INITIALLY 7/10*DEPTH").
+//
+// Because the depth SHRINKS as the plane approaches, PLVALU SHRINKS with it. The ROM's
+// lead plane is worth 300 far, ~60 just inside the gate, and as little as VALMIN point-
+// blank — it is NEVER worth more than a drone. You are paid for the difficult DISTANT
+// shot, not the easy close one.
+//
+// Ours rose to 300 + (P_INDP - depth) x 0.7 = 1056 up close. And rb4-1 makes that WORSE
+// on its own: correcting P_INDP to 0x1080 lifts the ceiling to 300 + 4224 x 0.7 = 3257,
+// eleven times the ROM's. The radix fix and this inversion must land together.
 // ───────────────────────────────────────────────────────────────────────────
-describe('scoring — closer lead kills are worth more (PLVALU, findings §4)', () => {
-  it('a near lead kill scores STRICTLY more than a far one', () => {
+describe('scoring — the lead\'s value COUNTS DOWN as it closes (PLVALU, CB-003)', () => {
+  it('a FAR/dim lead pays the flat DRNPNT — and a near one pays STRICTLY LESS', () => {
     const scoreKill = need(m.scoreKill, 'scoreKill')
-    expect(scoreKill('lead', NEAR_DEPTH)).toBeGreaterThan(scoreKill('lead', FAR_DEPTH))
+    const drone = need(m.DRONE_SCORE, 'DRONE_SCORE')
+    expect(scoreKill('lead', FAR_DEPTH)).toBe(drone) // beyond the gate: the flat 300
+    expect(scoreKill('lead', NEAR_DEPTH)).toBeLessThan(scoreKill('lead', FAR_DEPTH))
   })
 
-  it('the lead score decreases monotonically with depth across the whole close→far range', () => {
-    // Not just endpoints: sweep depth and require the score to never rise as the plane
-    // gets farther. A flat lead score (depth-scaling deleted) FAILS this — it is the
-    // behavioural detector for the "closer worth more" mechanism, per the rb2-5 review.
+  it('THE HEADLINE — a lead is NEVER worth more than a drone, at any depth', () => {
+    // The single assertion that refutes what we shipped. Our leadScore peaked at 1056
+    // (3257 once P_INDP is corrected); the ROM's ceiling is DRNPNT itself.
     const scoreKill = need(m.scoreKill, 'scoreKill')
-    const depths = [NEAR_DEPTH, 300, 500, 700, 900, FAR_DEPTH]
-    for (let i = 1; i < depths.length; i++) {
-      expect(scoreKill('lead', depths[i])).toBeLessThan(scoreKill('lead', depths[i - 1]))
+    const drone = need(m.DRONE_SCORE, 'DRONE_SCORE')
+    for (let depth = 0; depth <= 0x2000; depth += 0x40) {
+      expect(scoreKill('lead', depth)).toBeLessThanOrEqual(drone)
     }
+  })
+
+  it('the lead score never RISES as the plane closes — it counts down', () => {
+    // Sweep from far to near and require the score to never increase. This is the
+    // behavioural detector for the inversion: our old implementation climbed here.
+    const scoreKill = need(m.scoreKill, 'scoreKill')
+    const depths = [FAR_DEPTH, BONUS_DEPTH, 0xf00, 0xa00, 0x600, 0x300, NEAR_DEPTH]
+    for (let i = 1; i < depths.length; i++) {
+      expect(scoreKill('lead', depths[i])).toBeLessThanOrEqual(scoreKill('lead', depths[i - 1]))
+    }
+    // …and it genuinely MOVES across the range — a flat lead score is not the fix.
+    expect(scoreKill('lead', NEAR_DEPTH)).toBeLessThan(scoreKill('lead', FAR_DEPTH))
   })
 
   it('a lead kill is always a positive, finite number of points', () => {

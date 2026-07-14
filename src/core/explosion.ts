@@ -5,32 +5,43 @@
 // it plummets under gravity, spins about Z, then bursts into the four ROM
 // explosion-debris pieces (PIECE0-3), and finally goes quiet — the frame the ROM
 // would promote a wingman to lead (PLNXCG, rb2-7). Grounded in findings §3
-// ("Killed enemy = falling/spinning wreck", UPPLEX, R2BRON.MAC:2957-3030).
+// ("Killed enemy = falling/spinning wreck", UPPLEX, RBARON.MAC:2961).
 //
 // FRAME CADENCE (findings §1 — load-bearing): the wreck advances ONE step per
 // calculation frame (~10.42 Hz / 96 ms), NOT per 62.5 Hz display frame — main.ts
 // steps it inside the SIM_TIMESTEP_S accumulator, like every other rb2 motion.
 //
-// UPPLEX (findings §3): gravity EX.ACY = -20 accumulates each frame so the fall
+// UPPLEX (findings §3): gravity EX.ACY = -0x20 accumulates each frame so the fall
 // ACCELERATES; the wreck spins about Z; it spends .EXPL1 = 6 frames FALLING, then
 // .EXPL2 = 12 frames EXPLODING (the PIECE0-3 debris), then it is DONE (18 frames
 // total). The debris GEOMETRY is topology.ts's EXPLOSION_PIECES (transcribed rb2-2);
 // this module owns the wreck KINEMATICS + lifecycle, main.ts draws the pieces.
 //
-// SCALE NOTE: the findings doc byte-pins the DATA (EX.ACY=-20, .EXPL1=6, .EXPL2=12,
-// 4 pieces) but NOT the Z spin RATE or the fall's render units — those are chosen here
-// within the tested invariants (accelerating fall, monotone spin, exact phase counts),
-// like enemy.ts's WEAVE_SPEED_CAP, and flagged as inferred.
+// SCALE NOTE (rb4-1): the ROM pins MORE than the old note here admitted. EX.ACY and the
+// Z spin rate are BOTH byte-pinned (-0x20 and 0x180 angle-units/frame); only the fall's
+// render units remain a port-side choice. The spin was previously picked by feel at π/4,
+// on a comment that claimed the source did not pin it. It does.
 //
 // PURE and deterministic. No DOM, no time, no randomness.
 
 import type { Enemy } from './enemy'
 import { EXPLOSION_PIECES } from './topology'
 
-// ─── ROM-exact data (findings §3, UPPLEX R2BRON.MAC:2957-3030) ────────────────
+// ─── ROM-exact data (RBARON.MAC, `.RADIX 16` region — HEX) ───────────────────
+//
+// RADIX WARNING (rb4-1): UPPLEX lives under `.RADIX 16` (set at RBARON.MAC:74).
+// These digits are HEX. The previous transcription read them as decimal, from a doc
+// citing the DECOY BUILD — an image that never shipped.
 
-/** EX.ACY — gravity accel per calc-frame; negative = the wreck accelerates DOWN. */
-export const EX_ACY = -20
+/**
+ * EX.ACY — gravity accel per calc-frame; negative = the wreck accelerates DOWN.
+ * RBARON.MAC:481 `EX.ACY =-20`, .RADIX 16 region (set at :74) → -0x20 = -32.
+ * UPPLEX confirms the 16-bit reading directly: it adds the low byte (`ADC I,EX.ACY`)
+ * then the high byte (`ADC I,EX.ACY&0FF00/100`) — i.e. it adds -0x0020 each frame.
+ * Read as decimal -20 our wreck accumulated 420 units of drop over its six falling
+ * frames where the ROM's accumulates 672. It hung in the air.
+ */
+export const EX_ACY = -0x20
 
 /** .EXPL1 — the wreck spends this many calc-frames FALLING before it bursts. */
 export const EXPL1_FRAMES = 6
@@ -41,14 +52,20 @@ export const EXPL2_FRAMES = 12
 /** The four PIECE0-3 explosion-debris models drawn while exploding (topology.ts, rb2-2). */
 export const DEBRIS_COUNT = EXPLOSION_PIECES.length
 
-// ─── tuning within the tested invariants (inferred — NOT ROM-pinned) ─────────
-
 /**
- * Z spin per calc-frame. The ROM spins the wreck about Z (findings §3) but does not
- * pin the rate; a fixed non-zero step gives the authentic tumbling fall (chosen like
- * enemy.ts's WEAVE_SPEED_CAP, within TEA's monotone-spin invariant).
+ * Z spin per calc-frame — and the ROM DOES pin it (the old comment here claimed it
+ * did not, and picked π/4 by feel).
+ *
+ * UPPLX0 advances the wreck's 16-bit Z angle by adding 0x80 to the low byte and 1 to
+ * the high byte with carry (`ADC I,80` / `ADC I,1`, RBARON.MAC:2997-3003, .RADIX 16
+ * region set at :74) — i.e. 0x0180 = 384 angle units per calc-frame.
+ *
+ * The angle SCALE is fixed by `P.MAXR =1FF ;90 DEGREE MAX ROTATION` (RBARON.MAC:471):
+ * 0x200 = 512 units = 90°, so a full turn is 2048 units. The spin is therefore
+ * 384/2048 = 0.1875 turn = 67.5° = 3π/8 per frame. At our π/4 the wreck tumbled at
+ * two-thirds the ROM's rate — 8 frames per revolution where the arcade takes 5.33.
  */
-const SPIN_RATE = Math.PI / 4
+export const SPIN_RATE = (3 * Math.PI) / 8
 
 // ─── state ───────────────────────────────────────────────────────────────────
 

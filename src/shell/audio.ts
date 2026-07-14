@@ -48,6 +48,7 @@
 import { createSynthEngine, noiseBuffer, type SynthTarget, type Voice } from '@arcade/shared/synth'
 import { EXPL2_FRAMES } from '../core/explosion'
 import { MASTER_NMI_HZ, SIM_TIMESTEP_S } from '../core/timing'
+import { P_INDP } from '../core/returning-ace'
 import { POKEY_SOUNDS, stepEnvelope, type EnvelopeStep, type ToneName } from './pokey'
 
 /** The analog board's one-shots: the kill blast, and the pilot's crash. */
@@ -105,8 +106,20 @@ export function explosionLevel(frame: number): number {
   return Math.round(0xf0 * (1 - f / EXPL2_FRAMES))
 }
 
-/** Depth at which the approach whine is at half strength. [inferred tuning] */
-const WHINE_HALF_DEPTH = 200
+/**
+ * Depth at which the approach whine is at half strength. [inferred tuning — but denominated
+ * in the depth axis, not typed as a number.]
+ *
+ * rb4-1 REWORK 2. This was a bare `200`, calibrated against the 1080-deep world we misread.
+ * The plane's floor is P.MNDP = 320 — so the half-strength point sat BELOW the closest the
+ * plane can ever fly, and the whole design curve lived in a region the game cannot reach. The
+ * whine could never exceed 38% of full: it was quietest exactly where it was supposed to sing.
+ *
+ * A quarter of the spawn depth (1056) is the same cutoff enemy.ts uses for its DISCHK 'near'
+ * band — so the whine now crosses half strength precisely as the plane closes to 'near', and
+ * rises from there to 77% at the floor. Tied to the axis, it cannot drift from it again.
+ */
+const WHINE_HALF_DEPTH = P_INDP / 4 // 1056
 
 /**
  * The enemy-approach whine (findings §6B): the ROM ramps `ATGVAL` on POKEY ch3/4
