@@ -123,7 +123,20 @@ const SHIPPED = [
 ]
 const isShipped = (m: string) => SHIPPED.includes(m.toUpperCase())
 const isDecoyModule = (m: string) => /^R2(BRON|GRND)\./i.test(m)
-const DECOY_NAME = /R2BRON|R2GRND/gi
+
+/**
+ * The decoy, by name.
+ *
+ * TWO regexes on purpose, and they must stay two (Reviewer, rb4-2 round 2). A `/g` regex
+ * carries a mutable `lastIndex`, and `.test()` RESUMES FROM IT — so calling `.test()` over a
+ * list of files returns true, false, true for three files that all name the decoy. The gate
+ * that stops the decoy creeping back into src/ was therefore correct only by accident of
+ * directory order: two adjacent offending files and one walks straight through.
+ *
+ * `matchAll` REQUIRES `/g` (and clones internally, so it is safe). `.test()` must NOT have it.
+ */
+const DECOY_NAME_G = /R2BRON|R2GRND/gi
+const namesDecoy = (text: string) => /R2BRON|R2GRND/i.test(text)
 
 /**
  * ─── THE ROM, AS FACTS ───────────────────────────────────────────────────────────────
@@ -314,7 +327,7 @@ describe('AC1/AC2 — the decoy build is cited nowhere', () => {
 
   it('src/ does not mention the decoy build at all — not even in prose, not in any case', () => {
     const offenders = srcFiles()
-      .filter(([, text]) => DECOY_NAME.test(text))
+      .filter(([, text]) => namesDecoy(text))
       .map(([path]) => path)
     expect(offenders, `src/ must cite the ROM, never the decoy:\n${offenders.join('\n')}`).toEqual([])
   })
@@ -327,7 +340,7 @@ describe('AC1/AC2 — the decoy build is cited nowhere', () => {
     expect(end, 'the doc must carry a <!-- decoy-trap:end --> marker').toBeGreaterThan(start)
 
     const outside = text.slice(0, start) + text.slice(end)
-    expect([...outside.matchAll(DECOY_NAME)].map((m) => m[0]), 'decoy named outside the trap header').toEqual([])
+    expect([...outside.matchAll(DECOY_NAME_G)].map((m) => m[0]), 'decoy named outside the trap header').toEqual([])
   })
 })
 
@@ -360,9 +373,20 @@ describe('AC2 — the trap header tells the truth about the decoy', () => {
     expect(doc(), 'the "one substantive value" claim is refuted by RBGRND:197').not.toMatch(
       /one substantive value|a single (substantive|meaningful) (value|way|difference)/i,
     )
-    expect(header, 'the header must say there are TWO substantive differences').toMatch(
-      /\bTWO\b|\b2\b/i,
-    )
+    // Tied to the CLAIM, not to the digit's presence. `/\bTWO\b|\b2\b/i` was satisfied by the
+    // standalone "2" in the story ids `(rb1-2)` / `(rb4-2)`, so the header could drop the claim
+    // entirely and stay green (Reviewer, rb4-2 round 2) — the same defect as `toContain('7')`
+    // being satisfied by `037007.XXX`, one line below the fix for it.
+    // The count must sit ADJACENT to what it counts. Two earlier drafts of this assertion leaked:
+    //   /\bTWO\b|\b2\b/            — satisfied by the "2" in the story ids `(rb1-2)` / `(rb4-2)`
+    //   /\b(two|2)\b.{0,40}lines/  — satisfied by "those TWO differ in exactly SOME lines", where
+    //                                the leading "two" means the two MODULES, not the line count
+    // A number is only a claim when it is attached to the noun it quantifies.
+    const n = ROM.groundDiffLines.length
+    expect(
+      header,
+      `the header must say the ground modules differ in ${n} LINES (the count adjacent to "lines")`,
+    ).toMatch(new RegExp(`\\b(two|${n})\\b\\**\\s+lines\\b`, 'i'))
   })
 
   it("warns that the decoy's load map signs the ship build's name", () => {
