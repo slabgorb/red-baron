@@ -24,6 +24,9 @@
 //     readonly bank: number     // roll (radians): ±90° entry flourish, then ∝ deltaX via biplaneBank
 //     readonly side: -1 | 1     // which screen side it entered from
 //     readonly active: boolean  // D7 "active" status bit
+//     readonly facingAway: boolean // rb4-13: PLSTAT+6 D4 mirror — true ⇔ D4=0 "PLANE FACING
+//                               // AWAY" (:2652); false ⇔ D4=1 rotated toward the viewer.
+//                               // Picks the biplane model (DRNPIC :4961) — depth NEVER does.
 //   }
 //
 //   export function spawn(rng: Rng, level?: number): Enemy   // one lone plane (25 % case)
@@ -90,6 +93,12 @@ interface Enemy {
   readonly bank: number
   readonly side: -1 | 1
   readonly active: boolean
+  /**
+   * rb4-13 — the PLSTAT+6 D4 orientation mirror. `true` ⇔ D4=0 "PLANE FACING
+   * AWAY" (RBARON.MAC:2652); `false` ⇔ D4=1, still rotated toward the viewer.
+   * THIS, not depth, picks the biplane model (DRNPIC, RBARON.MAC:4961-4970).
+   */
+  readonly facingAway: boolean
 }
 
 interface EnemyModule {
@@ -601,17 +610,78 @@ describe('enemy — depth closes on approach (the seam that makes DISCHK bite)',
 describe('enemy — renders through biplaneLOD + renderModel (rb2-3 carryforward)', () => {
   it('a spawned enemy is IN FRONT and draws finite NDC segments (depth sign is correct)', () => {
     // Compose the render exactly as the cockpit will: model = translate(x,y,-depth) ∘
-    // rotateZ(bank); MVP = projection · model; pick the LOD by depth; walk it. This
-    // pins that the enemy pose places it in FRONT of the eye (depth > 0 ⇒ world −Z)
-    // and produces real geometry — a Dev who stored depth with the wrong sign draws 0.
+    // rotateZ(bank); MVP = projection · model; pick the model by THE ORIENTATION BIT
+    // (rb4-13 — never by depth); walk it. This pins that the enemy pose places it in
+    // FRONT of the eye (depth > 0 ⇒ world −Z) and produces real geometry — a Dev who
+    // stored depth with the wrong sign draws 0.
     const e = spawnAt(1)
     const proj = sceneProjection(1)
     const model: Mat4 = multiply(translation(e.x, e.y, -e.depth), rotationZ(e.bank))
     const mvp: Mat4 = multiply(proj, model)
-    const segs = renderModel(biplaneLOD(e.depth), mvp)
+    const segs = renderModel(biplaneLOD(e.facingAway), mvp)
     expect(segs.length).toBeGreaterThan(0)
     for (const s of segs) {
       for (const v of [s.x1, s.y1, s.x2, s.y2]) expect(Number.isFinite(v)).toBe(true)
+    }
+  })
+})
+
+// ───────────────────────────────────────────────────────────────────────────
+// rb4-13 — the PLSTAT+6 D4 orientation bit: the model switch the ROM ships
+// ───────────────────────────────────────────────────────────────────────────
+//
+// DRNPIC (RBARON.MAC:4961-4970, `.RADIX 16` set at :74) picks the plane model on
+// `LDA PLSTAT+6 / AND I,10` — bit D4 — not on distance; no depth compare exists
+// anywhere in the picture path. The bit's LIFECYCLE (RBARON.MAC:2620-2652): a
+// plane ENTERS rotated toward the viewer (D4=1) while the entry rotation ramps
+// its Y-rotation to zero; when the ramp completes, `AND I,0EF / STA PLSTAT+6
+// ;D4=0 (PLANE FACING AWAY)` — and the weave never sets it back (re-rotation
+// belongs to the returning-ace pass, a different story). Without the lifecycle
+// pin, one model is dead code — the drone LOD had literally NEVER RENDERED in
+// the shipped clone until rb4-1 (see depth-scale.test.ts REGISTRY 6/7 history).
+describe('enemy — the PLSTAT+6 D4 orientation bit (rb4-13: the model answers to it, not depth)', () => {
+  it('spawns ROTATED-IN (facingAway = false): the entry turn is still running (D4=1)', () => {
+    // Strict booleans, deliberately: a spawn that omits the field (undefined) fails
+    // here — the bit must exist and carry the ROM's entry state, not merely be falsy.
+    expect(spawnAt(1).facingAway).toBe(false)
+    expect(spawnAt(77).facingAway).toBe(false)
+    expect(spawnAt(2024, 3).facingAway).toBe(false)
+  })
+
+  it('settles FACING AWAY within the entry flourish, and the weave never rotates it back', () => {
+    // ROM: D4 clears ONLY when the entry rotation completes. The clone's analog is
+    // the ±90° entry flourish rolling out into the weave — Dev gets up to 8 calc
+    // frames of flourish; after the flip the bit must hold for the whole flight.
+    const stepFn = need(m.step, 'step')
+    let e = spawnAt(3)
+    let settled = -1
+    for (let i = 1; i <= 300; i++) {
+      e = stepFn(e)
+      if (settled < 0 && e.facingAway === true) settled = i
+      if (settled > 0) expect(e.facingAway, `step ${i}: once facing away, stays facing away`).toBe(true)
+    }
+    expect(settled, 'the plane must actually settle facing away — else the drone model is dead code').toBeGreaterThan(0)
+    expect(settled).toBeLessThanOrEqual(8)
+  })
+
+  it('the model follows the BIT at ANY depth — same depth two models, swept depth one model (AC-3)', () => {
+    // The rb4-1 trap, closed at the seam: stage the SAME depth with both orientations
+    // (models must differ), then sweep the depth across the whole band with each
+    // orientation held (model must not change). A depth-derived bit ALSO dies here:
+    // deep-means-away says the 4224 spawn is away (it spawns toward, above) and the
+    // settled plane at the 320 floor is toward (it stays away, above).
+    const proj = sceneProjection(1)
+    const segsFor = (e: Enemy): number => {
+      const model: Mat4 = multiply(translation(e.x, e.y, -e.depth), rotationZ(e.bank))
+      return renderModel(biplaneLOD(e.facingAway), multiply(proj, model)).length
+    }
+    const floor = need(m.P_MNDP, 'P_MNDP') // 0x140 = 320
+    const spawnDepth = need(m.P_INDP, 'P_INDP') // 0x1080 = 4224
+    for (const depth of [floor, 1732, spawnDepth]) {
+      const away = withEnemy({ depth, facingAway: true, x: 0, y: 0, bank: 0 })
+      const toward = withEnemy({ depth, facingAway: false, x: 0, y: 0, bank: 0 })
+      expect(segsFor(away), `facing away at depth ${depth} → the 30-segment drone`).toBe(30)
+      expect(segsFor(toward), `rotated toward at depth ${depth} → the 54-segment full plane`).toBe(54)
     }
   })
 })

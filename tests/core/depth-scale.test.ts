@@ -85,9 +85,9 @@ import { P_MNDP } from '../../src/core/returning-ace'
 import {
   S_MAXZ, S_DPTH, SHELL_RANGE_DEPTH, shellSegments, shellDepth, type Shell,
 } from '../../src/core/guns'
-import { LOD_DISTANCE, LOD_APPARENT_SPAN, apparentSpan, biplaneLOD, PLANE_POINTS } from '../../src/core/biplane'
+import { biplaneLOD } from '../../src/core/biplane'
 import { spawn as spawnBlimp } from '../../src/core/blimp'
-import { sceneProjection, projectSegment } from '../../src/core/scene'
+import { sceneProjection } from '../../src/core/scene'
 import { scoreKill, DRONE_SCORE } from '../../src/core/scoring'
 import { approachWhine } from '../../src/shell/audio'
 import { createRng } from '@arcade/shared/rng'
@@ -285,83 +285,48 @@ describe('REGISTRY 5/7 — blimp.CRUISE_DEPTH: the airship cruises mid-field, as
   })
 })
 
-describe('REGISTRY 6/7 — biplane.LOD_DISTANCE: the switch has a SIZE, not just a range [MEDIUM]', () => {
-  // FOUND BY THE SWEEP, then found WANTING by the Reviewer (finding 4) — and he was right.
+describe('REGISTRY 6/7 — biplane LOD: RETIRED from the depth axis (rb4-13 — it was never on it)', () => {
+  // THE ENTRY'S HISTORY, kept because each round teaches the failure mode of the last:
+  //   round 1 (sweep)    LOD_DISTANCE = 1500 — a bare decimal; drone model DEAD CODE (never
+  //                      rendered in the shipped game until the radix sweep moved the axis).
+  //   round 2            = P_INDP * 3/8 — axis-derived, still meaningless: 1500 + 0*P_INDP
+  //                      passed every assertion (the Reviewer's finding 4).
+  //   round 3 (rb4-1)    derived from LOD_APPARENT_SPAN, measured through the real projection —
+  //                      the best-argued version of a test THE ROM NEVER MAKES.
   //
-  // Old axis: the plane spawned at 1080 < 1500, so biplaneLOD returned the 42-vertex near model
-  // for the plane's entire flight and the 29-vertex drone had NEVER RENDERED in the shipped game.
-  // The radix sweep switched it on by accident. Round 2 "fixed" that by writing
-  // LOD_DISTANCE = P_INDP * 3 / 8 — which references the axis, satisfies the bare-decimal guard,
-  // and is still worth NOTHING, because:
-  //
-  //     LOD_DISTANCE = 1500 + 0 * P_INDP
-  //
-  // restores the pre-sweep value, passes every assertion this registry entry had, and ships
-  // green. The three tests below (in/inside the band, drone at spawn, plane at the floor) hold
-  // IDENTICALLY at 1500 and at 1584. They only ever asked the number to land SOMEWHERE inside
-  // the flight envelope, and every number in a 3,900-unit interval does.
-  //
-  // A bound is not a property. So the constant was given a MEANING instead: an LOD switch is a
-  // statement about APPARENT SIZE — "swap to the cheap model once the plane is too small on
-  // screen for the detail to read". That is written in screen units (LOD_APPARENT_SPAN: a
-  // fraction of the frame's half-height) and the DEPTH IS DERIVED FROM IT. Now there is a number
-  // to be wrong about, and it is measured through the real projection of the real vertices.
-  //
-  // HONEST — read this before treating the green as coverage: what is pinned is the RELATION
-  // (the switch happens at a known apparent size), NOT the value. 0.08 is a playtest choice; the
-  // ROM ships both models but does not pin the switch (findings §7). Retuning it in SCREEN units
-  // is legitimate and the depth will follow. What is now impossible is the actual bug: the depth
-  // axis moving underneath the constant and changing what the player sees, silently, in green.
-  it('both LODs actually fire during a real approach — the switch is inside the flight band', () => {
-    expect(LOD_DISTANCE).toBeGreaterThan(P_MNDP) // else the plane is ALWAYS a drone
-    expect(LOD_DISTANCE).toBeLessThan(P_INDP) // else the drone model is dead code (the old bug)
-  })
-
-  it('a plane at spawn draws as the far drone; at its floor, as the full 42-vertex plane', () => {
-    expect(biplaneLOD(P_INDP).points).toHaveLength(29) // dim and distant
-    expect(biplaneLOD(P_MNDP).points).toHaveLength(42) // on top of you
-  })
-
-  it('THE PROPERTY 1500 FAILS: the switch happens at the plane\'s stated APPARENT SIZE', () => {
-    // Measure the plane's wingspan where the LOD flips — not from the constant, but by
-    // PROJECTING ITS REAL VERTICES through the REAL sceneProjection, the way it is drawn.
-    const projectedSpanAt = (depth: number): number => {
-      const proj = sceneProjection(ASPECT)
-      const halfSpan = Math.max(...PLANE_POINTS.map((p) => Math.abs(p[0]))) // wing tip, x = 40
-      const seg = projectSegment([-halfSpan, 0, -depth], [halfSpan, 0, -depth], proj)
-      // NDC width in units of the frame's HALF-HEIGHT (aspect-free — undo the /aspect in mvp[0]).
-      return Math.abs(seg!.x2 - seg!.x1) * ASPECT
-    }
-
-    expect(
-      projectedSpanAt(LOD_DISTANCE),
-      'at the LOD switch the plane must subtend exactly LOD_APPARENT_SPAN of the frame — that ' +
-        'is what LOD_DISTANCE is DEFINED as, and this measures it through the real projection.',
-    ).toBeCloseTo(LOD_APPARENT_SPAN, 6)
-
-    // …and the same number, straight out of the module's own helper (so the definition and the
-    // drawing cannot part company either).
-    expect(apparentSpan(LOD_DISTANCE)).toBeCloseTo(LOD_APPARENT_SPAN, 6)
-
-    // THE REFUTATION. This is the assertion the round-2 constant could not have made. At the
-    // pre-sweep 1500 the plane subtends 0.0924 of the frame, not 0.08 — a different apparent
-    // size, and now a different, FAILING number. `LOD_DISTANCE = 1500 + 0 * P_INDP` dies here.
-    expect(projectedSpanAt(1500)).not.toBeCloseTo(LOD_APPARENT_SPAN, 3)
-    expect(projectedSpanAt(1584)).not.toBeCloseTo(LOD_APPARENT_SPAN, 3) // …and so does 3/8 P_INDP
-  })
-
-  it('is not a bare decimal — it is denominated in APPARENT SIZE, and derived from it', () => {
+  // rb4-13 ends the line: DRNPIC (RBARON.MAC:4961-4970, `.RADIX 16` set at :74) reads
+  // `LDA PLSTAT+6 / AND I,10` — bit 0x10, D4, the ORIENTATION bit, cleared at :2652
+  // `;D4=0 (PLANE FACING AWAY)`. Bit clear → the 29-point .DRPNT drone + DB.MAR front
+  // list; bit set → the full model + DB.MAP back faces. NO depth compare exists anywhere
+  // in the picture path. So this registry entry's duty INVERTS: it no longer derives the
+  // constant — it pins that the model switch is not denominated in depth AT ALL. No
+  // constant, no axis to drift beneath it. The rule itself is pinned where it lives:
+  // tests/core/biplane.test.ts (the unit matrix) and tests/core/enemy.test.ts (the seam
+  // + the D4 lifecycle).
+  it('LOD_DISTANCE is GONE from biplane.ts — the switch has no depth left to be wrong about', () => {
     const biplane = readFileSync(join(srcRoot, 'core', 'biplane.ts'), 'utf8')
     expect(
       biplane,
-      'LOD_DISTANCE = 1500 is a bare number against a 4224 axis. It happens to land in the ' +
-        'flight band, but it landed there BY ACCIDENT. Denominate it so the next sweep cannot ' +
-        'silently move it in or out of range.',
-    ).not.toMatch(/LOD_DISTANCE\s*=\s*\d+\s*$/m)
-    // …and the honest form: it is DERIVED from the screen threshold, not fitted to it.
-    expect(biplane, 'LOD_DISTANCE must be derived from LOD_APPARENT_SPAN').toMatch(
-      /LOD_DISTANCE\s*=\s*[^\n]*LOD_APPARENT_SPAN/,
-    )
+      'rb4-13: the ROM picks the plane model on PLSTAT+6 bit 0x10 (DRNPIC, RBARON.MAC:4961), ' +
+        'not on a depth threshold. LOD_DISTANCE was our invention — retire it, do not re-derive it.',
+    ).not.toContain('LOD_DISTANCE')
+  })
+
+  it('enemy.ts no longer cites the retired constant as precedent for a tunable', () => {
+    const enemy = readFileSync(join(srcRoot, 'core', 'enemy.ts'), 'utf8')
+    expect(
+      enemy,
+      'enemy.ts:83 cited "biplane.ts\'s LOD_DISTANCE" as precedent for WEAVE_SPEED_CAP. The ' +
+        'precedent is retracted (rb4-13); the citation must go with it.',
+    ).not.toContain('LOD_DISTANCE')
+  })
+
+  it('the switch answers to ORIENTATION — both models reachable at any single depth', () => {
+    // The positive half of the retirement, at the registry level: the bit alone picks
+    // the model. (The full same-depth/two-orientations matrix and the D4 lifecycle live
+    // in biplane.test.ts / enemy.test.ts.)
+    expect(biplaneLOD(true).points).toHaveLength(29) // D4=0 — facing away → .DRPNT drone
+    expect(biplaneLOD(false).points).toHaveLength(42) // D4=1 — rotated toward → full plane
   })
 })
 
@@ -494,9 +459,10 @@ const NOT_A_DEPTH: ReadonlyMap<string, string> = new Map([
   ],
   [
     'LOD_APPARENT_SPAN',
-    'biplane.ts — trips this sweep on `^LOD_`, but it is not a depth at all: it is the LOD ' +
-      "switch's threshold in APPARENT SIZE (a fraction of the frame's half-height). It is what " +
-      'LOD_DISTANCE (a real depth, registry 6/7) is DERIVED FROM. Screen axis — screen-scale.ts.',
+    'biplane.ts — a TOMBSTONE (rb4-13). Was the apparent-size threshold the depth switch was ' +
+      'derived from; the ROM picks the model on the PLSTAT+6 D4 orientation bit (DRNPIC, ' +
+      'RBARON.MAC:4961), so the whole apparatus is retired. Kept here so that reintroducing ' +
+      'the NAME lands it back in this sweep instantly instead of passing as unexamined.',
   ],
   [
     'POT_RANGE',
@@ -544,6 +510,10 @@ const REGISTERED: ReadonlySet<string> = new Set([
   'SHELL_DRAW_FAR',
   'WHINE_HALF_DEPTH',
   'CRUISE_DEPTH',
+  // LOD_DISTANCE — a TOMBSTONE (rb4-13, like SHELL_DRAW_FAR above). The switch it fed is
+  // ORIENTATION-keyed (PLSTAT+6 D4 — DRNPIC, RBARON.MAC:4961); no depth constant may replace
+  // it. Kept in the set so that reintroducing the NAME re-arms the bare-decimal guard on it
+  // instantly — and registry 6/7 fails on the name's mere presence in biplane.ts.
   'LOD_DISTANCE',
   'BONUS_DEPTH_MSB', // ROM-exact (PLNSCR `CPX I,10`) — registry 7/7
 ])

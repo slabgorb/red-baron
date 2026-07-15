@@ -1,8 +1,19 @@
 // tests/core/biplane.test.ts
 //
-// Story rb2-3 — the enemy biplane MODEL + distance LOD + bank coupling, rendered
+// Story rb2-3 — the enemy biplane MODEL + model switch + bank coupling, rendered
 // through the rb1 scene substrate (scene.ts). RED phase: these tests define the
 // contract for `src/core/biplane.ts`, which does NOT exist yet.
+//
+// rb4-13 REWRITE OF THE SWITCH: the "distance LOD" this file used to pin was OUR
+// invention — the ROM does not test distance anywhere in the picture path. DRNPIC
+// (RBARON.MAC:4961, `.RADIX 16` region set at :74) reads `LDA PLSTAT+6 ;PLANE
+// ROTATED` / `AND I,10` — bit 0x10, D4 — and branches on THE ORIENTATION BIT:
+//   • D4=0 ("PLANE FACING AWAY", cleared at :2652) → `20$`: the 29-point `.DRPNT`
+//     drone set, drawn with the DB.MAR front list only.
+//   • D4=1 (plane rotated toward the viewer) → fall-through: the FULL model with
+//     the DB.MAP back-face list (plus a DRNTST scale-down — projection scale,
+//     which our real perspective divide already supplies).
+// `biplaneLOD(facingAway)` mirrors the bit: `facingAway === true` ⇔ D4=0.
 //
 // This story has a DATA half and a BEHAVIOUR half:
 //   • DATA — transcribe the 42-vertex plane model `.PLPNT` and its 29-vertex drone
@@ -10,10 +21,11 @@
 //     the connect-LISTS (DB.MAP/DB.MAR/DB.LNS) were transcribed in rb2-2 →
 //     topology.ts; the VERTICES they index live in the program ROM and are still
 //     un-transcribed. rb2-3 supplies them.
-//   • BEHAVIOUR — pick the LOD model by camera depth, bank the model ∝ turn-rate
-//     via the SAME `pfrotn` coupling as the player horizon (flight.ts), and walk a
-//     connect-list as a pen turtle through the projection substrate → NDC segments,
-//     dropping behind-eye edges (never mirroring them).
+//   • BEHAVIOUR — pick the model by the D4 orientation bit (rb4-13; formerly a
+//     depth threshold), bank the model ∝ turn-rate via the SAME `pfrotn` coupling
+//     as the player horizon (flight.ts), and walk a connect-list as a pen turtle
+//     through the projection substrate → NDC segments, dropping behind-eye edges
+//     (never mirroring them).
 //
 // ROM ground-truth used below (all from findings §7-§8, RBARON.MAC):
 //   • 42 vertices total (`.PLPNT`); `.DRPNT` = points 0-28 only (a 29-pt prefix,
@@ -21,8 +33,9 @@
 //   • vertex 12 = POINTP -40,20,-40 → (X=-40, Y=+20, Z=-40) "TOP WING". [§7/§8, :6225]
 //   • POINTP stores `Z, 2·X, 4·Y` as signed 8-bit bytes → X∈[-64,63], Y∈[-32,31],
 //     Z∈[-128,127]. [findings §8, RBARON.MAC:15-35]
-//   • LOD: near/full draws 42 pts + DB.MAP(→DB.MAR fall-through) + DB.LNS; far drone
-//     draws 29 pts + DB.MAR only. [findings §7]
+//   • model switch: DRNPIC branches on PLSTAT+6 bit 0x10 — toward draws 42 pts +
+//     DB.MAP(→DB.MAR fall-through) + DB.LNS; facing-away draws 29 pts + DB.MAR
+//     only. [RBARON.MAC:4961-4970, :2652]
 //   • bank = PFROTN = PLDELX×8 clamped ±0x100 → ±45° (π/4). [findings §2, flight.ts]
 //
 // It reads only committed source — never the gitignored `reference/` quarry.
@@ -31,7 +44,6 @@ import { describe, it, expect } from 'vitest'
 import {
   PLANE_POINTS,
   DRONE_POINTS,
-  LOD_DISTANCE,
   biplaneLOD,
   biplaneBank,
   renderModel,
@@ -124,47 +136,57 @@ describe('biplane — connect-list ↔ point-set bounds (renderability)', () => 
   })
 })
 
-// ── LOD selection by camera depth (biplaneLOD) ────────────────────────────────
+// ── model choice by ORIENTATION (biplaneLOD ← DRNPIC, RBARON.MAC:4961-4970) ────
+//
+// rb4-13. NOT a distance. `facingAway === true` mirrors PLSTAT+6 D4=0 ("PLANE
+// FACING AWAY", RBARON.MAC:2652); `false` mirrors D4=1 (rotated toward the
+// viewer). The rb4-1 trap this section must never re-open: a test that stages
+// the plane at a convenient depth cannot tell an orientation rule from a depth
+// rule — so the matrix below staples BOTH orientations to the SAME depths, at
+// depths spanning the whole flight band.
 
-describe('biplane — distance LOD (biplaneLOD)', () => {
-  it('exposes a positive, finite near/far threshold', () => {
-    expect(Number.isFinite(LOD_DISTANCE)).toBe(true)
-    expect(LOD_DISTANCE).toBeGreaterThan(0)
+describe('biplane — orientation model switch (biplaneLOD ← DRNPIC PLSTAT+6 D4)', () => {
+  it('facing away (D4=0) → the 29-vertex .DRPNT drone with the DB.MAR front list only', () => {
+    const away = biplaneLOD(true)
+    expect(away.points).toEqual(DRONE_POINTS)
+    expect(away.connect).toEqual(DB_MAR)
   })
 
-  it('near depth → the FULL 42-vertex model with the DB.MAP→DB.MAR + DB.LNS list', () => {
-    const near = biplaneLOD(LOD_DISTANCE / 2)
-    expect(near.points).toEqual(PLANE_POINTS)
-    expect(near.connect).toEqual([...DB_MAP, ...DB_MAR, ...DB_LNS])
+  it('rotated toward the viewer (D4=1) → the FULL 42-vertex model with the DB.MAP back faces', () => {
+    const toward = biplaneLOD(false)
+    expect(toward.points).toEqual(PLANE_POINTS)
+    expect(toward.connect).toEqual([...DB_MAP, ...DB_MAR, ...DB_LNS])
   })
 
-  it('far depth → the 29-vertex DRONE model with the DB.MAR front list only', () => {
-    const far = biplaneLOD(LOD_DISTANCE * 2)
-    expect(far.points).toEqual(DRONE_POINTS)
-    expect(far.connect).toEqual(DB_MAR)
+  it('pins the source-counted drawn-segment budget of each branch (toward 54 / away 30)', () => {
+    // toward draws: DB.MAP 16 + DB.MAR 30 + DB.LNS 8 = 54 VSBLEV ops; facing-away
+    // draws DB.MAR's 30. A biplaneLOD that returned an empty/stub connect-list
+    // would pass the render count-parity tests vacuously — this anchors the totals.
+    expect(drawCount(biplaneLOD(false).connect)).toBe(54)
+    expect(drawCount(biplaneLOD(true).connect)).toBe(30)
   })
 
-  it('switches at the threshold — below is near, at/above is far (monotone in depth)', () => {
-    expect(biplaneLOD(LOD_DISTANCE - 1).points).toHaveLength(42)
-    expect(biplaneLOD(LOD_DISTANCE).points).toHaveLength(29) // boundary belongs to far
-    expect(biplaneLOD(LOD_DISTANCE + 1).points).toHaveLength(29)
+  it('returns stable model instances — the switch selects between two models, it rebuilds nothing', () => {
+    expect(biplaneLOD(true)).toBe(biplaneLOD(true))
+    expect(biplaneLOD(false)).toBe(biplaneLOD(false))
+    expect(biplaneLOD(true)).not.toBe(biplaneLOD(false))
   })
 
-  it('pins the source-counted drawn-segment budget of each LOD (near 54 / far 30)', () => {
-    // near draws: DB.MAP 16 + DB.MAR 30 + DB.LNS 8 = 54 VSBLEV ops; far draws
-    // DB.MAR's 30. A biplaneLOD that returned an empty/stub connect-list would
-    // pass the render count-parity tests vacuously — this anchors the real totals.
-    expect(drawCount(biplaneLOD(LOD_DISTANCE / 2).connect)).toBe(54)
-    expect(drawCount(biplaneLOD(LOD_DISTANCE * 2).connect)).toBe(30)
-  })
-
-  it('is total — a degenerate depth (negative, NaN) still yields a valid model', () => {
-    // A plane behind/at the eye is near/full detail; NaN must not crash or return
-    // a malformed model. Guards rule #4 (numeric edge / || vs ??).
-    expect(biplaneLOD(-1).points).toHaveLength(42)
-    const nan = biplaneLOD(Number.NaN)
-    expect([29, 42]).toContain(nan.points.length)
-    expect(nan.connect.length).toBeGreaterThan(0)
+  it('THE ROM RULE, WHERE A DISTANCE RULE CANNOT FOLLOW: same depth, two orientations, two models', () => {
+    // AC-3. Stage the SAME camera depth and flip ONLY the orientation bit: the
+    // drawn model must differ. Then hold the bit and sweep the depth across the
+    // whole flight band — P.MNDP = 0x140 = 320 (the floor), 1000, the retired
+    // invented threshold ≈1732, 2500, P.INDP = 0x1080 = 4224 (spawn): the model
+    // must NOT change. A depth-threshold biplaneLOD — ANY threshold — returns the
+    // same model for both orientations at every depth and flips somewhere across
+    // the sweep, so it fails this table twice over. (Mutation-check the guard by
+    // putting `depth < LOD_DISTANCE` back: this test must go red.)
+    for (const depth of [320, 1000, 1732, 2500, 4224]) {
+      const away = renderModel(biplaneLOD(true), mvpAt(-depth))
+      const toward = renderModel(biplaneLOD(false), mvpAt(-depth))
+      expect(away, `facing away at depth ${depth} draws the 30-segment drone`).toHaveLength(30)
+      expect(toward, `rotated toward at depth ${depth} draws the 54-segment full plane`).toHaveLength(54)
+    }
   })
 })
 
@@ -259,34 +281,34 @@ describe('biplane — renderModel (pen turtle + behind-eye cull)', () => {
   })
 })
 
-// ── integration: LOD model + bank + projection, end to end ─────────────────────
+// ── integration: orientation model + bank + projection, end to end ─────────────
 
 describe('biplane — end-to-end render through the scene substrate', () => {
-  it('renders the full near model as 54 NDC segments when placed in front', () => {
-    const near = biplaneLOD(LOD_DISTANCE / 2)
-    const segs = renderModel(near, mvpAt(-1000))
-    expect(segs).toHaveLength(drawCount(near.connect))
+  it('renders the full toward model as 54 NDC segments when placed in front', () => {
+    const toward = biplaneLOD(false)
+    const segs = renderModel(toward, mvpAt(-1000))
+    expect(segs).toHaveLength(drawCount(toward.connect))
     expect(segs).toHaveLength(54)
     for (const v of flat(segs)) expect(Number.isFinite(v)).toBe(true)
   })
 
-  it('renders the far drone model as 30 NDC segments when placed in front', () => {
-    const far = biplaneLOD(LOD_DISTANCE * 2)
-    const segs = renderModel(far, mvpAt(-1000))
-    expect(segs).toHaveLength(drawCount(far.connect))
+  it('renders the facing-away drone model as 30 NDC segments when placed in front', () => {
+    const away = biplaneLOD(true)
+    const segs = renderModel(away, mvpAt(-1000))
+    expect(segs).toHaveLength(drawCount(away.connect))
     expect(segs).toHaveLength(30)
   })
 
   it('culls the whole biplane when it is behind the camera', () => {
-    expect(renderModel(biplaneLOD(LOD_DISTANCE / 2), mvpAt(+1000))).toHaveLength(0)
+    expect(renderModel(biplaneLOD(false), mvpAt(+1000))).toHaveLength(0)
   })
 
   it('a banked attitude tilts the rendered biplane — same edges, different NDC', () => {
     // Fold the turn-rate bank into the model matrix; the non-symmetric wings/wheels
     // mean a non-zero roll must move the projected vertices. Edge COUNT is unchanged.
-    const near = biplaneLOD(LOD_DISTANCE / 2)
-    const level = renderModel(near, mvpAt(-1000, biplaneBank(0)))
-    const banked = renderModel(near, mvpAt(-1000, biplaneBank(20)))
+    const toward = biplaneLOD(false)
+    const level = renderModel(toward, mvpAt(-1000, biplaneBank(0)))
+    const banked = renderModel(toward, mvpAt(-1000, biplaneBank(20)))
     expect(banked).toHaveLength(level.length)
     expect(flat(banked)).not.toEqual(flat(level))
   })
