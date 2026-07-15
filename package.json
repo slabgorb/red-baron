@@ -4,7 +4,7 @@
   "version": "0.0.14",
   "type": "module",
   "dependencies": {
-    "@arcade/shared": "github:slabgorb/arcade-shared#feat/SH2-22-synth-onrebuild-structural"
+    "@arcade/shared": "github:slabgorb/arcade-shared#v0.15.0"
   },
   "scripts": {
     "dev": "vite",
