@@ -162,6 +162,12 @@ describe('AC-1: the returning ace is DRIVEN from the booted sim (EOLSEQ every ca
     // rolls land, a recorded 'hit' MUST reach the damage channel (rb2-9 loseLife →
     // the player-hit event → the crash). A hit that costs nothing is the old bug
     // wearing new wiring.
+    // REVIEW ROUND 1: the antecedent must be NON-EMPTY or this implication guard
+    // is vacuous (mutation-proven: removing the attack path emptied it silently).
+    expect(
+      rec.evade.filter((v) => v.result === 'hit').length,
+      'no hit verdict was ever recorded — the implication below would assert nothing',
+    ).toBeGreaterThan(0)
     for (const e of rec.evade.filter((v) => v.result === 'hit')) {
       expect(
         rec.crashes.some((c) => c >= e.frame && c <= e.frame + 2),
@@ -174,7 +180,9 @@ describe('AC-1: the returning ace is DRIVEN from the booted sim (EOLSEQ every ca
   it('the evade check reads the LIVE turn rate (PLDELX), not a stale or fabricated one', () => {
     // Hands-off the yoke is centred the whole run: every consulted turnRate must be 0.
     // (POT.X ease keeps turnRate at 0 with no input — a nonzero here means the wiring
-    // invented a bank.)
+    // invented a bank.) The non-emptiness pin keeps the `every` from going vacuous
+    // (review round 1 — same class as the hit-implication guard above).
+    expect(rec.evade.length).toBeGreaterThan(0)
     expect(rec.evade.every((e) => e.turnRate === 0)).toBe(true)
   })
 })

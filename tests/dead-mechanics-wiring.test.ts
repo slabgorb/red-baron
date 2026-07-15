@@ -136,6 +136,8 @@ describe('AC-2: `lives` is read — death, the frozen playfield, and GAME OVER',
   let gameOverFrame = -1
   /** The crash frames (the CRSHSN one-shot = a life actually lost). */
   let crashes: number[] = []
+  /** Did the staging actually hold the bank key through the first death? */
+  let bankHeld = false
 
   beforeAll(async () => {
     rec.reset()
@@ -143,14 +145,24 @@ describe('AC-2: `lives` is read — death, the frozen playfield, and GAME OVER',
     // Hands-off: the lone plane floors at ~978 and the ace does the killing.
     // At the FIRST crash, hold a bank through the death sequence (the freeze pin),
     // release it, then re-press it briefly after the respawn (the thaw pin).
+    //
+    // REVIEW ROUND 1 (mutation-caught): the press was gated on `crashes.length
+    // === 0`, but the crashes array was refreshed at the BOTTOM of the same
+    // iteration that records the crash — so by the time `crashedNow` fired the
+    // gate was already closed and 'd' WAS NEVER HELD. Deleting the freeze gate
+    // in main.ts left this test green: the guard was scenery. The gate is now a
+    // dedicated one-shot boolean, and the staging is asserted below ('the bank
+    // was genuinely held').
     let banking = false
+    let bankDone = false
     let bankFrames = 0
     for (let f = 1; f <= RUN; f++) {
       rec.frame = f
       const crashedNow = rec.plays.some((p) => p.sound === 'crash' && p.frame === f - 1)
-      if (crashedNow && !banking && crashes.length === 0) {
+      if (crashedNow && !banking && !bankDone) {
         cockpitRef.pressKey('d')
         banking = true
+        bankDone = true
         bankFrames = 0
       }
       if (banking) {
@@ -161,8 +173,8 @@ describe('AC-2: `lives` is read — death, the frozen playfield, and GAME OVER',
         }
       }
       painted.push(cockpitRef.tick())
-      if (crashes.length === 0) crashes = rec.plays.filter((p) => p.sound === 'crash').map((p) => p.frame)
     }
+    bankHeld = bankDone
     crashes = rec.plays.filter((p) => p.sound === 'crash').map((p) => p.frame)
     gameOverFrame = painted.findIndex((p) => p.texts.some((t) => /game over/i.test(t))) + 1 // 0 → -1+1=0 → falsy
     if (gameOverFrame === 0) gameOverFrame = -1
@@ -178,6 +190,7 @@ describe('AC-2: `lives` is read — death, the frozen playfield, and GAME OVER',
 
   it('death FREEZES the playfield: a bank held through the death sequence does not move the horizon (:783-785, :1108-1113)', () => {
     expect(crashes.length).toBeGreaterThanOrEqual(1)
+    expect(bankHeld, 'the staging never pressed the bank key — this test would be scenery').toBe(true)
     const c = crashes[0]
     // frames c+2 .. c+8 are inside the shells-channel sequence (28 calc frames)
     // with 'd' held from c+1: the horizon batch must be IDENTICAL frame to frame.
