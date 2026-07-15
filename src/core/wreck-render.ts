@@ -83,7 +83,8 @@ export function wreckSegments(wreck: Wreck, viewProj: Mat4): readonly SceneSegme
 
   if (wreck.phase === 'falling') {
     const model = multiply(translation(wreck.x, wreck.y, -wreck.depth), rotationZ(wreck.spin))
-    return renderModel(biplaneLOD(wreck.depth), multiply(viewProj, model))
+    // rb4-13: the model follows the D4 bit the plane died wearing — never its depth.
+    return renderModel(biplaneLOD(wreck.facingAway), multiply(viewProj, model))
   }
 
   // exploding — the burst opens as the EXPL2 window counts down

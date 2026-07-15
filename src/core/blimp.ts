@@ -337,6 +337,9 @@ export function blimpTarget(blimp: Blimp): Enemy {
     bank: blimp.bank,
     side: blimp.side,
     active: blimp.active,
+    // rb4-13: an airship cruising its course is a settled thing — D4 clear, like a
+    // settled plane. (Only the wreck path ever reads this; a blimp has no entry turn.)
+    facingAway: true,
   }
 }
 

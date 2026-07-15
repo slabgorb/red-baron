@@ -869,6 +869,7 @@ describe('WRECK TRUTH — the downed plane bursts where it died', () => {
         const want = ndcOfTarget({
           kind: 'lead', x: d.wreck.x, y: d.wreck.y, depth: d.wreck.depth,
           deltaX: 0, bank: 0, side: 1, active: true,
+          facingAway: true, // rb4-13 D4 mirror — position probe only; the bit is irrelevant here
         })
         const o = originNdc(calls[0].mvp)
         if (o.w <= 0 || Math.abs(o.x - want.x) > 1e-9 || Math.abs(o.y - want.y) > 1e-9) {

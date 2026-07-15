@@ -50,10 +50,11 @@
 // the game is a statement about this interval, so both live HERE, in the one core
 // module that imports nothing — any module can reach the axis without a cycle.
 //
-// (P.INDP was in enemy.ts, but enemy.ts imports biplane.ts, so biplane.ts could not
-// denominate its LOD switch against it without a circular import — the top-level
-// `const` would have hit the TDZ and thrown at load. enemy.ts re-exports it, so its
-// public surface is unchanged.)
+// (P.INDP was in enemy.ts, but enemy.ts imports biplane.ts, so biplane.ts — which then
+// carried a depth-denominated model switch, since retired by rb4-13 for the ROM's D4
+// orientation bit — could not reach it without a circular import: the top-level `const`
+// would have hit the TDZ and thrown at load. enemy.ts re-exports it, so its public
+// surface is unchanged, and the leaf-module placement stands on its own.)
 
 /**
  * P.INDP — the depth the plane APPEARS at. The far end of the axis.
