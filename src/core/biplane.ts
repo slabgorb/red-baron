@@ -11,7 +11,8 @@
 // Each source line is `POINTP .X,.Y,.Z` (RBARON.MAC:57); we keep the logical
 // coordinate its arguments name — [x, y, z] — matching topology.ts's Point3.
 //
-// THE TWO MODELS. The ROM ships both in ONE point-set (RBARON.MAC:6258):
+// THE TWO MODELS. The ROM ships both in ONE point-set (the `.PLPNT`/`.DRPNT`
+// equates, RBARON.MAC:6267-6268 in the citable copy):
 //   • `.PLPNT` = the full 42-vertex plane (DB.PLN, indices 0-41).
 //   • `.DRPNT` = the 29-vertex drone plane (`P.BACK-DB.PLN` → indices 0-28
 //     only, i.e. the front faces; the back-face vertices 29-41 are dropped).
