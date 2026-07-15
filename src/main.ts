@@ -331,7 +331,22 @@ let waveClock = INITIAL_WAVE_CLOCK // MODECT/MCOUNT schedule — spaces waves at
 let grmode = GRMODE_PLANE // GRMODE ground-wave byte — set to INITGR (0C0) on a ground slot, cleared (STPLNE) on a plane slot (rb3-2)
 let guns: Guns = INITIAL_GUNS
 let simFrame = 0 // calc-frame counter — drives the blimp's ÷2 fire cadence (blimpFires)
-const blimpRng = createRng((Date.now() ^ 0x5e_ed) >>> 0) // the BLMOTN spawn roll + the blimp's per-shot hit roll
+
+// ─── rb4-3: DETERMINISM — the SHELL owns the seed; the sim never reads the clock ──
+// The ROM's RANDOM (RBARON.MAC:6193) is a pure software LFSR with no clock input. The
+// shell resolves ONE seed at boot and threads it through every Rng stream below, so
+// the same seed + the same inputs reproduce the same game — the same-seed replay and
+// regression tests the rest of epic rb4 needs. A `?seed=<n>` URL param pins a game for
+// replay (asteroids reads location.search the same way); absent it, the shell mints one
+// fresh-game seed from the wall clock — the ONLY clock read in the game, at boot, never
+// in the calc-frame path. `!== null` (not `||`) so seed 0 is a valid seed, not "absent".
+const seedSearch = typeof window !== 'undefined' && window.location ? window.location.search : ''
+const seedParam = new URLSearchParams(seedSearch).get('seed')
+const seed = seedParam !== null ? Number(seedParam) >>> 0 : (Date.now() >>> 0)
+
+// Each stream draws from its OWN sub-seed off the one shell seed — deterministic, and
+// independent so consuming one does not shift another (the rb4-4 draw-order discipline).
+const blimpRng = createRng((seed ^ 0x5e_ed) >>> 0) // the BLMOTN spawn roll + the blimp's per-shot hit roll
 
 // ─── rb4-4: the dead mechanics, wired ─────────────────────────────────────────
 // The returning ace (rb2-8's module, shelved until now), the two-channel death
@@ -342,7 +357,7 @@ let ace: ReturningAce | null = null // the armed pass (ENSIDE + BEFLAG); one per
 let aceCountdown = ACE_ATTACK_FRAMES // calc frames until the armed ace's next attack (PLSTAT+7 → 0x0C)
 let dying: EolState | null = null // the EOGTMR sequence in progress; freezes the pilot's world
 let gameOver = false // ENDLFE with no lives left (RBARON.MAC:1207-1212)
-const aceRng = createRng((Date.now() ^ 0xace5) >>> 0) // the EOLSEQ JSR RANDOM (:1090)
+const aceRng = createRng((seed ^ 0xace5) >>> 0) // the EOLSEQ JSR RANDOM (:1090)
 
 let lastMs: number | null = null
 let accumulator = 0
@@ -602,7 +617,7 @@ function frame(nowMs: number): void {
       // until the next plane slot (ground-wave CONTENT lands in rb3-3..rb3-6).
       if (sched.spawnPlaneWave && !planeGenDisabled(grmode)) {
         // NWPLNE sizes the wave off SCORE — the DISPLAYED register, not the queue.
-        enemies = spawnWave(createRng((Date.now() + kills) >>> 0), countUp.displayed, gmlevlForKills(kills))
+        enemies = spawnWave(createRng((seed + kills) >>> 0), countUp.displayed, gmlevlForKills(kills))
         events.push({ type: 'wave-incoming' }) // the WP descending announce
       }
       // The BLMOTN ~25% roll: a blimp drifts in during the lull if the sky has none.
