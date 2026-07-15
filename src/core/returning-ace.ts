@@ -75,6 +75,14 @@ export const P_MNDP = 0x140
 export const HARD_TURN = 0x1c
 
 /**
+ * PLSTAT+7 attack frame — the returning pass resolves its EOLSEQ evade check when
+ * the plane's state counter reaches 0x0C (`LDA PLSTAT+7 / CMP I,0C`,
+ * RBARON.MAC:1078-1080). rb4-4 uses it as the attack CADENCE while the pass is
+ * armed; the full re-entry flight path that counter times is a later render story.
+ */
+export const ACE_ATTACK_FRAMES = 0x0c
+
+/**
  * PLPOSZ — the GMLEVL-indexed depth delta of the returning pass.
  * RBARON.MAC:2482, .RADIX 16 region (set at :74):
  *

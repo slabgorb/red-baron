@@ -26,9 +26,11 @@
 // INFERRED (finding pins the facts, not the encoding — see the Dev/TEA deviations):
 //   * `count` is planes remaining incl. the one being flown; game over exactly when
 //     the post-DEC count hits 0 ("respawn if any remain").
-//   * the three death sub-stages have NO ROM-pinned durations (unlike WO.CNT=5), so
-//     DEATH_SEQUENCE is an ordered cursor advanced one stage per call — the shell
-//     owns each stage's frame count. No fabricated durations.
+//   * this header once claimed the death sub-stages had "NO ROM-pinned durations" —
+//     REFUTED by rb4-4: the EOGTMR count-up (core/eol.ts) pins them exactly
+//     (RBARON.MAC:505-506, 1061-1066, 1124-1126, 1163 — shells 28 calc frames,
+//     ground 13, starfield from .TIME1=16). DEATH_SEQUENCE stays as the ordered
+//     RENDER-stage cursor; the TIMING machine is eol.ts.
 //
 // PURE and deterministic. No DOM, no time, no randomness — every function returns a
 // fresh value and never mutates its input.

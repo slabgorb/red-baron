@@ -437,8 +437,13 @@ const FRAMES = 24
  * anti-vacuity number. Every tracer assertion below is quantified over these; if the count ever
  * collapses (to zero, say, because the trigger stopped being held or the pool stopped filling),
  * the suite must go RED rather than pass by asserting nothing about nothing.
+ *
+ * Re-measured for rb4-4 (82 → 52): the pilot can DIE now. Under this pinned clock the airship's
+ * fire connects mid-run, the shells death sequence grounds the pilot for .TIME2 = 28 calc frames
+ * (EOL clears GUN.ST, RBARON.MAC:1109-1110 — no new shells while dying), and the gun cools
+ * through the sequence. Same sky, same crash, every run — still a property of the code.
  */
-const TOTAL_LIVE_SHELLS = 82
+const TOTAL_LIVE_SHELLS = 52
 
 beforeAll(async () => {
   await import('../../src/main') // the module body runs: resize(), the listeners, the first rAF
