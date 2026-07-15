@@ -50,8 +50,8 @@
     },
     "ours": {
       "file": "src/core/scene.ts",
-      "line": 75,
-      "verbatim": "    y1: ca.y / ca.w + HORIZN_NDC,"
+      "line": 59,
+      "verbatim": "  return { x1: ca.x / ca.w, y1: ca.y / ca.w, x2: cb.x / cb.w, y2: cb.y / cb.w }"
     },
     "recommendation": "fix",
     "size": "s"
@@ -88,7 +88,7 @@
     },
     "ours": {
       "file": "src/main.ts",
-      "line": 205,
+      "line": 198,
       "verbatim": "    strokeSegments(renderModel(biplaneLOD(enemy.depth), multiply(projView, model)), width, height)"
     },
     "recommendation": "fix",
@@ -126,7 +126,7 @@
     },
     "ours": {
       "file": "src/main.ts",
-      "line": 349,
+      "line": 342,
       "verbatim": "let lives: Lives = initialLives() // the player's planes remaining (rb2-9) — the blimp's fire is the first wired damage"
     },
     "recommendation": "fix",
@@ -145,7 +145,7 @@
     },
     "ours": {
       "file": "src/main.ts",
-      "line": 247,
+      "line": 240,
       "verbatim": "  ctx.fillText(`SCORE ${score}`, 16, 12)"
     },
     "recommendation": "fix",
@@ -164,7 +164,7 @@
     },
     "ours": {
       "file": "src/main.ts",
-      "line": 228,
+      "line": 221,
       "verbatim": "    ctx.fillStyle = '#ff5533'"
     },
     "recommendation": "fix",
@@ -183,8 +183,8 @@
     },
     "ours": {
       "file": "src/main.ts",
-      "line": 497,
-      "verbatim": "  draw(flight, enemies, blimp, mountains, wrecks, guns.shells, guns.overheated, score)"
+      "line": 490,
+      "verbatim": "  draw(toAttitude(flight), enemies, blimp, mountains, wrecks, guns.shells, guns.overheated, score)"
     },
     "recommendation": "fix",
     "size": "s"
@@ -220,8 +220,8 @@
     },
     "ours": {
       "file": "src/core/scene.ts",
-      "line": 75,
-      "verbatim": "    y1: ca.y / ca.w + HORIZN_NDC,"
+      "line": 59,
+      "verbatim": "  return { x1: ca.x / ca.w, y1: ca.y / ca.w, x2: cb.x / cb.w, y2: cb.y / cb.w }"
     }
   },
   {
@@ -237,7 +237,7 @@
     },
     "ours": {
       "file": "src/core/scene.ts",
-      "line": 49,
+      "line": 37,
       "verbatim": "  return perspective(VERTICAL_FOV, aspect, NEAR, FAR)"
     }
   },
@@ -254,8 +254,8 @@
     },
     "ours": {
       "file": "src/main.ts",
-      "line": 185,
-      "verbatim": "  strokeSegments(horizonSegments({ roll: attitude.roll, altitude: flight.altitude }, aspect), width, height)"
+      "line": 180,
+      "verbatim": "  strokeSegments(horizonSegments(attitude, aspect), width, height)"
     }
   },
   {
@@ -271,8 +271,8 @@
     },
     "ours": {
       "file": "src/main.ts",
-      "line": 497,
-      "verbatim": "  draw(flight, enemies, blimp, mountains, wrecks, guns.shells, guns.overheated, score)"
+      "line": 490,
+      "verbatim": "  draw(toAttitude(flight), enemies, blimp, mountains, wrecks, guns.shells, guns.overheated, score)"
     },
     "recommendation": "accept"
   },

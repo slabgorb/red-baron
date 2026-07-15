@@ -42,6 +42,7 @@ interface SceneSegment {
 interface SceneModule {
   sceneProjection?: (aspect: number) => Mat4
   projectSegment?: (a: Vec3, b: Vec3, mvp: Mat4) => SceneSegment | null
+  projectWorldSegment?: (a: Vec3, b: Vec3, mvp: Mat4) => SceneSegment | null
 }
 
 let scene: SceneModule = {}
@@ -72,18 +73,37 @@ describe('scene — sceneProjection (the one perspective matrix)', () => {
 })
 
 describe('scene — projectSegment (world → NDC substrate)', () => {
-  it('an on-axis segment straight ahead projects to the horizontal centre, lifted by the constant HORIZN offset (rb4-5)', () => {
+  it('the bare projectSegment is the PURE divide — an on-axis point lands on raw centre, NO HORIZN lift (rb4-5)', () => {
+    // rb4-5 rework: HORIZN is NOT on the universal substrate — the ROM adds it only in POSITH
+    // (the playfield path), never in the PLANE PROJECT path (RBGRND.MAC:359). So the bare
+    // projectSegment that motion objects use is the pure divide, matching the frustum screen.ts
+    // measures (rb4-1). An on-axis (world Y=0) point straight ahead projects to raw centre 0.
     const proj = need(scene.sceneProjection, 'sceneProjection')(ASPECT)
     const seg = need(scene.projectSegment, 'projectSegment')([0, 0, -400], [0, 0, -800], proj)
     expect(seg).not.toBeNull()
     if (seg) {
-      expect(seg.x1).toBeCloseTo(0, 5) // on the horizontal centre line
+      expect(seg.x1).toBeCloseTo(0, 5)
       expect(seg.x2).toBeCloseTo(0, 5)
-      // rb4-5 AC5: HORIZN is added to every projected Y — a constant, depth-INDEPENDENT
-      // lift, so both endpoints share one Y (no perspective spread) and it is NOT the raw
+      expect(seg.y1).toBeCloseTo(0, 5) // pure divide — no offset
+      expect(seg.y2).toBeCloseTo(0, 5)
+    }
+  })
+
+  it('projectWorldSegment lifts an on-axis PLAYFIELD segment by the constant HORIZN offset (rb4-5 AC5, POSITH path)', () => {
+    const proj = need(scene.sceneProjection, 'sceneProjection')(ASPECT)
+    const near = need(scene.projectWorldSegment, 'projectWorldSegment')([0, 0, -400], [0, 0, -800], proj)
+    const far = need(scene.projectWorldSegment, 'projectWorldSegment')([0, 0, -3000], [0, 0, -6000], proj)
+    expect(near).not.toBeNull()
+    expect(far).not.toBeNull()
+    if (near && far) {
+      expect(near.x1).toBeCloseTo(0, 5) // still on the horizontal centre line
+      expect(near.x2).toBeCloseTo(0, 5)
+      // rb4-5 AC5: HORIZN is added to every PLAYFIELD-object Y — a constant, depth-INDEPENDENT
+      // lift, so both endpoints share one Y, the two depths share it too, and it is NOT the raw
       // centre 0. (POSITH's `ADC I,HORIZN` after the divide, RBGRND.MAC:303.)
-      expect(seg.y1).toBeCloseTo(seg.y2, 5)
-      expect(Math.abs(seg.y1)).toBeGreaterThan(1e-3)
+      expect(near.y1).toBeCloseTo(near.y2, 5)
+      expect(near.y1).toBeCloseTo(far.y1, 5) // depth-independent — an offset, not a ÷depth
+      expect(Math.abs(near.y1)).toBeGreaterThan(1e-3)
     }
   })
 

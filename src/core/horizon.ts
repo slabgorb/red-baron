@@ -16,7 +16,7 @@
 
 import { multiply, type Vec3 } from '@arcade/shared/math3d'
 import { flightView } from './camera'
-import { projectSegment, sceneProjection, type SceneSegment } from './scene'
+import { projectWorldSegment, sceneProjection, type SceneSegment } from './scene'
 import { HORZ } from './topology'
 import { ALT_TO_Y } from './flight'
 
@@ -38,6 +38,6 @@ export function horizonSegments(view: HorizonView, aspect: number): readonly Sce
   const mvp = multiply(sceneProjection(aspect), flightView({ roll: view.roll }, eye))
   const left: Vec3 = [-HORIZON_HALF_WIDTH, 0, -HORZ]
   const right: Vec3 = [HORIZON_HALF_WIDTH, 0, -HORZ]
-  const seg = projectSegment(left, right, mvp)
+  const seg = projectWorldSegment(left, right, mvp)
   return seg ? [seg] : []
 }

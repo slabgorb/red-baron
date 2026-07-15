@@ -79,10 +79,12 @@ interface FlightModule {
 interface CameraModule {
   flightView?: (attitude: Attitude, eye: Vec3) => Mat4
 }
-// scene.ts — the projection substrate; projectPointRB projects ONE world point.
+// scene.ts — the projection substrate. `projectSegment` is the pure divide (motion path);
+// `projectWorldSegment` adds the ROM's POSITH HORIZN lift (the playfield path AC5 pins).
 interface SceneModule {
   sceneProjection?: (aspect: number) => Mat4
   projectSegment?: (a: Vec3, b: Vec3, mvp: Mat4) => SceneSegment | null
+  projectWorldSegment?: (a: Vec3, b: Vec3, mvp: Mat4) => SceneSegment | null
 }
 // horizon.ts — the horizon must now depend on ALTITUDE (finite HORZ), not just attitude.
 type HorizonFn = (...args: unknown[]) => readonly SceneSegment[]
@@ -120,17 +122,20 @@ function eyeSpace(state: FlightState, world: Vec3): Vec3 {
   return transform(view, world)
 }
 
-/** Where a world point lands in NDC, through the full projection substrate. */
+/** Where a WORLD/playfield point lands in NDC, through the full projection substrate INCLUDING
+ *  the ROM's POSITH HORIZN lift — the path the horizon + mountains take (projectWorldSegment).
+ *  AC5's HORIZN offset lives here, not in the bare motion-object projectSegment (RBGRND.MAC:303
+ *  POSITH vs :359 PLANE PROJECT). */
 function project(state: FlightState, world: Vec3): SceneSegment | null {
   const projFn = need(scene.sceneProjection, 'sceneProjection')
-  const projectSegment = need(scene.projectSegment, 'projectSegment')
+  const projectWorldSegment = need(scene.projectWorldSegment, 'projectWorldSegment')
   const view = need(cam.flightView, 'flightView')(
     need(f.toAttitude, 'toAttitude')(state),
     need(f.toEye, 'toEye')(state),
   )
   // MVP = projection · view (the composition main.ts/landscape.ts use).
   const mvp = multiply4(projFn(ASPECT), view)
-  return projectSegment(world, world, mvp)
+  return projectWorldSegment(world, world, mvp)
 }
 
 /** Local 4×4 multiply so this file does not depend on math3d's export name set. */

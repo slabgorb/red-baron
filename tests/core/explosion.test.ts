@@ -131,12 +131,16 @@ function stepN(enemy: Enemy, n: number): Wreck {
 const PHASES: readonly WreckPhase[] = ['falling', 'exploding', 'done']
 
 // ───────────────────────────────────────────────────────────────────────────
-// AC-1 — ROM-exact constants (EX_ACY=-20, EXPL1=6, EXPL2=12, 4 debris pieces)
+// AC-1 — ROM-exact constants (EX_ACY=-0x20, EXPL1=6, EXPL2=12, 4 debris pieces)
 // ───────────────────────────────────────────────────────────────────────────
-describe('explosion — ROM constants (findings §3, UPPLEX R2BRON.MAC:2957-3030)', () => {
-  it('EX_ACY is -20 — downward gravity accel per calc-frame (findings §3)', () => {
+describe('explosion — ROM constants (UPPLEX, RBARON.MAC:2961)', () => {
+  // rb4-1 RE-BASELINE: `EX.ACY =-20` sits in the `.RADIX 16` region (set at RBARON.MAC:74),
+  // so it is -0x20 = -32. Read as decimal our wreck fell at 62.5% of the ROM's gravity and
+  // hung in the air. Derivation audited in tests/audit/radix-transcription.test.ts.
+  it('EX_ACY is -0x20 = -32 — downward gravity accel per calc-frame (RBARON.MAC:481)', () => {
     const g = need(m.EX_ACY, 'EX_ACY')
-    expect(g).toBe(-20)
+    expect(g).toBe(-0x20)
+    expect(g).not.toBe(-20) // the decimal misreading we shipped
     expect(g).toBeLessThan(0) // negative = the wreck accelerates DOWN, not up
   })
 

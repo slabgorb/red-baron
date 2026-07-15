@@ -5,15 +5,15 @@
 // the only way out is to break-turn to the correct side, hard enough, in time. The
 // first pass is a freebie; after that it's a coin flip unless you fly it right.
 //
-// THE PASS (P.UPD0, findings §3, R2BRON.MAC:2723-2738): "when a plane closes past
-// P.MNDP=140 it enables returning-plane shells, fires the 'BEHIND YOU' message,
+// THE PASS (P.UPD0, RBARON.MAC:2727): "when a plane closes past
+// P.MNDP=0x140 it enables returning-plane shells, fires the 'BEHIND YOU' message,
 // records ENSIDE (which side), and re-enters as a returning plane (NWENME) that
 // intercepts the player." `closesPast(depth)` is the trigger; `beginPass(side)`
 // records ENSIDE and arms the free first dodge. enemy.ts bores a plane in to a floor
-// of exactly MIN_DEPTH=140 (= P.MNDP), so the trigger fires when it reaches that floor.
+// of exactly MIN_DEPTH = P.MNDP = 0x140 = 320, so the trigger fires when it reaches it.
 // Deeper GMLEVLs close FASTER (PLPOSZ, GMLEVL-indexed).
 //
-// THE EVADE CHECK (EOLSEQ, findings §5, R2BRON.MAC:1070-1102): at the ace's attack the
+// THE EVADE CHECK (EOLSEQ, RBARON.MAC:1057): at the ace's attack the
 // game checks the player's bank — `ENSIDE EOR PLDELX` must show banking to the CORRECT
 // side AND `|PLDELX| >= 0x1C` (a hard-enough turn) to evade. "First attack is a free
 // dodge (BEFLAG 'FIRST TIME FREE'); every subsequent one is 50/50 (RANDOM)."
@@ -37,21 +37,69 @@
 // randomness is the `roll` the caller supplies to `evadeCheck` (same pattern as
 // enemy.ts's planeFires).
 
-// ─── ROM-exact thresholds (findings §3 P.UPD0, §5 EOLSEQ) ─────────────────────
+// ─── ROM-exact thresholds (RBARON.MAC, `.RADIX 16` region — HEX) ──────────────
+//
+// RADIX WARNING (rb4-1): `.RADIX 16` is set at RBARON.MAC:74 and holds unbroken here.
+// These digits are HEX. They were transcribed as decimal from a doc citing the DECOY
+// BUILD — an image that never shipped.
 
-/** P.MNDP — the close distance past which the fly-by becomes a returning attack (R2BRON.MAC:2723). */
-export const P_MNDP = 140
+// ─── THE DEPTH AXIS ──────────────────────────────────────────────────────────
+//
+// P.INDP and P.MNDP are the two ends of the axis the plane flies down: where it
+// appears, and the closest it can ever get. EVERY other depth-denominated number in
+// the game is a statement about this interval, so both live HERE, in the one core
+// module that imports nothing — any module can reach the axis without a cycle.
+//
+// (P.INDP was in enemy.ts, but enemy.ts imports biplane.ts, so biplane.ts could not
+// denominate its LOD switch against it without a circular import — the top-level
+// `const` would have hit the TDZ and thrown at load. enemy.ts re-exports it, so its
+// public surface is unchanged.)
+
+/**
+ * P.INDP — the depth the plane APPEARS at. The far end of the axis.
+ * RBARON.MAC:464 `P.INDP =1080`, .RADIX 16 region (set at :74) → 0x1080 = 4224.
+ * Read as decimal 1080 the whole world was 3.91× too shallow — which is the bug that
+ * invalidated every constant measured in depth (see tests/core/depth-scale.test.ts).
+ */
+export const P_INDP = 0x1080
+
+/**
+ * P.MNDP — the close distance past which the fly-by becomes a returning attack (P.UPD0).
+ * Also the plane's depth FLOOR: the near end of the axis, the closest it can ever get.
+ * RBARON.MAC:469 `P.MNDP =140`, .RADIX 16 region (set at :74) → 0x140 = 320.
+ * Read as decimal 140 the plane had to get 2.3× closer before the ace pass triggered.
+ */
+export const P_MNDP = 0x140
 
 /** The |PLDELX| a break-turn must reach to shake the ace — 0x1C (EOLSEQ, findings §5). */
 export const HARD_TURN = 0x1c
 
 /**
- * PLPOSZ — the GMLEVL-indexed close speed: deeper levels close FASTER (findings §3).
- * The source pins the mechanism (level-indexed, rising), NOT the byte values, so these
- * are chosen within the tested invariants (positive, non-decreasing, faster end-to-end);
- * level 0 matches enemy.ts's current CLOSE_SPEED=8. .LEVLS = 5 entries. [Deviation logged.]
+ * PLPOSZ — the GMLEVL-indexed depth delta of the returning pass.
+ * RBARON.MAC:2482, .RADIX 16 region (set at :74):
+ *
+ *     PLPOSZ: .BYTE -4,-10,-20,-30,-40,-50,-60,-70,-80
+ *
+ * We had this wrong in all four respects (EN-014):
+ *   SIGN      the bytes are NEGATIVE. The ROM ADDS this to the display depth
+ *             (RBARON.MAC:2704-2707) so the depth FALLS. We stored positives.
+ *   MAGNITUDE they are HEX: -4, -16, -32, … -128. We read the digits as decimal.
+ *   LENGTH    NINE entries. We shipped five.
+ *   RAMP      GMLEVL 0..5 is all PLNZD ever indexes (RBARON.MAC:2409-2411), i.e.
+ *             PLPOSZ[0..5] = -0x04 .. -0x50 — a 20× acceleration across the game
+ *             (0x50 / 0x04 = 80 / 4 = 20). We shipped 8 → 20, a 2.5× ramp: level 0
+ *             twice too fast, level 5 four times too slow.
+ *
+ *             This line ONCE named PLPOSZ[8] as the top of the ramp. It is not: GMLEVL
+ *             cannot reach index 8 (MAX_GMLEVL = max(PLNLVL) = 5), and that entry is
+ *             -128, which would be a 32× ramp. The slip was writing the DECIMAL top of
+ *             the ramp (80) as though it were hex — this story's own bug, in prose, in
+ *             the file the story wrote. Indices 6..8 are transcribed because the ROM
+ *             has nine bytes; they are simply never indexed.
  */
-export const PLPOSZ: readonly number[] = Object.freeze([8, 10, 13, 16, 20])
+export const PLPOSZ: readonly number[] = Object.freeze([
+  -0x04, -0x10, -0x20, -0x30, -0x40, -0x50, -0x60, -0x70, -0x80,
+])
 
 // ─── pure helpers ─────────────────────────────────────────────────────────────
 
@@ -64,7 +112,7 @@ const levelIndex = (level: number): number => clamp(Math.floor(level) || 0, 0, P
 
 /**
  * Has the plane closed past P.MNDP — the fly-by that becomes a returning attack?
- * Inclusive at the threshold (the enemy weave floors at MIN_DEPTH=140 = P.MNDP, so the
+ * Inclusive at the threshold (the enemy weave floors at MIN_DEPTH = P.MNDP = 0x140, so the
  * trigger fires when it reaches that floor). Total: a degenerate depth yields a boolean
  * (NaN -> false; -Infinity has closed past any finite threshold; +Infinity has not).
  */
@@ -72,7 +120,11 @@ export function closesPast(depth: number): boolean {
   return depth <= P_MNDP
 }
 
-/** PLPOSZ close speed for a GMLEVL — clamped/total, always one of the positive table values. */
+/**
+ * PLPOSZ depth delta for a GMLEVL — clamped/total, always one of the NEGATIVE table
+ * values. It is ADDED to the depth (the ROM's own idiom, RBARON.MAC:2704-2707), so a
+ * more negative delta closes faster. Never returns 0: a clamped level still closes.
+ */
 export function closeSpeed(level: number): number {
   return PLPOSZ[levelIndex(level)]
 }

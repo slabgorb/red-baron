@@ -142,8 +142,12 @@ function settledTurnRate(turn: number, frames = 12, proximity: ProximityBand = '
 // AC-1 — the ROM-exact thresholds (P.MNDP close distance, 0x1C hard-turn)
 // ───────────────────────────────────────────────────────────────────────────
 describe('returning-ace — ROM thresholds (findings §3 P.UPD0, §5 EOLSEQ)', () => {
-  it('P_MNDP — the close distance that triggers the pass — is 140 (R2BRON.MAC:2723)', () => {
-    expect(need(m.P_MNDP, 'P_MNDP')).toBe(140)
+  // rb4-1 RE-BASELINE. Asserted the DECIMAL misreading and cited the DECOY build
+  // (R2BRON.MAC — never shipped). `P.MNDP =140` is in a `.RADIX 16` region: 0x140 = 320.
+  // The fly-by trigger was firing 2.3× too late.
+  it('P_MNDP — the close distance that triggers the pass — is 0x140 = 320 (RBARON.MAC:469, .RADIX 16)', () => {
+    expect(need(m.P_MNDP, 'P_MNDP')).toBe(0x140)
+    expect(need(m.P_MNDP, 'P_MNDP')).not.toBe(140) // the decimal misreading we shipped
   })
 
   it('HARD_TURN — the |PLDELX| needed to shake him — is 0x1C = 28 (EOLSEQ, findings §5)', () => {
@@ -158,9 +162,11 @@ describe('returning-ace — ROM thresholds (findings §3 P.UPD0, §5 EOLSEQ)', (
 describe('returning-ace — closesPast (P.UPD0 fly-by trigger)', () => {
   it('does NOT trigger while the plane is still far (spawn depth is not a pass)', () => {
     const closesPast = need(m.closesPast, 'closesPast')
-    expect(closesPast(1080)).toBe(false) // P.INDP spawn depth
-    expect(closesPast(300)).toBe(false)
-    expect(closesPast(141)).toBe(false) // one unit shy of the threshold — not yet
+    // rb4-1 RE-BASELINE: the threshold is P.MNDP = 0x140 = 320, so these fixtures — which
+    // were keyed to the decimal 140 — all had to move OUT. 300 and 141 are now PAST it.
+    expect(closesPast(0x1080)).toBe(false) // P.INDP spawn depth (4224)
+    expect(closesPast(1000)).toBe(false)
+    expect(closesPast(0x141)).toBe(false) // one unit shy of the threshold — not yet
   })
 
   it('triggers exactly when the plane reaches / passes P.MNDP (boundary is inclusive)', () => {
@@ -184,34 +190,61 @@ describe('returning-ace — closesPast (P.UPD0 fly-by trigger)', () => {
 
 // ───────────────────────────────────────────────────────────────────────────
 // AC-3 — PLPOSZ: deeper GMLEVLs close FASTER (findings §3)
+//
+// rb4-1 RE-BASELINE (EN-014). This block asserted a table that was wrong in all four
+// respects the ROM pins. RBARON.MAC:2482, in the `.RADIX 16` region:
+//
+//     PLPOSZ: .BYTE -4,-10,-20,-30,-40,-50,-60,-70,-80
+//
+// SIGN      the entries are NEGATIVE — they are ADDED to the display depth
+//           (RBARON.MAC:2704-2707), so the depth FALLS. We shipped positives.
+// MAGNITUDE they are HEX: -4,-16,-32,-48,-64,-80,-96,-112,-128. We shipped decimals.
+// LENGTH    NINE entries. We shipped five.
+// RAMP      GMLEVL 0..5 is all that PLNZD ever indexes (:2409-2411), i.e. -4 .. -80 —
+//           a 20× acceleration across the game. We shipped 8→20, a 2.5× ramp, with
+//           level 0 twice too fast and level 5 four times too slow.
+//
+// The sign flip means `closeSpeed` now returns a NEGATIVE delta. Whether the caller
+// ADDS it (the ROM's own idiom) or negates it is Dev's call — but it can no longer be
+// "always positive", and asserting that was what locked the bug in. The derivation is
+// audited from the ROM in tests/audit/radix-transcription.test.ts.
 // ───────────────────────────────────────────────────────────────────────────
 describe('returning-ace — PLPOSZ close speed rises with GMLEVL (findings §3)', () => {
-  it('PLPOSZ is a GMLEVL-indexed table of .LEVLS = 5 entries', () => {
+  it('PLPOSZ is the GMLEVL-indexed table of NINE entries (RBARON.MAC:2482)', () => {
     const t = need(m.PLPOSZ, 'PLPOSZ')
-    expect(t.length).toBe(5)
+    expect(t.length).toBe(9)
+    expect(t.length).not.toBe(5) // the truncated table we shipped
   })
 
-  it('every close speed is strictly positive — the plane always bores IN, never retreats', () => {
-    for (const v of need(m.PLPOSZ, 'PLPOSZ')) expect(v).toBeGreaterThan(0)
+  it('every close speed is NEGATIVE — it is added to the depth, so the plane bores IN', () => {
+    for (const v of need(m.PLPOSZ, 'PLPOSZ')) expect(v).toBeLessThan(0)
   })
 
-  it('deeper levels close FASTER — the table is non-decreasing and strictly wider end-to-end', () => {
+  it('deeper levels close FASTER — the magnitudes rise strictly, 0x04 → 0x80', () => {
     const t = need(m.PLPOSZ, 'PLPOSZ')
     for (let lvl = 1; lvl < t.length; lvl++) {
-      expect(t[lvl]).toBeGreaterThanOrEqual(t[lvl - 1]) // never slower at a higher level
+      expect(Math.abs(t[lvl])).toBeGreaterThan(Math.abs(t[lvl - 1])) // strictly faster each level
     }
-    expect(t[t.length - 1]).toBeGreaterThan(t[0]) // level 4 genuinely closes faster than level 0
+    // Only GMLEVL 0..5 is reachable (PLNZD, RBARON.MAC:2409-2411). The ROM byte at index 5
+    // is the literal `-50` — i.e. -0x50 = -80 decimal. (The table's LAST byte is the literal
+    // `-80` = -0x80 = -128, at index 8, which GMLEVL never reaches.) The audit's "4/frame at
+    // GMLEVL 0 to 80/frame at GMLEVL 5" quotes DECIMAL 80 = 0x50 — and the 20× ratio below
+    // only closes on that reading: 128/4 would be 32.
+    expect(t[0]).toBe(-0x04)
+    expect(t[5]).toBe(-0x50)
+    expect(t[8]).toBe(-0x80) // the table's tail, beyond any reachable GMLEVL
+    expect(Math.abs(t[5]) / Math.abs(t[0])).toBe(20) // the ROM's 20× ramp, not our 2.5×
   })
 
-  it('closeSpeed(level) reads PLPOSZ and clamps an out-of-range GMLEVL — total, always positive', () => {
+  it('closeSpeed(level) reads PLPOSZ and clamps an out-of-range GMLEVL — total, always negative', () => {
     const closeSpeed = need(m.closeSpeed, 'closeSpeed')
     const t = need(m.PLPOSZ, 'PLPOSZ')
     expect(closeSpeed(0)).toBe(t[0])
     expect(closeSpeed(4)).toBe(t[4])
-    for (const bad of [-1, -100, 5, 99, Number.NaN, 2.7]) {
+    for (const bad of [-1, -100, 9, 99, Number.NaN, 2.7]) {
       const v = closeSpeed(bad)
       expect(Number.isFinite(v)).toBe(true) // no PLPOSZ[undefined] leak
-      expect(v).toBeGreaterThan(0)
+      expect(v).toBeLessThan(0) // a clamped level still closes, never retreats
     }
     expect(closeSpeed(2.7)).toBe(t[2]) // a non-integer level floors to a valid index
   })
@@ -429,13 +462,16 @@ describe('returning-ace — integration with the REAL flight model + enemy weave
   })
 
   it('the REAL enemy weave bores in until closesPast fires — spawn is far, the floor triggers', () => {
-    // enemy.step closes the depth toward its MIN_DEPTH floor (= P.MNDP=140). closesPast is
-    // false at the far spawn and true once the plane reaches that floor: the P.UPD0 trigger
-    // is wired to the depth the real weave actually reaches.
+    // enemy.step closes the depth toward its MIN_DEPTH floor (= P.MNDP = 0x140 = 320).
+    // closesPast is false at the far spawn and true once the plane reaches that floor.
+    // rb4-1 REWORK: the plane now closes at the ROM's OWN rate — PLPOSZ[GMLEVL], which
+    // PLNZD stores as "PLANE MOTION DEPTH DELTA" (RBARON.MAC:2409-2411). At GMLEVL 0 that
+    // is -0x04 = -4 per calc-frame, so crossing 0x1080 -> 0x140 takes (4224-320)/4 = 976
+    // frames. The old budget (400, then 800) was sized for an invented flat CLOSE_SPEED=8.
     const closesPast = need(m.closesPast, 'closesPast')
     let e: Enemy = spawnEnemy(createRng(7), 0)
     expect(closesPast(e.depth)).toBe(false) // spawns far — no pass yet
-    for (let i = 0; i < 400; i++) e = stepEnemy(e, 0) // bore all the way in
+    for (let i = 0; i < 1200; i++) e = stepEnemy(e, 0) // bore all the way in
     expect(closesPast(e.depth)).toBe(true) // reached the P.MNDP floor → the pass triggers
   })
 })

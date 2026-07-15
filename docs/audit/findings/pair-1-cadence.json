@@ -63,7 +63,7 @@
   },
   "ours": {
    "file": "src/main.ts",
-   "line": 380,
+   "line": 373,
    "verbatim": "  while (accumulator >= SIM_TIMESTEP_S) {"
   }
  },
@@ -80,7 +80,7 @@
   },
   "ours": {
    "file": "src/main.ts",
-   "line": 483,
+   "line": 476,
    "verbatim": "    simFrame += 1"
   },
   "coverage_review": "FALSE CONFIRMED (Phase 3). Borrowed the PLANE's div-by-2 (PLNSHL) for the BLIMP, which uses SHLAUN's div-by-4 plus a GMLEVL>=2 gate. Our blimp fires 2x too fast. EN-024 is correct and contradicts this. Reclassed DIVERGENCE.",
@@ -117,8 +117,8 @@
   },
   "ours": {
    "file": "src/main.ts",
-   "line": 497,
-   "verbatim": "  draw(flight, enemies, blimp, mountains, wrecks, guns.shells, guns.overheated, score)"
+   "line": 490,
+   "verbatim": "  draw(toAttitude(flight), enemies, blimp, mountains, wrecks, guns.shells, guns.overheated, score)"
   }
  },
  {
@@ -134,7 +134,7 @@
   },
   "ours": {
    "file": "src/main.ts",
-   "line": 379,
+   "line": 372,
    "verbatim": "  if (paused) accumulator %= SIM_TIMESTEP_S"
   }
  },
@@ -151,7 +151,7 @@
   },
   "ours": {
    "file": "src/main.ts",
-   "line": 459,
+   "line": 452,
    "verbatim": "    if (enemies.length === 0 && wrecks.length === 0) {"
   },
   "coverage_review": "FALSE CONFIRMED (Phase 3). Claimed our wave-clock gate maps 'exactly' to NWPLNE; NWPLNE has THREE gates before DEC NEWCT and this saw one. MI-004 is correct. Reclassed DIVERGENCE.",
@@ -171,7 +171,7 @@
   },
   "ours": {
    "file": "src/main.ts",
-   "line": 380,
+   "line": 373,
    "verbatim": "  while (accumulator >= SIM_TIMESTEP_S) {"
   },
   "recommendation": "fix",
@@ -190,7 +190,7 @@
   },
   "ours": {
    "file": "src/main.ts",
-   "line": 413,
+   "line": 406,
    "verbatim": "        lives = loseLife(lives).lives"
   },
   "recommendation": "fix",
@@ -209,7 +209,7 @@
   },
   "ours": {
    "file": "src/main.ts",
-   "line": 380,
+   "line": 373,
    "verbatim": "  while (accumulator >= SIM_TIMESTEP_S) {"
   },
   "recommendation": "accept"
@@ -265,7 +265,7 @@
   },
   "ours": {
    "file": "src/main.ts",
-   "line": 491,
+   "line": 484,
    "verbatim": "  updateContinuousSounds(audio, {"
   },
   "recommendation": "accept"
@@ -283,8 +283,8 @@
   },
   "ours": {
    "file": "src/main.ts",
-   "line": 497,
-   "verbatim": "  draw(flight, enemies, blimp, mountains, wrecks, guns.shells, guns.overheated, score)"
+   "line": 490,
+   "verbatim": "  draw(toAttitude(flight), enemies, blimp, mountains, wrecks, guns.shells, guns.overheated, score)"
   },
   "recommendation": "fix",
   "size": "s"

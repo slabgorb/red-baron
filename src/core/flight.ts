@@ -6,21 +6,21 @@
 // the dynamics that PRODUCE the attitude they render.
 //
 // Two analog pots (a flight yoke) + fire — NO THROTTLE. Forward motion is
-// implicit and constant; the pilot commands only TURN and PITCH (R2BRON.MAC:520,
+// implicit and constant; the pilot commands only TURN and PITCH (RBARON.MAC:521,
 // findings §2). The player is the universe centre and the world moves around it.
 //
 //   * TURN / ROLL → PLDELX, a RATE WITH INERTIA. The yoke sets a TARGET turn-rate
 //     the plane ramps into (step-limited acceleration + 2 counts of hysteresis) —
-//     not an instant heading (POT.X, R2BRON.MAC:5890-5919).
+//     not an instant heading (POT.X, RBARON.MAC:5897-5926).
 //   * PITCH → PLDELY, 11 DISCRETE STEPS. POTSCL maps the pitch pot to an index
-//     into POTDLY (R2BRON.MAC:5923). Centre = 0; ASYMMETRIC — dive (-32) is
+//     into POTDLY (RBARON.MAC:5930). Centre = 0; ASYMMETRIC — dive (-32) is
 //     faster than climb (+25).
-//   * PFMOTN "update centre of screen" (R2BRON.MAC:3149-3262): PLDELX (×DISCHK)
+//   * PFMOTN "update centre of screen" (RBARON.MAC:3154-3267): PLDELX (×DISCHK)
 //     pans the world horizontally (heading → yaw); PFROTN = PLDELX × 8, clamped
 //     |·| ≤ 0x100, is the horizon-bank roll; PLDELY (×DISCHK) adds to altitude
 //     I4YPOS, hard-clamped PLYMIN..PLYMAX (you cannot pitch into the ground in a
 //     dogfight — terrain only bites in the rb3 ground wave).
-//   * DISCHK (R2BRON.MAC:3463-3491): player deltas scale by the proximity of the
+//   * DISCHK (RBARON.MAC:3468-3496): player deltas scale by the proximity of the
 //     nearest object — close ×1.0 / mid ×0.625 / far ×0.375. Apparent agility
 //     rises when something is near. rb2-1 has no enemies yet, so the band is an
 //     INPUT the caller supplies.

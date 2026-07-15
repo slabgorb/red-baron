@@ -140,7 +140,10 @@ describe('rb2-7 seam — Enemy.kind discriminant (findings §3; rb2-6 blocking f
     expect(drone).toBeDefined()
     // The kind on the Enemy, fed to scoreKill, must pick the right branch.
     expect(scoreKill(kindOf(drone) as 'drone', CLOSE)).toBe(DRONE_SCORE)
-    expect(scoreKill(kindOf(lead) as 'lead', CLOSE)).toBeGreaterThan(DRONE_SCORE)
+    // rb4-1 RE-BASELINE (CB-003): a CLOSE lead is worth LESS than a drone, not more.
+    // PLVALU counts DOWN as the plane closes and is floored at VALMIN; only the far/dim
+    // plane pays the flat DRNPNT. See tests/core/scoring.test.ts for the ROM derivation.
+    expect(scoreKill(kindOf(lead) as 'lead', CLOSE)).toBeLessThan(DRONE_SCORE)
     // …and the two kinds route to DIFFERENT scores — the discriminant is load-bearing.
     expect(scoreKill(kindOf(lead) as 'lead', CLOSE)).not.toBe(scoreKill(kindOf(drone) as 'drone', CLOSE))
   })
@@ -195,11 +198,14 @@ describe('waves — planeCountForScore (findings §3, NWPLNE/STPLNE)', () => {
 // AC-2 — spawnWave: formation offsets, kinds, and the 25 % lone-plane roll
 // ───────────────────────────────────────────────────────────────────────────
 describe('waves — spawnWave formation + lone roll (findings §3, PLANE1/PLANE2 offsets)', () => {
-  it('DRONE_OFFSETS is the byte-exact PLANE1 -100,+100 / PLANE2 -100,-100 table', () => {
+  // rb4-1 RE-BASELINE: PLANE1/PLANE2 (RBARON.MAC:2480-2481) are in the `.RADIX 16`
+  // region, so the literals are HEX: ±0x100 = ±256. Read as decimal 100 the formation
+  // flew 2.56× too tight.
+  it('DRONE_OFFSETS is the byte-exact PLANE1/PLANE2 table — ±0x100, not ±100', () => {
     const off = need(m.DRONE_OFFSETS, 'DRONE_OFFSETS')
     expect(off.map((o) => [...o])).toEqual([
-      [-100, 100],
-      [-100, -100],
+      [-0x100, 0x100],
+      [-0x100, -0x100],
     ])
     expect(off.length).toBe(2) // exactly two drones — the object budget is 1 lead + 2 drones
   })
