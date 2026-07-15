@@ -307,23 +307,37 @@ export function createAudioEngine(): AudioEngine {
   // The skeleton owns the context, the master bus and the sustained-voice registry.
   const synth = createSynthEngine<SustainedVoice>({ masterGain: MASTER_GAIN })
 
-  // The persistent continuous voices, built on first use after the gate opens.
-  // The hum's oscillators free-run once started; its GAIN is the on/off switch.
-  let humGain: GainNode | null = null
-  let whineOsc: OscillatorNode | null = null
-  let whineGain: GainNode | null = null
+  // The two continuous voices — the engine hum and the enemy-approach whine — are
+  // persistent, engine-owned voices (SH2-22). Their oscillators free-run once started; the
+  // GAIN is the on/off switch. Held as persistentVoice HANDLES, never raw nodes: when the
+  // browser closes the context and the engine builds a replacement, the engine rebuilds each
+  // controller automatically. There are no `humGain`/`whineOsc` refs to survive a recovery
+  // still pointing at the DEAD context, and nothing to reset by hand — so the half-recovery
+  // trap (the gun comes back while the hum and the plane-warning whine stay silent — review
+  // round 2) is structurally unreachable now. Losing the whine mattered most: it is the only
+  // warning a plane is on you.
+  const hum = synth.persistentVoice(({ context, out }) => {
+    const gain = context.createGain()
+    gain.connect(out)
+    // The DETUNED pair — divisors one apart, so the voices beat (§6B).
+    for (const hz of engineHumParams().frequencies) {
+      const osc = context.createOscillator()
+      osc.type = 'sawtooth'
+      osc.frequency.setValueAtTime(hz, context.currentTime)
+      osc.connect(gain)
+      osc.start()
+    }
+    return { gain, context }
+  })
 
-  // These live OUTSIDE the shared voice registry (their oscillators free-run; the gain is
-  // the switch), so the engine cannot clear them for us when it recovers from a closed
-  // context. Left alone, they would survive a recovery still pointing at the DEAD context,
-  // and the `=== null` build gates in setEngine/setApproach would never re-fire: the gun
-  // would come back while the engine hum and the enemy-approach whine stayed silent for the
-  // rest of the session. Losing the whine matters — it is the only warning that a plane is
-  // on you. Half a recovery is worse than none: it looks like it works. (Review round 2.)
-  synth.onRebuild(() => {
-    humGain = null
-    whineOsc = null
-    whineGain = null
+  const whine = synth.persistentVoice(({ context, out }) => {
+    const gain = context.createGain()
+    gain.connect(out)
+    const osc = context.createOscillator()
+    osc.type = 'triangle'
+    osc.connect(gain)
+    osc.start()
+    return { osc, gain, context }
   })
 
   return {
@@ -357,24 +371,11 @@ export function createAudioEngine(): AudioEngine {
     },
 
     setEngine(on: boolean): void {
-      synth.withAudio(({ context, out }) => {
-        const p = engineHumParams()
-        if (humGain === null) {
-          const gain = context.createGain()
-          gain.connect(out)
-          // The DETUNED pair — divisors one apart, so the voices beat (§6B).
-          for (const hz of p.frequencies) {
-            const osc = context.createOscillator()
-            osc.type = 'sawtooth'
-            osc.frequency.setValueAtTime(hz, context.currentTime)
-            osc.connect(gain)
-            osc.start()
-          }
-          humGain = gain
-        }
-        // The oscillators free-run; the gain is the real on/off (cheaper than
-        // tearing the voice down, and a later `true` revives it instantly).
-        humGain.gain.setValueAtTime(on ? p.gain : 0, context.currentTime)
+      hum.control(({ gain, context }) => {
+        // The oscillators free-run (built once by the persistentVoice); the gain is the
+        // real on/off (cheaper than tearing the voice down, and a later `true` revives it
+        // instantly).
+        gain.gain.setValueAtTime(on ? engineHumParams().gain : 0, context.currentTime)
       })
     },
 
@@ -389,20 +390,10 @@ export function createAudioEngine(): AudioEngine {
     },
 
     setApproach(distance: number): void {
-      synth.withAudio(({ context, out }) => {
+      whine.control(({ osc, gain, context }) => {
         const p = approachWhine(distance)
-        if (whineOsc === null || whineGain === null) {
-          const gain = context.createGain()
-          gain.connect(out)
-          const osc = context.createOscillator()
-          osc.type = 'triangle'
-          osc.connect(gain)
-          osc.start()
-          whineGain = gain
-          whineOsc = osc
-        }
-        whineOsc.frequency.setValueAtTime(p.frequency, context.currentTime)
-        whineGain.gain.setValueAtTime(p.gain, context.currentTime)
+        osc.frequency.setValueAtTime(p.frequency, context.currentTime)
+        gain.gain.setValueAtTime(p.gain, context.currentTime)
       })
     },
   }
