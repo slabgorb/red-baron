@@ -36,7 +36,7 @@ import {
   shouldSpawnBlimp, spawn as spawnBlimp, step as stepBlimp, blimpFires,
   reapBlimp, blimpSegments, blimpTarget, type Blimp,
 } from './core/blimp'
-import { initialLives, loseLife, type Lives } from './core/lives'
+import { initialLives, loseLife, tickGrace, enemiesDisabled, type Lives } from './core/lives'
 import { initialMountains, stepMountain, mountainSegments, type Mountain } from './core/landscape'
 import { sceneProjection, type SceneSegment } from './core/scene'
 import { SIM_TIMESTEP_S } from './core/timing'
@@ -44,6 +44,10 @@ import { INITIAL_GUNS, fire, step as stepGuns, shellSegments, type Guns, type Sh
 import { explode, stepWreck, type Wreck } from './core/explosion'
 import { wreckSegments } from './core/wreck-render'
 import { scoreKill, gmlevlForKills } from './core/scoring'
+import { closesPast, beginPass, evadeCheck, ACE_ATTACK_FRAMES, type ReturningAce } from './core/returning-ace'
+import { initialCountUp, queueScore, tickCountUp } from './core/score-countup'
+import { beginEol, tickEol, eolDone, type EolState } from './core/eol'
+import { groundCollision } from './core/ground-collision'
 import type { GameEvent } from './core/events'
 import { createAudioEngine } from './shell/audio'
 import { playEventSounds, updateContinuousSounds } from './shell/audio-dispatch'
@@ -312,7 +316,12 @@ window.addEventListener('resize', resize)
 
 let flight = INITIAL_FLIGHT
 let kills = 0 // OBJKLD — each kill bumps this; gmlevlForKills(kills) drives the GMLEVL ramp
-let score = 0 // running PLVALU total (a DISTANT lead is worth most — rb4-1/CB-003)
+// rb4-4: THE SCORE IS A COUNT-UP, NOT A REGISTER. A kill QUEUES its points
+// (";QUEUE SCORE", RBARON.MAC:3049) and the SCOREM machine (core/score-countup)
+// drains them +10/+100 per tick — the TK/TP tones ride the ticks, the BONUSL
+// bonus life rides the tick that crosses its rung. The HUD and the wave sizing
+// both read `countUp.displayed`, the ROM's own SCORE register.
+let countUp = initialCountUp()
 let enemies: readonly Enemy[] = [] // the live wave (rb2-7); the schedule spawns the opening wave
 let blimp: Blimp | null = null // the drifting airship (rb2-13) — null when none is on screen (BLMOTN ~25% roll)
 let lives: Lives = initialLives() // the player's planes remaining (rb2-9) — the blimp's fire is the first wired damage
@@ -323,8 +332,124 @@ let grmode = GRMODE_PLANE // GRMODE ground-wave byte — set to INITGR (0C0) on 
 let guns: Guns = INITIAL_GUNS
 let simFrame = 0 // calc-frame counter — drives the blimp's ÷2 fire cadence (blimpFires)
 const blimpRng = createRng((Date.now() ^ 0x5e_ed) >>> 0) // the BLMOTN spawn roll + the blimp's per-shot hit roll
+
+// ─── rb4-4: the dead mechanics, wired ─────────────────────────────────────────
+// The returning ace (rb2-8's module, shelved until now), the two-channel death
+// sequence (core/eol), ground collision (core/ground-collision), and game over.
+// The ace's 50/50 rolls draw from their OWN seeded stream — sharing blimpRng
+// would shift the airship's whole life (TEA's rng-discipline finding).
+let ace: ReturningAce | null = null // the armed pass (ENSIDE + BEFLAG); one per game, like the ROM's globals
+let aceCountdown = ACE_ATTACK_FRAMES // calc frames until the armed ace's next attack (PLSTAT+7 → 0x0C)
+let dying: EolState | null = null // the EOGTMR sequence in progress; freezes the pilot's world
+let gameOver = false // ENDLFE with no lives left (RBARON.MAC:1207-1212)
+const aceRng = createRng((Date.now() ^ 0xace5) >>> 0) // the EOLSEQ JSR RANDOM (:1090)
+
 let lastMs: number | null = null
 let accumulator = 0
+
+/**
+ * rb4-4 — THE PRE-MOTION BLOCK, one call per calc frame, dead, dying or alive.
+ *
+ * Mirrors the ROM's calc-frame preamble: `JSR EOLSEQ` runs unconditionally every
+ * frame (RBARON.MAC:825), SCOREM ticks off the NMI regardless of the pilot's
+ * state (RBGRND.MAC:236), and `BIT GREND / BVS 20$` gates the playfield update
+ * on a GROUND collision BEFORE any motion (:783-785).
+ *
+ * In order:
+ *   1. THE RETURNING ACE — consulted every frame. The fly-by arms the pass when
+ *      the closest plane reaches the P.MNDP floor (P.UPD0, :2727); the armed ace
+ *      attacks on the PLSTAT+7 cadence (:1078-1080), reading the pilot's LIVE
+ *      PLDELX; a 'hit' verdict opens the shells channel (:3758-3759).
+ *   2. SCOREM — the count-up ticks in every state, death included; the BONUSL
+ *      rung it crosses is `INC LIVES` (:1602).
+ *   3. THE EOGTMR SEQUENCE — ticks toward ENDLFE (:1124-1126): DEC LIVES, then
+ *      respawn (I4YPOS re-seeded, rb2-9) or game over (:1207-1212). The GROUND
+ *      channel freezes the whole world (the BVS skips PFMOTN, NWPLNE and PLMOTN,
+ *      :783-789) — the frame is consumed, return true. The SHELLS channel only
+ *      grounds the PILOT (PLDELX/PLDELY zeroed, :1108-1113): the planes fly
+ *      away and the airship drifts on — return false and let the war animate.
+ *   4. GREND BEFORE MOTION — the ground-collision check runs against the
+ *      standing world before the playfield would move; a hit opens the ground
+ *      channel (D6, :4643-4645) and consumes the frame.
+ *
+ * Returns true when the calc frame is fully consumed (the caller `continue`s);
+ * consuming paths advance simFrame and the accumulator exactly as the loop
+ * bottom would. Mutates the cockpit's closure state like every block above.
+ */
+function preMotionFrame(events: GameEvent[]): boolean {
+  const consumeFrame = (): void => {
+    simFrame += 1
+    accumulator -= SIM_TIMESTEP_S
+  }
+
+  // 1 — EOLSEQ: the ace, consulted every calc frame (:825).
+  if (closesPast(nearestDepth(enemies)) && !gameOver && dying === null) {
+    if (ace === null) {
+      let closest = enemies[0]
+      for (const e of enemies) if (e.depth < closest.depth) closest = e
+      ace = beginPass(closest.side)
+      aceCountdown = ACE_ATTACK_FRAMES
+    } else if (!enemiesDisabled(lives)) {
+      aceCountdown -= 1
+      if (aceCountdown <= 0) {
+        aceCountdown = ACE_ATTACK_FRAMES
+        const attack = evadeCheck(ace, flight.turnRate, nextFloat(aceRng))
+        ace = attack.ace
+        if (attack.result === 'hit') {
+          dying = beginEol('shells') // GREND = 0x80, "SHELL CD" (:3758-3759)
+          events.push({ type: 'player-hit' }) // the CRSHSN crash
+        }
+      }
+    }
+  }
+
+  // 2 — SCOREM: the count-up ticks off the NMI in every state (:1533-1602).
+  const ticked = tickCountUp(countUp)
+  countUp = ticked.score
+  for (const e of ticked.events) {
+    if (e.type === 'bonus-life') lives = { count: lives.count + 1, grace: lives.grace } // INC LIVES (:1602)
+    events.push(e)
+  }
+
+  // 3 — the death sequence (EOGTMR → ENDLFE).
+  if (dying !== null) {
+    dying = tickEol(dying)
+    if (eolDone(dying)) {
+      const groundDeath = dying.channel === 'ground'
+      dying = null
+      const taken = loseLife(lives) // ENDLFE: DEC LIVES (:1207)
+      lives = taken.lives
+      if (taken.gameOver) {
+        gameOver = true // nothing left → the high-score seat (:1210-1212); the card draws below
+      } else {
+        flight = INITIAL_FLIGHT // GMINIT/INITIAL — I4YPOS back to 0x0210 (rb2-9)
+      }
+      if (groundDeath) {
+        consumeFrame()
+        return true // the crash's last frozen frame
+      }
+      return false
+    }
+    if (dying.channel === 'ground') {
+      consumeFrame()
+      return true // BVS 20$ — ground death freezes playfield AND planes (:783-789)
+    }
+    return false // shells death: the pilot is grounded, the war animates on
+  }
+  if (gameOver) return false // the yoke still flies the empty war (attract's seat)
+
+  // 4 — GREND before motion (:783-785).
+  if (groundCollision(toEye(flight)[1], mountains)) {
+    dying = beginEol('ground')
+    events.push({ type: 'player-hit' }) // the CRSHSN crash
+    consumeFrame()
+    return true
+  }
+
+  // WO.CNT spawn grace runs down only in live flight (rb2-9).
+  lives = tickGrace(lives)
+  return false
+}
 
 function frame(nowMs: number): void {
   if (lastMs === null) lastMs = nowMs
@@ -349,8 +474,19 @@ function frame(nowMs: number): void {
   // still the isPauseKey/togglePaused edge above.)
   if (paused) accumulator %= SIM_TIMESTEP_S
   while (accumulator >= SIM_TIMESTEP_S) {
-    flight = step(flight, input)
-    guns = fire(guns, fireHeld)
+    // rb4-4: the pre-motion block — EOLSEQ, SCOREM, ENDLFE and the GREND check,
+    // one call per calc frame (see preMotionFrame). It returns true only when
+    // the frame is FULLY consumed (the ground channel's whole-world freeze); a
+    // shells death leaves the war animating and merely grounds the pilot below.
+    if (preMotionFrame(events)) continue
+    // The pilot flies only while no death sequence runs — EOLSEQ zeroes
+    // PLDELX/PLDELY for the duration (RBARON.MAC:1108-1113), so the horizon
+    // holds still while the war (and the airship) animates on. After game over
+    // the yoke still flies the empty war — the ROM parks in attract.
+    if (dying === null) flight = step(flight, input)
+    // EOL clears GUN.ST and the shell sound (:1109-1110): no NEW shells while
+    // dying or after the end — the trigger reads released and the gun cools.
+    guns = fire(guns, fireHeld && dying === null && !gameOver)
     // advance any dying planes (fall → PIECE0-3 burst → done); drop the finished wrecks.
     wrecks = wrecks.map((w) => stepWreck(w)).filter((w) => w.phase !== 'done')
 
@@ -397,8 +533,12 @@ function frame(nowMs: number): void {
     // rejects any write to `blimp` that is not a bare call to a core producer. Both will fail.
     if (blimp !== null) {
       const drifted = stepBlimp(blimp)
-      if (blimpFires(simFrame) && nextFloat(blimpRng) < BLIMP_HIT_CHANCE) {
-        lives = loseLife(lives).lives
+      // rb4-4: a connecting shot opens the SHELLS death channel — the life is
+      // taken by ENDLFE when the EOGTMR runs out, not on the impact frame. The
+      // hit ROLL is always drawn on a fire-frame (the rng stream must not shift
+      // with the pilot's state); only the EFFECT is gated on him being alive.
+      if (blimpFires(simFrame) && nextFloat(blimpRng) < BLIMP_HIT_CHANCE && dying === null && !gameOver) {
+        dying = beginEol('shells')
         events.push({ type: 'player-hit' }) // the CRSHSN crash
       }
       blimp = reapBlimp(drifted, aspect)
@@ -418,7 +558,7 @@ function frame(nowMs: number): void {
       if (blimp !== null && downed.has(blimpTargetIndex)) {
         const downedBlimp = blimp
         const points = scoreKill('blimp', downedBlimp.depth)
-        score += points
+        countUp = queueScore(countUp, points) // ";QUEUE SCORE" (:3049) — SCOREM drains it
         kills += 1
         wrecks.push(explode(blimpTarget(downedBlimp)))
         events.push({ type: 'enemy-destroyed', kind: 'blimp', points })
@@ -430,7 +570,7 @@ function frame(nowMs: number): void {
         for (const idx of downed) {
           const plane = enemies[idx]
           const points = scoreKill(plane.kind, plane.depth)
-          score += points
+          countUp = queueScore(countUp, points) // ";QUEUE SCORE" (:3049) — SCOREM drains it
           kills += 1
           wrecks.push(explode(plane))
           // A kill worth the flat 300 also rings the TH jingle (findings §6A).
@@ -444,7 +584,9 @@ function frame(nowMs: number): void {
     // Once the planes are down and their wrecks finished, the MODECT/MCOUNT schedule brings the
     // next plane wave in after its gap — and, on a wave decision, the blimp rolls in on its
     // ~25% BLMOTN chance (if none is already drifting), a menace even in the quiet between waves.
-    if (enemies.length === 0 && wrecks.length === 0) {
+    // rb4-4: no new waves while the pilot is dying (the ROM gates plane
+    // generation through the EOL flags, :787-788) or after the game is over.
+    if (enemies.length === 0 && wrecks.length === 0 && dying === null && !gameOver) {
       // A wave DECISION fires when the countdown has elapsed (pre-step countdown 0); it
       // advances MODECT, so capture the firing slot's modect BEFORE stepping.
       const decisionModect = waveClock.modect
@@ -459,7 +601,8 @@ function frame(nowMs: number): void {
       // slot's INITGR disables it, so the ground interval is an empty-sky, slow-control wait
       // until the next plane slot (ground-wave CONTENT lands in rb3-3..rb3-6).
       if (sched.spawnPlaneWave && !planeGenDisabled(grmode)) {
-        enemies = spawnWave(createRng((Date.now() + kills) >>> 0), score, gmlevlForKills(kills))
+        // NWPLNE sizes the wave off SCORE — the DISPLAYED register, not the queue.
+        enemies = spawnWave(createRng((Date.now() + kills) >>> 0), countUp.displayed, gmlevlForKills(kills))
         events.push({ type: 'wave-incoming' }) // the WP descending announce
       }
       // The BLMOTN ~25% roll: a blimp drifts in during the lull if the sky has none.
@@ -482,7 +625,23 @@ function frame(nowMs: number): void {
     nearestDepth: nearestDepth(enemies),
   })
 
-  draw(flight, enemies, blimp, mountains, wrecks, guns.shells, guns.overheated, score)
+  // rb4-5 draws from the FLIGHT (the translated-world camera); rb4-4 supplies the
+  // DISPLAYED score — the SCOREM count-up's register, not an instant total.
+  draw(flight, enemies, blimp, mountains, wrecks, guns.shells, guns.overheated, countUp.displayed)
+  // rb4-4: the end-state card. ENDLFE with no lives left parks the ROM at the
+  // high-score check (RBARON.MAC:1210-1212); the clone's minimal seat for that
+  // story is the card itself, over an emptied sky the yoke still flies.
+  if (gameOver && ctx) {
+    ctx.save()
+    ctx.fillStyle = '#33ff66'
+    ctx.shadowColor = '#33ff66'
+    ctx.shadowBlur = 12
+    ctx.font = 'bold 48px monospace'
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.fillText('GAME OVER', canvas.width / 2, canvas.height * 0.4)
+    ctx.restore()
+  }
   // SH2-14: the pause overlay dims the frozen scene and draws the keybind card over
   // it — drawn last (over the whole world) and only while paused. red-baron draws in
   // device pixels (no dpr pre-scale), so it takes canvas.width/height directly.
