@@ -50,6 +50,7 @@ function killAt(depth: number, maxFrames = 200): { killed: boolean; frames: numb
     bank: 0,
     side: 1,
     active: true,
+    facingAway: true, // rb4-13 D4 mirror — orientation-blind hitbox; settled flight state
   }
   let guns: Guns = INITIAL_GUNS
   for (let f = 0; f < maxFrames; f++) {

@@ -88,6 +88,13 @@ export interface Wreck {
   readonly phase: WreckPhase
   /** Calc-frames remaining in the current phase. */
   readonly timer: number
+  /**
+   * The killed enemy's PLSTAT+6 D4 orientation mirror, captured at the kill
+   * (rb4-13): the falling wreck keeps drawing the model the plane died wearing.
+   * Picks the biplane model in wreck-render.ts — depth never does (DRNPIC,
+   * RBARON.MAC:4961).
+   */
+  readonly facingAway: boolean
 }
 
 // ─── UPPLEX: spawn + the calc-frame step ──────────────────────────────────────
@@ -105,6 +112,7 @@ export function explode(enemy: Enemy): Wreck {
     spin: enemy.bank,
     phase: 'falling',
     timer: EXPL1_FRAMES,
+    facingAway: enemy.facingAway, // the wreck keeps the model the plane died wearing
   }
 }
 

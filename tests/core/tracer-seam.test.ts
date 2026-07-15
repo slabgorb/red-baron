@@ -109,7 +109,8 @@ const PROJ = sceneProjection(ASPECT)
 
 /** A target parked dead ahead at `depth` — this is a RANGE test, not an aim test. */
 function targetAt(depth: number): Enemy {
-  return { kind: 'lead', x: 0, y: 0, depth, deltaX: 0, bank: 0, side: 1, active: true }
+  // facingAway (rb4-13 D4 mirror): orientation-blind hitbox; settled flight state.
+  return { kind: 'lead', x: 0, y: 0, depth, deltaX: 0, bank: 0, side: 1, active: true, facingAway: true }
 }
 
 /** Hold the trigger until a shell strikes the target; return the Hit the sim reports. */

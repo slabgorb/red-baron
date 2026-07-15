@@ -72,7 +72,7 @@ import {
   BLIMP_HULL_RADIUS, type Blimp,
 } from '../../src/core/blimp'
 import { collides, shellDepth, type Shell } from '../../src/core/guns'
-import { PLANE_POINTS, LOD_APPARENT_SPAN, LOD_DISTANCE, apparentSpan } from '../../src/core/biplane'
+import { PLANE_POINTS, biplaneLOD } from '../../src/core/biplane'
 import { debrisSpread } from '../../src/core/wreck-render'
 import { EXPL2_FRAMES } from '../../src/core/explosion'
 import { P_INDP, type Enemy } from '../../src/core/enemy'
@@ -354,18 +354,25 @@ describe('the debris burst is the same SIZE on screen wherever the plane dies', 
   })
 })
 
-describe('the LOD switch is an APPARENT SIZE, so the depth axis cannot move it', () => {
-  it('the plane subtends LOD_APPARENT_SPAN of the frame exactly where the model swaps', () => {
-    expect(apparentSpan(LOD_DISTANCE)).toBeCloseTo(LOD_APPARENT_SPAN, 9)
-    // and the switch is real: 42 vertices just inside it, 29 just outside.
-    expect(apparentSpan(LOD_DISTANCE * 0.99)).toBeGreaterThan(LOD_APPARENT_SPAN) // bigger => near
-    expect(apparentSpan(LOD_DISTANCE * 1.01)).toBeLessThan(LOD_APPARENT_SPAN) // smaller => drone
+describe('the model switch is an ORIENTATION, so NEITHER axis can move it (rb4-13)', () => {
+  // TOMBSTONE for the apparent-size LOD. rb4-1 denominated the switch in screen units so
+  // the depth axis could not move it — the best-argued version of a rule THE ROM DOES NOT
+  // HAVE. DRNPIC (RBARON.MAC:4961-4970, `.RADIX 16` set at :74) picks the model on
+  // `LDA PLSTAT+6 / AND I,10` — the D4 orientation bit (:2652 `;D4=0 (PLANE FACING AWAY)`),
+  // never on a size or a distance. So the screen registry's stake in the switch reduces to
+  // this: the apparent-size apparatus must STAY retired, on this axis as on the depth axis.
+  it('the apparent-size threshold is GONE from biplane.ts — the switch is not a screen quantity', () => {
+    const biplane = readFileSync(join(repoRoot, 'src', 'core', 'biplane.ts'), 'utf8')
+    expect(
+      biplane,
+      'rb4-13: the model switch follows PLSTAT+6 D4 (DRNPIC, RBARON.MAC:4961). An apparent-size ' +
+        'threshold is the old depth rule in screen clothing — retire it, do not re-denominate it.',
+    ).not.toContain('LOD_APPARENT_SPAN')
   })
 
-  it('the ruler is the plane\'s OWN wingspan, read off PLANE_POINTS', () => {
-    // If the model changes, the LOD threshold follows it. A hand-typed 80 could not.
-    const span = Math.max(...PLANE_POINTS.map((p) => Math.abs(p[0]))) * 2
-    expect(apparentSpan(1000) * frustumHalfHeight(1000)).toBeCloseTo(span, 9)
+  it('the switch answers to the bit on BOTH sides — the orientation alone swaps the model', () => {
+    expect(biplaneLOD(true).points).toHaveLength(29) // D4=0 — facing away → .DRPNT drone
+    expect(biplaneLOD(false).points).toHaveLength(42) // D4=1 — rotated toward → full plane
   })
 })
 
@@ -375,7 +382,9 @@ describe('the LOD switch is an APPARENT SIZE, so the depth axis cannot move it',
 
 describe('the collision window is an OBJECT-space hitbox — rescaling it would be the mirror bug', () => {
   const targetAt = (depth: number, x = 0): Enemy => ({
-    kind: 'lead', x, y: 0, depth, deltaX: 0, bank: 0, side: 1, active: true,
+    // facingAway (rb4-13, the PLSTAT+6 D4 mirror) is irrelevant to collision — the hitbox
+    // is orientation-blind; a settled (facing-away) plane is the common flight state.
+    kind: 'lead', x, y: 0, depth, deltaX: 0, bank: 0, side: 1, active: true, facingAway: true,
   })
   /** The widest x-offset at which a shell still hits a plane parked at `depth`. */
   function aimTolerance(depth: number): number {
@@ -470,8 +479,9 @@ const REGISTERED: ReadonlyMap<string, string> = new Map([
   ],
   [
     'LOD_APPARENT_SPAN',
-    'biplane.ts — the LOD switch threshold, in apparent size. LOD_DISTANCE is derived from it ' +
-      '(depth-scale.test.ts REGISTRY 6/7 — the Reviewer\'s finding 4).',
+    'biplane.ts — a TOMBSTONE (rb4-13). Was the LOD switch threshold in apparent size; the ROM ' +
+      'picks the model on the PLSTAT+6 D4 orientation bit (DRNPIC, RBARON.MAC:4961), so the ' +
+      'apparatus is retired. Kept so a reintroduced NAME lands back in this sweep instantly.',
   ],
 ])
 
@@ -505,9 +515,10 @@ const NOT_A_SCREEN_CONSTANT: ReadonlyMap<string, string> = new Map([
   ],
   [
     'PLANE_SPAN',
-    "biplane.ts — the plane's wingspan (80), read off PLANE_POINTS. An OBJECT dimension: it is " +
-      'the NUMERATOR that LOD_APPARENT_SPAN divides by the frame. Being wrong about it means the ' +
-      'model is wrong, not the framing.',
+    "biplane.ts — the plane's wingspan (80), read off PLANE_POINTS. An OBJECT dimension: being " +
+      'wrong about it means the model is wrong, not the framing. (Its one consumer — the ' +
+      'apparent-size LOD — is retired by rb4-13; if the constant goes with it, this entry is a ' +
+      'harmless tombstone.)',
   ],
   [
     'BLIMP_HULL_RADIUS',

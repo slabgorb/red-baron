@@ -181,8 +181,9 @@ function draw(
   // `depth`, banked, tilting with the player's attitude. Unlike the world-anchored
   // mountains/horizon, motion objects are already in view-relative coords, so they take
   // ONLY the bank (eye at the origin) — the UNIV4X/I4YPOS world pan must not drift them
-  // off as the pilot turns or climbs. MVP = projection · view · model; the LOD is picked
-  // by depth (biplaneLOD). Downed planes fall away as UPPLEX wrecks (rb2-6).
+  // off as the pilot turns or climbs. MVP = projection · view · model; the model is
+  // picked by the PLSTAT+6 D4 orientation bit (biplaneLOD(enemy.facingAway), rb4-13 —
+  // never by depth). Downed planes fall away as UPPLEX wrecks (rb2-6).
   const view = flightView(attitude, [0, 0, 0])
   const projView: Mat4 = multiply(sceneProjection(aspect), view)
 
@@ -193,7 +194,7 @@ function draw(
   }
   for (const enemy of enemies) {
     const model = multiply(translation(enemy.x, enemy.y, -enemy.depth), rotationZ(enemy.bank))
-    strokeSegments(renderModel(biplaneLOD(enemy.depth), multiply(projView, model)), width, height)
+    strokeSegments(renderModel(biplaneLOD(enemy.facingAway), multiply(projView, model)), width, height)
   }
 
   // the drifting blimp (rb2-13) — the authentic BLIMP_PICTURE yawed BROADSIDE, posed and
