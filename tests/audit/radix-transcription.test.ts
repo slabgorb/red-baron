@@ -20,7 +20,7 @@
 // whole job is to fail if a future sweep "helpfully" re-reads it as hex — so they pin the
 // literal decimal arrays on purpose. They are guards, not derivations, and they say so.
 //
-// The Atari source is copyrighted and never enters this repo, so the source-side
+// The Atari source is a separate public checkout, not part of this repo, so the source-side
 // checks degrade gracefully when it is absent (CI) — exactly as tests/audit/
 // citations.test.ts does. The manifest itself is committed, so the code-side
 // assertions still run everywhere.

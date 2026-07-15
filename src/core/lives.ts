@@ -6,13 +6,13 @@
 // a starfield, and ENDLFE decrements your planes: respawn (briefly untouchable)
 // if any remain, else the game is over.
 //
-// LIVES & RESPAWN (EOLSEQ→ENDLFE, findings §5, R2BRON.MAC:1055-1210): "on death the
+// LIVES & RESPAWN (EOLSEQ→ENDLFE, findings §5, RBARON.MAC:1057-1212): "on death the
 // windshield bullet-hole graphics step in (side = ENSIDE), the horizon scrolls down
 // and the playfield spins with a spiral sound, then a starfield + plane-explosion;
 // ENDLFE does DEC LIVES → INITIAL respawn if any remain, else high-score entry.
 // Initial lives from options INITLF: .BYTE 2,3,4,5."
 //
-// RESPAWN SPAWN-GRACE (GMINIT/INITIAL, findings §5, R2BRON.MAC:1215-1291): "on
+// RESPAWN SPAWN-GRACE (GMINIT/INITIAL, findings §5, RBARON.MAC:1217-1293): "on
 // (re)spawn, PLSTAT+7 = WO.CNT(5) disables enemy planes for 5 frames ... resets eye
 // altitude I4YPOS=0x0210." (Analogous to Battlezone's rez_protect spawn grace.)
 //
@@ -26,16 +26,18 @@
 // INFERRED (finding pins the facts, not the encoding — see the Dev/TEA deviations):
 //   * `count` is planes remaining incl. the one being flown; game over exactly when
 //     the post-DEC count hits 0 ("respawn if any remain").
-//   * the three death sub-stages have NO ROM-pinned durations (unlike WO.CNT=5), so
-//     DEATH_SEQUENCE is an ordered cursor advanced one stage per call — the shell
-//     owns each stage's frame count. No fabricated durations.
+//   * this header once claimed the death sub-stages had "NO ROM-pinned durations" —
+//     REFUTED by rb4-4: the EOGTMR count-up (core/eol.ts) pins them exactly
+//     (RBARON.MAC:505-506, 1061-1066, 1124-1126, 1163 — shells 28 calc frames,
+//     ground 13, starfield from .TIME1=16). DEATH_SEQUENCE stays as the ordered
+//     RENDER-stage cursor; the TIMING machine is eol.ts.
 //
 // PURE and deterministic. No DOM, no time, no randomness — every function returns a
 // fresh value and never mutates its input.
 
 // ─── ROM-exact constants (findings §5) ───────────────────────────────────────
 
-/** INITLF — options-indexed initial lives (R2BRON.MAC, `.BYTE 2,3,4,5`). */
+/** INITLF — options-indexed initial lives (RBARON.MAC, `.BYTE 2,3,4,5`). */
 export const INITLF: readonly number[] = Object.freeze([2, 3, 4, 5])
 
 /** WO.CNT — respawn spawn-grace: enemy planes disabled for 5 frames on (re)spawn (PLSTAT+7). */

@@ -1,42 +1,34 @@
 // tests/core/horizon.test.ts
 //
-// Story rb1-3 — RED phase (Furiosa / TEA). THE tilting horizon — the signature
-// piece. Battlezone (Red Baron's Math Box/AVG hardware twin) had only yaw, so
-// its horizon never banked; Red Baron's does. "The horizon tilt falls out of
-// rotationZ in the view matrix" (design brief §3); "banking tilts the entire
-// horizon/scene" (findings §2, PFROTN roll).
+// Story rb1-3, REWRITTEN for rb4-5 — the horizon was the WRONG SHAPE too.
 //
-// CONTRACT for GREEN (DEV): create `src/core/horizon.ts` exporting:
+// rb1-3 seated the horizon "at infinity" (HORIZON_DISTANCE=10000, EYE_AT_ORIGIN) so it
+// depended ONLY on attitude and NEVER on altitude, and it slid vertically via a
+// rotationX(pitch). Red Baron's ROM horizon is NOT at infinity: it sits at the FINITE
+// depth HORZ=$1000=4096 (RBARON.MAC:451) and MOVES WITH ALTITUDE — climbing (raising
+// I4YPOS) drops it, diving raises it. The only ROTATION is the bank (PFROTN, rotationZ).
+// There is no pitch rotation; the vertical slide falls out of the eye-height translation.
+//
+// CONTRACT for GREEN (Yoda / DEV): `src/core/horizon.ts` exports
 //
 //   export function horizonSegments(
-//     attitude: Attitude,       // from ./camera — { roll, pitch, yaw } radians
+//     view: { readonly roll: number; readonly altitude: number },  // bank + I4YPOS eye height
 //     aspect: number,
-//   ): readonly SceneSegment[]  // NDC segments (./scene), stroked by the shell
+//   ): readonly SceneSegment[]                                      // NDC segments (./scene)
 //
-// The horizon sits at infinity, so it depends ONLY on ATTITUDE (not eye
-// position/altitude — altitude moves terrain, never the horizon-at-infinity).
-// It runs across the full view width. Behaviourally:
-//   * LEVEL          → a flat line at the vertical centre (tilt ≈ 0, midY ≈ 0)
-//   * ROLL θ (bank)  → tilts by the bank angle |θ|; +θ and −θ tilt oppositely
-//   * PITCH φ        → slides vertically (climb vs dive move it opposite ways)
-//   * YAW ψ (turn)   → INVARIANT (a level turn never lifts/drops/tilts the line)
+// Behaviourally:
+//   * a FLAT line across the full view width (level ⇒ tilt ≈ 0)
+//   * ROLL θ (bank)   → tilts by |θ|; +θ and −θ tilt oppositely
+//   * ALTITUDE (climb)→ slides the line vertically; climb vs dive move it opposite ways
+//     (it is NOT altitude-invariant — that is the rb4-5 fix)
 //
-// These pin the four observable degrees of freedom BEHAVIOURALLY. The ABSOLUTE
-// bank DIRECTION (does banking right drop the right wing or the left?) is left to
-// visual/live-playtest calibration — the epic closes on a playtest gate — so this
-// suite asserts tilt MAGNITUDE + sign anti-symmetry, not a hard-coded direction.
+// The horizon is pinned BEHAVIOURALLY. The absolute bank DIRECTION and the exact
+// altitude→screen scale are Dev's (a playtest gate closes the epic) — so this suite
+// asserts tilt sign anti-symmetry and altitude-dependence, not hard-coded pixels.
 //
-// SCOPE: the horizon LINE (+ later mountains) — foundation. The HORIZN=$40 screen
-// offset and authentic SCAPE mountain silhouettes (findings §4/§7) are rb2 ground
-// wave; not pinned here.
+// Loaded defensively (await import) so the RED failures are per-assertion.
 
 import { describe, it, expect, beforeAll } from 'vitest'
-
-interface Attitude {
-  readonly roll: number
-  readonly pitch: number
-  readonly yaw: number
-}
 
 interface SceneSegment {
   readonly x1: number
@@ -45,42 +37,44 @@ interface SceneSegment {
   readonly y2: number
 }
 
+/** The rb4-5 horizon view: the bank (roll) and the eye height (altitude / I4YPOS).
+ *  pitch/yaw are carried as 0 only so the CURRENT (pre-rewrite) horizon — which still
+ *  reads roll/pitch/yaw — yields a finite horizon during RED; the rewrite reads
+ *  roll + altitude. */
+interface HorizonView {
+  readonly roll: number
+  readonly altitude: number
+  readonly pitch?: number
+  readonly yaw?: number
+}
+
 interface HorizonModule {
-  horizonSegments?: (attitude: Attitude, aspect: number) => readonly SceneSegment[]
+  horizonSegments?: (view: HorizonView, aspect: number) => readonly SceneSegment[]
 }
 
 let horizon: HorizonModule = {}
 
 beforeAll(async () => {
   try {
-    horizon = (await import('../../src/core/horizon')) as HorizonModule
+    horizon = (await import('../../src/core/horizon')) as unknown as HorizonModule
   } catch {
     horizon = {}
   }
 })
 
 function need<T>(value: T | undefined, name: string): T {
-  if (value === undefined) {
-    throw new Error(`src/core/horizon.ts must export ${name} (rb1-3 RED contract)`)
-  }
+  if (value === undefined) throw new Error(`src/core/horizon.ts must export ${name} (rb4-5 RED contract)`)
   return value
 }
 
 const ASPECT = 16 / 9
-const LEVEL: Attitude = { roll: 0, pitch: 0, yaw: 0 }
+const LEVEL_ALT = 528 // I4YPOS spawn altitude (findings §5)
+const view = (roll: number, altitude: number): HorizonView => ({ roll, altitude, pitch: 0, yaw: 0 })
 
-/** Reduce the horizon's NDC segments to a single line: its ON-SCREEN tilt +
- *  centre height, taken between the left-most and right-most endpoints.
- *
- *  NDC is ANISOTROPIC — x ∈ [-1,1] maps to the full pixel WIDTH, y ∈ [-1,1] to the
- *  full HEIGHT — so a horizon rolled by θ (which tilts by exactly θ on the square-
- *  pixel screen) reads as atan(aspect·tanθ) in raw NDC. To recover the physical
- *  on-screen tilt we scale the x-delta by aspect (dev correction — see the Dev
- *  design-deviation note in the session file). */
-function line(
-  segs: readonly SceneSegment[],
-  aspect: number,
-): { tilt: number; midY: number; leftX: number; rightX: number } {
+/** Reduce the horizon's NDC segments to a single line: its ON-SCREEN tilt + centre
+ *  height, taken between the left-most and right-most endpoints. NDC x is aspect-
+ *  scaled to recover the physical on-screen tilt. */
+function line(segs: readonly SceneSegment[], aspect: number): { tilt: number; midY: number; leftX: number; rightX: number } {
   expect(segs.length).toBeGreaterThan(0)
   const pts = segs.flatMap((s) => [
     { x: s.x1, y: s.y1 },
@@ -100,63 +94,58 @@ function line(
   }
 }
 
-describe('horizon — level flight', () => {
+const segsAt = (roll: number, altitude: number): readonly SceneSegment[] =>
+  need(horizon.horizonSegments, 'horizonSegments')(view(roll, altitude), ASPECT)
+
+describe('horizon — level flight draws a flat line across the view', () => {
   it('draws at least one NDC segment', () => {
-    const segs = need(horizon.horizonSegments, 'horizonSegments')(LEVEL, ASPECT)
-    expect(segs.length).toBeGreaterThan(0)
+    expect(segsAt(0, LEVEL_ALT).length).toBeGreaterThan(0)
   })
 
-  it('is a FLAT line across the full view width, at the vertical centre', () => {
-    const l = line(need(horizon.horizonSegments, 'horizonSegments')(LEVEL, ASPECT), ASPECT)
+  it('is a FLAT line across the full view width (level ⇒ no tilt)', () => {
+    const l = line(segsAt(0, LEVEL_ALT), ASPECT)
     expect(l.tilt).toBeCloseTo(0, 2) // horizontal
-    expect(l.midY).toBeCloseTo(0, 2) // vertical centre
     expect(l.leftX).toBeLessThan(-0.5) // spans left…
     expect(l.rightX).toBeGreaterThan(0.5) // …to right — a real horizon, not a stub
   })
 })
 
-describe('horizon — roll banks the line (the tilting horizon)', () => {
-  it('rolling tilts the horizon by the bank angle (|tilt| ≈ |roll|)', () => {
-    const horizonSegments = need(horizon.horizonSegments, 'horizonSegments')
-    for (const roll of [0.2, 0.4]) {
-      const l = line(horizonSegments({ roll, pitch: 0, yaw: 0 }, ASPECT), ASPECT)
-      expect(Math.abs(l.tilt)).toBeCloseTo(roll, 1) // within ~0.05 rad
-    }
+describe('horizon — roll banks the line (the tilting horizon, the ONE rotation)', () => {
+  it('rolling tilts the horizon, more roll ⇒ more tilt', () => {
+    const small = Math.abs(line(segsAt(0.2, LEVEL_ALT), ASPECT).tilt)
+    const large = Math.abs(line(segsAt(0.4, LEVEL_ALT), ASPECT).tilt)
+    expect(small).toBeGreaterThan(0.05) // a real tilt…
+    expect(large).toBeGreaterThan(small) // …that grows with the bank
   })
 
   it('opposite banks tilt the horizon opposite ways (sign anti-symmetry)', () => {
-    const horizonSegments = need(horizon.horizonSegments, 'horizonSegments')
-    const rightBank = line(horizonSegments({ roll: 0.3, pitch: 0, yaw: 0 }, ASPECT), ASPECT).tilt
-    const leftBank = line(horizonSegments({ roll: -0.3, pitch: 0, yaw: 0 }, ASPECT), ASPECT).tilt
+    const rightBank = line(segsAt(0.3, LEVEL_ALT), ASPECT).tilt
+    const leftBank = line(segsAt(-0.3, LEVEL_ALT), ASPECT).tilt
     expect(Math.sign(rightBank)).toBe(-Math.sign(leftBank))
     expect(Math.abs(rightBank)).toBeGreaterThan(0.1) // a real tilt, not noise
   })
 })
 
-describe('horizon — pitch slides it vertically, yaw leaves it alone', () => {
-  it('climb and dive move the horizon in opposite vertical directions, level between', () => {
-    const horizonSegments = need(horizon.horizonSegments, 'horizonSegments')
-    const up = line(horizonSegments({ roll: 0, pitch: 0.3, yaw: 0 }, ASPECT), ASPECT).midY
-    const down = line(horizonSegments({ roll: 0, pitch: -0.3, yaw: 0 }, ASPECT), ASPECT).midY
-    const level = line(horizonSegments(LEVEL, ASPECT), ASPECT).midY
-    expect(Math.sign(up - level)).toBe(-Math.sign(down - level)) // opposite sides of level
-    expect(Math.abs(up - down)).toBeGreaterThan(0.05) // pitch actually moves it
+describe('horizon — MOVES WITH ALTITUDE (finite HORZ, not at infinity) — the rb4-5 fix', () => {
+  it('climbing and diving move the horizon vertically (it is NOT altitude-invariant)', () => {
+    const low = line(segsAt(0, 100), ASPECT).midY
+    const high = line(segsAt(0, 1400), ASPECT).midY
+    // The rb1 horizon-at-infinity left this dead still; a finite-HORZ horizon slides.
+    expect(Math.abs(high - low)).toBeGreaterThan(1e-3)
   })
 
-  it('a level TURN (yaw only) does NOT lift, drop, or tilt the horizon (yaw-invariant)', () => {
-    const horizonSegments = need(horizon.horizonSegments, 'horizonSegments')
-    const turned = line(horizonSegments({ roll: 0, pitch: 0, yaw: 0.6 }, ASPECT), ASPECT)
-    expect(turned.tilt).toBeCloseTo(0, 2)
-    expect(turned.midY).toBeCloseTo(0, 2)
+  it('climb and dive move the horizon OPPOSITE ways from level', () => {
+    const level = line(segsAt(0, LEVEL_ALT), ASPECT).midY
+    const climb = line(segsAt(0, 1400), ASPECT).midY
+    const dive = line(segsAt(0, 100), ASPECT).midY
+    expect(Math.sign(climb - level)).toBe(-Math.sign(dive - level))
   })
 })
 
 describe('horizon — purity', () => {
-  it('is deterministic — the same attitude yields a bit-identical segment list', () => {
-    const horizonSegments = need(horizon.horizonSegments, 'horizonSegments')
-    const att: Attitude = { roll: 0.15, pitch: -0.1, yaw: 0.25 }
-    const a = horizonSegments(att, ASPECT)
-    const b = horizonSegments(att, ASPECT)
+  it('is deterministic — the same (roll, altitude) yields a bit-identical segment list', () => {
+    const a = segsAt(0.15, 400)
+    const b = segsAt(0.15, 400)
     expect(a.length).toBe(b.length)
     for (let i = 0; i < a.length; i++) {
       expect(a[i].x1).toBe(b[i].x1)

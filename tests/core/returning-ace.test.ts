@@ -91,6 +91,7 @@ interface ReturningAce {
 interface ReturningAceModule {
   P_MNDP?: number
   HARD_TURN?: number
+  ACE_ATTACK_FRAMES?: number
   PLPOSZ?: readonly number[]
   closesPast?: (depth: number) => boolean
   closeSpeed?: (level: number) => number
@@ -153,6 +154,13 @@ describe('returning-ace — ROM thresholds (findings §3 P.UPD0, §5 EOLSEQ)', (
   it('HARD_TURN — the |PLDELX| needed to shake him — is 0x1C = 28 (EOLSEQ, findings §5)', () => {
     expect(need(m.HARD_TURN, 'HARD_TURN')).toBe(0x1c)
     expect(need(m.HARD_TURN, 'HARD_TURN')).toBe(28)
+  })
+
+  // rb4-4 (review round 1): the new attack-cadence constant gets the same pinned-value
+  // treatment as its hex siblings above — `LDA PLSTAT+7 / CMP I,0C` (RBARON.MAC:1078-1080).
+  it('ACE_ATTACK_FRAMES — the PLSTAT+7 attack frame — is 0x0C = 12 (RBARON.MAC:1078-1080)', () => {
+    expect(need(m.ACE_ATTACK_FRAMES, 'ACE_ATTACK_FRAMES')).toBe(0x0c)
+    expect(need(m.ACE_ATTACK_FRAMES, 'ACE_ATTACK_FRAMES')).toBe(12)
   })
 })
 

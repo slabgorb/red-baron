@@ -498,6 +498,13 @@ const NOT_A_DEPTH: ReadonlyMap<string, string> = new Map([
       "switch's threshold in APPARENT SIZE (a fraction of the frame's half-height). It is what " +
       'LOD_DISTANCE (a real depth, registry 6/7) is DERIVED FROM. Screen axis — screen-scale.ts.',
   ],
+  [
+    'POT_RANGE',
+    'flight.ts — the pot yoke\'s full-deflection TURN-RATE range (PLDELX units the POT.X step ' +
+      'eases toward), added by rb4-5 replacing the invented MAX_TURN cap. Trips the sweep on ' +
+      '`RANGE`, but it is an angular RATE on the control axis, not a distance down Z — no relation ' +
+      'to P_INDP. (RBARON.MAC:5897-5926 POT.X; rb4-5 AC4.)',
+  ],
 ])
 
 /**

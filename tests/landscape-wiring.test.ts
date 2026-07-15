@@ -63,8 +63,10 @@ describe('rb3-3 wiring — landscape.ts REUSES the rb1 substrate (no new rendere
     expect(landscapeText.length).toBeGreaterThan(0)
   })
 
-  it('projects through scene.projectSegment (imports it from ./scene)', () => {
-    expect(/projectSegment/.test(landscapeText)).toBe(true)
+  it('projects through the scene substrate (projectWorldSegment, imported from ./scene)', () => {
+    // rb4-5: mountains are PLAYFIELD objects, so they take the ROM's POSITH HORIZN lift —
+    // projectWorldSegment (scene.ts), still the shared rb1 substrate, not a new renderer.
+    expect(/project(World)?Segment/.test(landscapeText)).toBe(true)
     expect(/from\s+['"]\.\/scene['"]/.test(landscapeText)).toBe(true)
   })
 

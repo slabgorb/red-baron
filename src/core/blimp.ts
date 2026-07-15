@@ -5,7 +5,7 @@
 // the screen (it does NOT weave/reverse like enemy.ts's window-follower), fires at
 // the player, and is worth a flat 200 pts when gunned down — drawn with the
 // authentic BLIMP/DBLIMP picture-ROM geometry (topology.ts, rb2-2). Grounded in
-// findings §3 (BLMOTN, R2BRON.MAC:4165+: "~25 % random spawn, drifts across, also
+// findings §3 (BLMOTN, RBARON.MAC:4170+: "~25 % random spawn, drifts across, also
 // fires at the player, worth 200 pts. There is no separate barrage balloon — the
 // airship is the blimp. [ROM-verified]") and §4 (blimp = 200 pts, flat).
 //

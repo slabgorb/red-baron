@@ -32,12 +32,12 @@
 //
 // EXTEND `src/core/flight.ts` with the forced-slow control band (reuse ProximityBand — §2):
 //
-//   // DISCHK is forced to the SLOW band in ground mode — the sluggish 'far' feel (×0.375),
-//   // regardless of the nearest object's distance (findings §2, "ground mode is forced to
-//   // the slow band"). enemy.ts already calls 'far' "the slow 'far' band".
-//   export const GROUND_CONTROL_BAND: ProximityBand            // 'far'
+//   // DISCHK is forced to the MIDDLE band in ground mode — the fixed 'mid' feel (×0.625),
+//   // regardless of the nearest object's distance (findings §2 + rb4-5 AC3: PFMOTN
+//   // `LDA I,40` = TEMP3 0x40 = D6 = MIDDLE, RBARON.MAC:3186-3188).
+//   export const GROUND_CONTROL_BAND: ProximityBand            // 'mid'
 //   export function controlBand(groundMode: boolean, liveBand: ProximityBand): ProximityBand
-//     //   groundMode → GROUND_CONTROL_BAND ('far'); else the live nearest-object band, unchanged.
+//     //   groundMode → GROUND_CONTROL_BAND ('mid'); else the live nearest-object band, unchanged.
 //
 // └─────────────────────────────────────────────────────────────────────────────┘
 //
@@ -50,9 +50,9 @@
 //     plane-disable), so the main loop skips new-plane generation and slows control." The
 //     equate is .RADIX 16 — the recurring red-baron footgun: 0C0 is 0xC0 = 0x80 | 0x40,
 //     NOT decimal 12. (rb3-1/rb3-8 proved the RBARON.MAC block is hex.)
-//   * DISCHK forced-slow (§2, R2BRON.MAC:3463-3491): "player deltas scale by proximity of
-//     the nearest object (close ×1.0 / mid ×0.625 / far ×0.375); ground mode is forced to
-//     the slow band." The slow band is 'far' (the minimum scale) — this reuses the flight.ts
+//   * DISCHK forced-middle (§2 + rb4-5 AC3, RBARON.MAC:3468-3496): "player deltas scale by
+//     proximity of the nearest object (close ×0.375 / mid ×0.625 / far ×1.0); ground mode is
+//     forced to the MIDDLE band." The forced band is 'mid' (0x40=D6=×0.625) — this reuses the flight.ts
 //     DISCHK plumbing, it does not invent a new control path.
 //   * .LEVLS=5 (§4/§3): "the difficulty *ceiling* reached via kills, not discrete stages."
 //     A guardrail: rb3-2 must NOT reinterpret .LEVLS as a count of ground stages.
@@ -252,23 +252,30 @@ describe('rb3-2 grmodeForWave — the INITGR/STPLNE branch (findings §4)', () =
 })
 
 // ───────────────────────────────────────────────────────────────────────────
-// AC-4 — DISCHK forced to the SLOW band in ground mode (findings §2)
+// AC-4 — DISCHK forced to the MIDDLE band in ground mode (findings §2)
+//
+// rb4-5 AC3 correction: the ROM forces ground mode to the MIDDLE band, not the
+// slowest. PFMOTN `BIT GRMODE / BPL / LDA I,40` (RBARON.MAC:3186-3188) loads
+// TEMP3 = 0x40 = D6 = MIDDLE = ×0.625 — a FIXED middle feel, independent of the
+// nearest object. ('far' is now the FASTEST band, ×1.0, so forcing 'far' would be
+// backwards; 'near' is the slowest, ×0.375.)
 // ───────────────────────────────────────────────────────────────────────────
-describe('rb3-2 forced-slow control band — ground mode pins DISCHK slow (findings §2)', () => {
-  it("the ground control band is 'far' — the slowest DISCHK band (minimum scale)", () => {
+describe('rb3-2 forced control band — ground mode pins DISCHK to MIDDLE (findings §2)', () => {
+  it("the ground control band is 'mid' — the MIDDLE DISCHK band (0x40 = D6 = ×0.625)", () => {
     const band = need(f.GROUND_CONTROL_BAND, 'GROUND_CONTROL_BAND')
-    expect(band).toBe('far')
+    expect(band).toBe('mid')
     const dischk = need(f.DISCHK, 'DISCHK')
-    // 'far' must genuinely be the SLOW band: its scale is the minimum of the three.
-    expect(dischk[band]).toBe(Math.min(dischk.near, dischk.mid, dischk.far))
-    expect(dischk[band]).toBeLessThan(dischk.near)
+    expect(dischk[band]).toBe(0.625)
+    // 'mid' is the MIDDLE scale: strictly between the near (slow) and far (fast) bands.
+    expect(dischk[band]).toBeGreaterThan(dischk.near)
+    expect(dischk[band]).toBeLessThan(dischk.far)
   })
 
-  it('ground mode forces the slow band REGARDLESS of the live nearest-object band', () => {
+  it('ground mode forces the MIDDLE band REGARDLESS of the live nearest-object band', () => {
     const controlBand = need(f.controlBand, 'controlBand')
     const ground = need(f.GROUND_CONTROL_BAND, 'GROUND_CONTROL_BAND')
     for (const live of ALL_BANDS) {
-      // even a 'near' object (which would normally sharpen control) is overridden to slow.
+      // even a close object (which would slow control to ×0.375) is overridden to the fixed middle.
       expect(controlBand(true, live)).toBe(ground)
     }
   })
@@ -282,30 +289,31 @@ describe('rb3-2 forced-slow control band — ground mode pins DISCHK slow (findi
 })
 
 // ───────────────────────────────────────────────────────────────────────────
-// AC-5 — forced-slow REUSES the flight.ts DISCHK plumbing (integration, keep-dev-honest)
+// AC-5 — forced-middle REUSES the flight.ts DISCHK plumbing (integration, keep-dev-honest)
 // ───────────────────────────────────────────────────────────────────────────
-describe('rb3-2 forced-slow is wired to REAL DISCHK, not a fake path (findings §2)', () => {
+describe('rb3-2 forced-middle is wired to REAL DISCHK, not a fake path (findings §2)', () => {
   const LEVEL_TURN = (proximity: ProximityBand): FlightInput => ({ turn: 1, pitch: 0, proximity })
 
-  it('feeding controlBand(true, …) into flight.step yields the SAME sluggish result as proximity:far', () => {
+  it('feeding controlBand(true, …) into flight.step yields the SAME result as proximity:mid', () => {
     const step = need(f.step, 'step')
     const init = need(f.INITIAL_FLIGHT, 'INITIAL_FLIGHT')
     const controlBand = need(f.controlBand, 'controlBand')
-    // A near object would normally sharpen the turn; ground mode must override it to 'far'.
+    // A close object would normally slow the turn to ×0.375; ground mode overrides it to the middle band.
     const grounded = step(init, LEVEL_TURN(controlBand(true, 'near')))
-    const far = step(init, LEVEL_TURN('far'))
-    expect(grounded.heading).toBe(far.heading) // identical — forced-slow IS the far/slow band
+    const mid = step(init, LEVEL_TURN('mid'))
+    expect(grounded.heading).toBe(mid.heading) // identical — forced-middle IS the mid band
   })
 
-  it('ground control is measurably SLOWER than a near object would give (control genuinely slows)', () => {
+  it('ground control OVERRIDES the live band — it ignores a close object and pins the middle feel', () => {
     const step = need(f.step, 'step')
     const init = need(f.INITIAL_FLIGHT, 'INITIAL_FLIGHT')
     const controlBand = need(f.controlBand, 'controlBand')
     const grounded = step(init, LEVEL_TURN(controlBand(true, 'near')))
     const near = step(init, LEVEL_TURN('near'))
-    // same yoke, same frame — the only difference is the forced-slow band → a smaller turn pan.
-    expect(Math.abs(grounded.heading)).toBeLessThan(Math.abs(near.heading))
+    // same yoke, same frame — ground ignores the close object, so its pan (×0.625) differs
+    // from the sluggish ×0.375 a 'near' object would impose (mid pans FARTHER than near).
     expect(grounded.heading).not.toBe(near.heading)
+    expect(Math.abs(grounded.heading)).toBeGreaterThan(Math.abs(near.heading))
   })
 })
 
