@@ -13,6 +13,13 @@
 // stays away-facing at the shallow floor — so `facingAway = deep` dies there. This
 // file only has to stop the syntactic relocation.)
 //
+// REWORK (rb4-13 review, HIGH): the guards below match COMMENT-STRIPPED text. The
+// first cut matched raw file text, and a doc comment in main.ts happened to contain
+// the literal `biplaneLOD(enemy.facingAway)` — so an aliased depth-threshold call
+// passed the guard on the strength of PROSE (mutation-proven by the review's
+// test-analyzer). A guard that a comment can satisfy is scenery; strip the comments
+// and make the CODE answer.
+//
 // vitest runs under environment:'node' (no DOM) — main.ts is read as TEXT and the
 // wiring asserted structurally, the multiplane-wiring.test.ts house pattern.
 
@@ -30,8 +37,17 @@ const read = (rel: string): string => {
     return ''
   }
 }
-const mainText = read('src/main.ts')
-const wreckText = read('src/core/wreck-render.ts')
+
+/**
+ * Drop `/*…*​/` spans and `//…` line tails so ONLY CODE can satisfy (or trip) a
+ * guard. Good enough for this repo's sources: no template literals or string
+ * constants here legitimately contain `//` followed by the guarded tokens.
+ */
+const stripComments = (s: string): string =>
+  s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')
+
+const mainText = stripComments(read('src/main.ts'))
+const wreckText = stripComments(read('src/core/wreck-render.ts'))
 
 describe('rb4-13 wiring — the model choice is fed the D4 bit, never a depth', () => {
   it('main.ts and wreck-render.ts exist and are non-empty', () => {
@@ -39,11 +55,20 @@ describe('rb4-13 wiring — the model choice is fed the D4 bit, never a depth', 
     expect(wreckText.length).toBeGreaterThan(0)
   })
 
-  it('main.ts picks the enemy model by the orientation bit', () => {
+  it('main.ts picks the enemy model by the orientation bit — in CODE, not in a comment', () => {
     expect(
       /biplaneLOD\(\s*enemy\.facingAway\s*\)/.test(mainText),
       'the cockpit must draw each enemy through biplaneLOD(enemy.facingAway) — the PLSTAT+6 ' +
-        'D4 mirror the sim maintains — exactly as DRNPIC reads PLSTAT+6.',
+        'D4 mirror the sim maintains — exactly as DRNPIC reads PLSTAT+6. (Comments are ' +
+        'stripped before this match: prose cannot satisfy the guard.)',
+    ).toBe(true)
+  })
+
+  it('wreck-render.ts picks the falling-wreck model by the bit it died wearing — in CODE', () => {
+    expect(
+      /biplaneLOD\(\s*wreck\.facingAway\s*\)/.test(wreckText),
+      'the falling wreck must draw through biplaneLOD(wreck.facingAway) — the bit explode() ' +
+        'captured at the kill. (Comment-stripped; the symmetric guard to main.ts\'s.)',
     ).toBe(true)
   })
 

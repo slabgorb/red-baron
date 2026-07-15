@@ -667,9 +667,11 @@ describe('enemy — the PLSTAT+6 D4 orientation bit (rb4-13: the model answers t
   it('the model follows the BIT at ANY depth — same depth two models, swept depth one model (AC-3)', () => {
     // The rb4-1 trap, closed at the seam: stage the SAME depth with both orientations
     // (models must differ), then sweep the depth across the whole band with each
-    // orientation held (model must not change). A depth-derived bit ALSO dies here:
-    // deep-means-away says the 4224 spawn is away (it spawns toward, above) and the
-    // settled plane at the 320 floor is toward (it stays away, above).
+    // orientation held (model must not change). HONEST SCOPE (rb4-13 review): the bits
+    // here are HAND-SET via withEnemy — this test pins the seam MAPPING (bit → drawn
+    // model), not the bit's derivation; a depth-derived bit inside enemy.ts is killed
+    // by the two lifecycle tests above (spawn=false at the DEEPEST depth is what buries
+    // deep-means-away), and a depth rule inside biplaneLOD by biplane.test.ts's matrix.
     const proj = sceneProjection(1)
     const segsFor = (e: Enemy): number => {
       const model: Mat4 = multiply(translation(e.x, e.y, -e.depth), rotationZ(e.bank))

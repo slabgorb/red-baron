@@ -187,6 +187,15 @@ describe('explosion — explode() spawns the wreck (UPPLEX)', () => {
     expect(w.phase).not.toBe('done')
     expect(w.timer).toBeGreaterThan(0)
   })
+
+  it('captures the killed plane\'s D4 bit — the wreck keeps the model it died wearing (rb4-13)', () => {
+    // REWORK (review finding, MEDIUM): the capture was claimed in three comments and
+    // tested nowhere — hardcoding `facingAway: true` in explode() survived the whole
+    // suite. Both bit values must ride through, so neither hardcode can.
+    const explode = need(m.explode, 'explode')
+    expect(explode({ ...enemyAt(0, 0, 400), facingAway: false }).facingAway).toBe(false)
+    expect(explode({ ...enemyAt(0, 0, 400), facingAway: true }).facingAway).toBe(true)
+  })
 })
 
 // ───────────────────────────────────────────────────────────────────────────

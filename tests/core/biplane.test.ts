@@ -41,6 +41,9 @@
 // It reads only committed source — never the gitignored `reference/` quarry.
 
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { dirname, join } from 'node:path'
 import {
   PLANE_POINTS,
   DRONE_POINTS,
@@ -93,6 +96,21 @@ describe('biplane — plane vertices (.PLPNT / .DRPNT transcription)', () => {
   it('transcribes the one ROM-decoded vertex verbatim: #12 = (-40, 20, -40) TOP WING', () => {
     // RBARON.MAC:6225 — POINTP -40,20,-40 ;12 TOP WING (findings §7/§8 worked example).
     expect(PLANE_POINTS[12]).toEqual([-40, 20, -40])
+  })
+
+  it('the header cites the .PLPNT/.DRPNT equates at their CITABLE-COPY lines (rb4-13 review)', () => {
+    // A ROM citation is literal text, so for once the token IS the claim. The citable
+    // quarry (~/Projects/red-baron-source-text — the LF byte-of-record) holds
+    // `.PLPNT =.-DB.PLN` / `.DRPNT =P.BACK-DB.PLN` at RBARON.MAC:6267-6268. The old
+    // `:6258` was measured against the CRLF sibling (+8 staircase band past :5963) —
+    // the same copy-confusion that produced 24 false violations in this story's review.
+    // Untouched legacy DATA-half cites are rb4-12's; this pins only the line rb4-13 edited.
+    const biplaneSource = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'src', 'core', 'biplane.ts'),
+      'utf8',
+    )
+    expect(biplaneSource, 'the CRLF-band :6258 citation must not survive').not.toContain('RBARON.MAC:6258')
+    expect(biplaneSource, 'the equates live at :6267-6268 in the citable copy').toContain('RBARON.MAC:6267')
   })
 
   it('every vertex is an integer triple within the POINTP signed-byte encoding range', () => {
