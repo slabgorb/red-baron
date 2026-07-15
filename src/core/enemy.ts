@@ -79,8 +79,8 @@ export const LONE_PLANE_CHANCE = 0.25
 /**
  * Cap on |ΔX| so the weave crosses the window smoothly instead of teleporting
  * wall-to-wall. The ROM accelerates ΔX toward the limit but the per-frame
- * integration/cap is not pinned by the source, so this is a tunable (like
- * biplane.ts's LOD_DISTANCE), chosen within TEA's weave invariants.
+ * integration/cap is not pinned by the source, so this is a tunable, chosen
+ * within TEA's weave invariants.
  */
 const WEAVE_SPEED_CAP = 100
 
@@ -135,6 +135,14 @@ export interface Enemy {
   readonly side: -1 | 1
   /** D7 "active" status. */
   readonly active: boolean
+  /**
+   * The PLSTAT+6 D4 orientation mirror (rb4-13): `true` ⇔ D4=0 "PLANE FACING
+   * AWAY" (RBARON.MAC:2652); `false` ⇔ D4=1, still rotated toward the viewer.
+   * THIS bit — never depth — picks the biplane model (DRNPIC, RBARON.MAC:4961).
+   * Cleared (set true) once the entry rotation completes, exactly as the ROM's
+   * :2620-2652 ramp does; re-rotation belongs to the ace pass, not the weave.
+   */
+  readonly facingAway: boolean
 }
 
 // ─── pure helpers ─────────────────────────────────────────────────────────────
@@ -168,6 +176,7 @@ export function spawn(rng: Rng, level = 0): Enemy {
     bank: side * SPAWN_BANK,
     side,
     active: true,
+    facingAway: false, // D4=1 at entry — the plane arrives rotated-in, mid entry turn
   }
 }
 
@@ -191,6 +200,12 @@ export function step(enemy: Enemy, level = 0): Enemy {
     x: clamp(enemy.x + deltaX, -olim, olim),
     deltaX,
     bank: biplaneBank(deltaX),
+    // D4 clears once the entry rotation completes (RBARON.MAC:2645-2652 ramps the entry
+    // Y-rotation to zero, then `AND I,0EF` — ";D4=0 (PLANE FACING AWAY)"). Our entry
+    // flourish settles into the weave on the first calc-frame (the ±90° spawn bank is
+    // replaced by the weave bank above), so the bit clears here and never re-sets in
+    // the weave — re-rotation toward the viewer is the ace pass's business.
+    facingAway: true,
     // The ROM's own approach rate: PLNZD indexes PLPOSZ by GMLEVL and stores it as
     // "PLANE MOTION DEPTH DELTA" (RBARON.MAC:2409-2411), and UPDPLN ADDS it to the depth
     // (:2704-2707) — the entries are negative, so the depth falls. Deeper levels close

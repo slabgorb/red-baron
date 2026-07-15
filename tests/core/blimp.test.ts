@@ -169,6 +169,7 @@ const asTarget = (b: Blimp): Enemy => ({
   bank: b.bank,
   side: b.side,
   active: b.active,
+  facingAway: true, // rb4-13 D4 mirror — matches blimpTarget: a cruising airship is settled
 })
 
 // ───────────────────────────────────────────────────────────────────────────

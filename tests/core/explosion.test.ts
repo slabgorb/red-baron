@@ -80,6 +80,8 @@ interface Wreck {
   readonly spin: number
   readonly phase: WreckPhase
   readonly timer: number
+  /** rb4-13: the killed enemy's PLSTAT+6 D4 mirror — the wreck keeps the model it died wearing. */
+  readonly facingAway: boolean
 }
 
 interface ExplosionModule {
