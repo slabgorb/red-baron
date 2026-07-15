@@ -31,7 +31,7 @@
 
 import { multiply, type Vec3 } from '@arcade/shared/math3d'
 import { flightView, type Attitude } from './camera'
-import { projectSegment, sceneProjection, type SceneSegment } from './scene'
+import { projectWorldSegment, sceneProjection, type SceneSegment } from './scene'
 import { SCAPES, PFOPOS, MOUNTAIN_SEGMAPS, HORZ, type Point2 } from './topology'
 
 /** The four PF-object slots — N.PFOB = 3*L.PFOB names four records (RBARON.MAC:245/441). */
@@ -158,10 +158,11 @@ function worldPoint(p: Point2, m: Mountain): Vec3 {
 
 /**
  * The active mountains projected to NDC segments for the shell to stroke — through
- * the rb1 scene substrate (scene.projectSegment under the shared camera + projection).
- * Each silhouette is stitched from its SEGSTR start-points ({@link PFOPOS}, forward)
- * and SMAP** connect-lists ({@link MOUNTAIN_SEGMAPS}): VV draws a line, BV lifts the
- * pen. Behind-eye segments (projectSegment → null) are dropped, never leaked.
+ * the rb1 scene substrate (scene.projectWorldSegment: the shared camera + projection PLUS
+ * the ROM's POSITH HORIZN lift, since mountains are PLAYFIELD objects). Each silhouette is
+ * stitched from its SEGSTR start-points ({@link PFOPOS}, forward) and SMAP** connect-lists
+ * ({@link MOUNTAIN_SEGMAPS}): VV draws a line, BV lifts the pen. Behind-eye segments
+ * (projectWorldSegment → null) are dropped, never leaked.
  */
 export function mountainSegments(
   mountains: readonly Mountain[],
@@ -181,7 +182,7 @@ export function mountainSegments(
       let current = starts[g]
       for (const op of segMaps[g]) {
         if (op.draw) {
-          const seg = projectSegment(worldPoint(points[current], m), worldPoint(points[op.point], m), mvp)
+          const seg = projectWorldSegment(worldPoint(points[current], m), worldPoint(points[op.point], m), mvp)
           if (seg) out.push(seg)
         }
         current = op.point

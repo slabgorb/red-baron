@@ -535,21 +535,22 @@ describe('enemy — proximityBand: depth → DISCHK band (findings §2 wiring)',
     }
   })
 
-  it('drives the REAL flight model — a near enemy sharpens the yoke vs a far one (DISCHK)', () => {
+  it('drives the REAL flight model — a near enemy SLOWS the yoke vs a far one (DISCHK)', () => {
     // The whole point of the wiring: proximityBand(enemy.depth) → FlightInput.proximity
-    // → DISCHK scales the world pan. Prove it end-to-end through the real flight.step:
-    // an enemy at point-blank makes the same turn command pan farther than a far one.
+    // → DISCHK scales the world pan. Prove it end-to-end through the real flight.step.
+    // rb4-5 AC3: the ROM bands are close ×0.375 / far ×1.0, so a point-blank enemy makes
+    // the same turn command pan LESS than a far one (control goes sluggish under his nose).
     const proximityBand = need(m.proximityBand, 'proximityBand')
     const farBand = proximityBand(spawnAt(1).depth) // 'far'
     const nearBand = proximityBand(1) // 'near'
-    expect(DISCHK[nearBand]).toBeGreaterThan(DISCHK[farBand]) // sanity: near scales harder
+    expect(DISCHK[farBand]).toBeGreaterThan(DISCHK[nearBand]) // sanity: far is full control, near is slow
 
     const pan = (proximity: ProximityBand): number => {
       let s = INITIAL_FLIGHT
       for (let i = 0; i < 20; i++) s = flightStep(s, { turn: 1, pitch: 0, proximity })
       return s.heading
     }
-    expect(pan(nearBand)).toBeGreaterThan(pan(farBand)) // control feel sharpens near combat
+    expect(pan(farBand)).toBeGreaterThan(pan(nearBand)) // control feel goes sluggish near combat
   })
 })
 

@@ -1,64 +1,39 @@
 // tests/core/camera.test.ts
 //
-// Story rb1-3 — RED phase (Furiosa / TEA). The roll/pitch/yaw flight camera.
+// Story rb1-3, REWRITTEN for rb4-5 — the flight camera is the WRONG SHAPE.
 //
-// CONTRACT for the GREEN phase (The Word Burgers / DEV): create
-// `src/core/camera.ts`, the flight-attitude → camera-view bridge, exporting:
+// rb1-3 built `flightView` as `rotationZ(roll) ∘ rotationX(pitch) ∘ rotationY(yaw)` —
+// a full 3-D yaw+pitch camera. That is NOT Red Baron's camera. The 1980 ROM has NO
+// yaw rotation (turning adds PLDELX to the linear UNIV4X and draws objects at X−UNIV4X)
+// and NO pitch rotation (climb/dive adds PLDELY to the eye height I4YPOS, subtracted
+// from every object's Y). The ONLY rotation is the bank — PFROTN, a single Z rotation
+// (RBARON.MAC:3196-3262; RBGRND.MAC:269-322). rb4-5 rewrites this camera.
 //
-//   export interface Attitude {
-//     readonly roll: number   // bank, radians — tilts the horizon (design brief: rotationZ)
-//     readonly pitch: number  // climb/dive, radians (rotationX)
-//     readonly yaw: number    // turn/heading, radians (rotationY)
-//   }
-//   export const LEVEL: Attitude              // { roll: 0, pitch: 0, yaw: 0 }
+// CONTRACT for the GREEN phase (Yoda / DEV): `src/core/camera.ts` exports a
+// TRANSLATION camera whose ONLY rotation is the bank:
+//
+//   export const LEVEL: Attitude                            // roll 0
 //   export function flightView(attitude: Attitude, eye: Vec3): Mat4
+//     //  = rotationZ(roll) then translate by −eye. The turn (UNIV4X) and altitude
+//     //    (I4YPOS) arrive as the EYE translation (flight.ts toEye); the downstream
+//     //    perspective divide makes that the ROM's (X−UNIV4X)/depth pan. NO
+//     //    rotationX(pitch), NO rotationY(yaw) remain — pitch/yaw are NOT rotations.
 //
-// WHY THIS SHAPE (cited):
-//   * Design brief §3 pins the camera as
-//     `rotationZ(roll) ∘ rotationX(pitch) ∘ rotationY(yaw) → viewMatrix`, built
-//     on the SHARED Math Box (@arcade/shared/math3d) — "the horizon tilt falls
-//     out of rotationZ in the view matrix." Red Baron is the first native
-//     @arcade/shared consumer; it does NOT re-port math3d (scaffold guards that).
-//   * Findings §8: Red Baron's model space has the nose at −Z ("Z = +behind /
-//     −forward"), which ALREADY matches the shared Math Box ("looking down −Z").
-//     So — unlike Battlezone, whose +Z-into-monitor world needed a heading+π
-//     bridge — this camera needs NO sign bridge: forward = −Z, right = +X,
-//     up = +Y (OpenGL, per math3d's own header).
-//   * "The cockpit IS the camera" (findings §2): eye position is the pilot's
-//     world placement; flightView translates by −eye then orients.
+// The camera is pinned BEHAVIOURALLY (where world points land in eye space, via the
+// shared `transform`). The "no yaw/pitch rotation" block feeds a non-zero pitch/yaw
+// and asserts it does NOTHING — RED against the current rotation camera.
 //
-// SCOPE BOUNDARY (roadmap, design brief §4): rb1 is *foundation* — the camera.
-// The authentic FLIGHT MODEL that DRIVES this attitude (PLDELX turn-rate inertia,
-// the 11-step PLDELY pitch table, PFROTN = PLDELX×8 bank coupling clamped ≤0x100,
-// I4YPOS altitude clamp $8*4..$180*4 (hex, .RADIX 16), DISCHK feel — findings §2) is filed under
-// **rb2** ("flight model"). rb1-3 builds the camera these later drive; it does
-// NOT implement the dynamics. Testing them here would gold-plate rb2 into rb1.
-//
-// These tests pin the camera BEHAVIORALLY — where world points land in eye space
-// (via the shared `transform`) — not as a specific matrix formula. Dev picks the
-// composition, so long as roll banks about the forward axis, pitch about the
-// right axis, yaw about the up axis, in that compose order.
-//
-// Loaded defensively (await import in beforeAll, the house pattern): during RED
-// the module does not exist, so each test reports a clean assertion failure
-// instead of a suite-collection crash.
+// Loaded defensively (await import) so this file fails per-assertion during RED.
 
 import { describe, it, expect, beforeAll } from 'vitest'
-import {
-  multiply,
-  rotationX,
-  rotationY,
-  rotationZ,
-  viewMatrix,
-  transform,
-  type Mat4,
-  type Vec3,
-} from '@arcade/shared/math3d'
+import { multiply, transform, type Mat4, type Vec3 } from '@arcade/shared/math3d'
 
+// LOOSE local Attitude: roll is the only rotation. pitch/yaw are optional and, per the
+// rewrite, IGNORED by the camera — they are carried here only to prove they do nothing.
 interface Attitude {
   readonly roll: number
-  readonly pitch: number
-  readonly yaw: number
+  readonly pitch?: number
+  readonly yaw?: number
 }
 
 interface CameraModule {
@@ -70,36 +45,30 @@ let cam: CameraModule = {}
 
 beforeAll(async () => {
   try {
-    cam = (await import('../../src/core/camera')) as CameraModule
+    cam = (await import('../../src/core/camera')) as unknown as CameraModule
   } catch {
     cam = {}
   }
 })
 
-/** Fail loud-and-clear when a contract export is missing (RED-friendly). */
 function need<T>(value: T | undefined, name: string): T {
-  if (value === undefined) {
-    throw new Error(`src/core/camera.ts must export ${name} (rb1-3 RED contract)`)
-  }
+  if (value === undefined) throw new Error(`src/core/camera.ts must export ${name} (rb4-5 RED contract)`)
   return value
 }
 
 const ORIGIN: Vec3 = [0, 0, 0]
+const view = (attitude: Attitude, eye: Vec3): Mat4 => need(cam.flightView, 'flightView')(attitude, eye)
+const bank = (roll: number): Attitude => ({ roll, pitch: 0, yaw: 0 })
 
-describe('camera — LEVEL attitude', () => {
-  it('exports LEVEL = { roll: 0, pitch: 0, yaw: 0 } (no bank, no pitch, straight ahead)', () => {
-    const level = need(cam.LEVEL, 'LEVEL')
-    expect(level.roll).toBe(0)
-    expect(level.pitch).toBe(0)
-    expect(level.yaw).toBe(0)
+describe('camera — LEVEL is wings-level', () => {
+  it('exports LEVEL with roll 0 — no bank', () => {
+    expect(need(cam.LEVEL, 'LEVEL').roll).toBe(0)
   })
 
   it('a level camera at the origin is a no-op view (IDENTITY) — points map to themselves', () => {
-    const view = need(cam.flightView, 'flightView')(need(cam.LEVEL, 'LEVEL'), ORIGIN)
-    // math3d guarantees viewMatrix(origin, IDENTITY) === IDENTITY; a level cockpit
-    // at world origin must not move, rotate, or scale anything.
+    const v = view(need(cam.LEVEL, 'LEVEL'), ORIGIN)
     for (const p of [[3, 5, -9], [-2, 7, -1], [0, 0, -100]] as Vec3[]) {
-      const eye = transform(view, p)
+      const eye = transform(v, p)
       expect(eye[0]).toBeCloseTo(p[0], 9)
       expect(eye[1]).toBeCloseTo(p[1], 9)
       expect(eye[2]).toBeCloseTo(p[2], 9)
@@ -107,13 +76,10 @@ describe('camera — LEVEL attitude', () => {
   })
 })
 
-describe('camera — roll banks about the forward axis (the tilting horizon)', () => {
+describe('camera — the ONE rotation: roll banks about the forward axis (the tilting horizon)', () => {
   it('roll θ tilts world-up (0,1,0) to (sin θ, cos θ, 0) — the horizon banks by θ', () => {
-    const flightView = need(cam.flightView, 'flightView')
     for (const roll of [0.2, 0.5, -0.35]) {
-      const eye = transform(flightView({ roll, pitch: 0, yaw: 0 }, ORIGIN), [0, 1, 0])
-      // Banking rotates the eye-space up-vector about the forward (−Z) axis by θ:
-      // world "up" leans toward screen-right by exactly the bank angle.
+      const eye = transform(view(bank(roll), ORIGIN), [0, 1, 0])
       expect(eye[0]).toBeCloseTo(Math.sin(roll), 6)
       expect(eye[1]).toBeCloseTo(Math.cos(roll), 6)
       expect(eye[2]).toBeCloseTo(0, 6)
@@ -121,106 +87,81 @@ describe('camera — roll banks about the forward axis (the tilting horizon)', (
   })
 
   it('roll leaves the point you are flying TOWARD fixed — roll is about the forward axis', () => {
-    // A pure bank spins the world about the line of flight; the dead-ahead point
-    // (on the roll axis) must not move. This discriminates roll (Z) from yaw/pitch.
-    const eye = transform(need(cam.flightView, 'flightView')({ roll: 0.6, pitch: 0, yaw: 0 }, ORIGIN), [0, 0, -100])
+    const eye = transform(view(bank(0.6), ORIGIN), [0, 0, -100])
     expect(eye[0]).toBeCloseTo(0, 6)
     expect(eye[1]).toBeCloseTo(0, 6)
     expect(eye[2]).toBeCloseTo(-100, 6)
   })
 })
 
-describe('camera — pitch climbs/dives about the right axis', () => {
-  it('pitch φ swings the dead-ahead point to (0, −sin φ, −cos φ) — horizon moves vertically', () => {
-    const flightView = need(cam.flightView, 'flightView')
-    for (const pitch of [0.2, 0.45, -0.3]) {
-      const eye = transform(flightView({ roll: 0, pitch, yaw: 0 }, ORIGIN), [0, 0, -1])
-      // Rotation about the eye X (right) axis: x stays 0, the forward point rises
-      // or sinks. Opposite pitches move it oppositely; magnitude = |φ|.
-      expect(eye[0]).toBeCloseTo(0, 6)
-      expect(eye[1]).toBeCloseTo(-Math.sin(pitch), 6)
-      expect(eye[2]).toBeCloseTo(-Math.cos(pitch), 6)
-    }
-  })
-})
+describe('camera — NO yaw rotation, NO pitch rotation remain (the rb4-5 fix)', () => {
+  // Feed a large pitch/yaw with zero roll: a faithful camera does NOTHING (turning and
+  // climbing are eye translations, applied elsewhere). The current rotationX(pitch) /
+  // rotationY(yaw) camera swings the forward point — that is the bug this refutes.
+  const AHEAD: Vec3 = [0, 0, -100]
 
-describe('camera — yaw turns about the up axis (world pans, horizon holds level)', () => {
-  it('yaw ψ swings the dead-ahead point to (sin ψ, 0, −cos ψ) — pans horizontally, no vertical move', () => {
-    const flightView = need(cam.flightView, 'flightView')
-    for (const yaw of [0.2, 0.5, -0.4]) {
-      const eye = transform(flightView({ roll: 0, pitch: 0, yaw }, ORIGIN), [0, 0, -1])
-      // Rotation about the eye Y (up) axis: the forward point slides sideways;
-      // eye-y stays 0, which is WHY a pure turn never lifts or drops the horizon.
-      expect(eye[0]).toBeCloseTo(Math.sin(yaw), 6)
-      expect(eye[1]).toBeCloseTo(0, 6)
-      expect(eye[2]).toBeCloseTo(-Math.cos(yaw), 6)
-    }
+  it('a non-zero YAW does not rotate the view — the forward point stays dead ahead', () => {
+    const eye = transform(view({ roll: 0, pitch: 0, yaw: 0.6 }, ORIGIN), AHEAD)
+    expect(eye[0]).toBeCloseTo(0, 6) // a yaw ROTATION would swing it to (sin·d, 0, −cos·d)
+    expect(eye[1]).toBeCloseTo(0, 6)
+    expect(eye[2]).toBeCloseTo(-100, 6)
   })
 
-  it('yaw does NOT move world-up — a turn keeps "up" pointing up (no barrel-roll on turn)', () => {
-    const eye = transform(need(cam.flightView, 'flightView')({ roll: 0, pitch: 0, yaw: 0.7 }, ORIGIN), [0, 1, 0])
+  it('a non-zero PITCH does not rotate the view — the forward point does not rise or sink', () => {
+    const eye = transform(view({ roll: 0, pitch: 0.5, yaw: 0 }, ORIGIN), AHEAD)
     expect(eye[0]).toBeCloseTo(0, 6)
-    expect(eye[1]).toBeCloseTo(1, 6)
-    expect(eye[2]).toBeCloseTo(0, 6)
+    expect(eye[1]).toBeCloseTo(0, 6) // a pitch ROTATION would move it to (0, sin·d, −cos·d)
+    expect(eye[2]).toBeCloseTo(-100, 6)
+  })
+
+  it('only ROLL rotates: pitch+yaw set with roll 0 leaves the view an identity rotation', () => {
+    const eye = transform(view({ roll: 0, pitch: 0.4, yaw: -0.5 }, ORIGIN), [10, -20, -100])
+    expect(eye[0]).toBeCloseTo(10, 6)
+    expect(eye[1]).toBeCloseTo(-20, 6)
+    expect(eye[2]).toBeCloseTo(-100, 6)
   })
 })
 
-describe('camera — composition order rotationZ(roll) ∘ rotationX(pitch) ∘ rotationY(yaw)', () => {
-  it('a combined attitude matches the design-brief §3 compose order (rotations do not commute)', () => {
-    const flightView = need(cam.flightView, 'flightView')
-    const att = { roll: 0.3, pitch: -0.25, yaw: 0.4 }
-    const eye: Vec3 = [12, 40, -8]
-    // Expected = the shared Math Box composed in the brief's stated order. Building
-    // the reference from @arcade/shared (not a hand-typed matrix) keeps the test
-    // about ORDER, not internal representation.
-    const orient = multiply(multiply(rotationZ(att.roll), rotationX(att.pitch)), rotationY(att.yaw))
-    const reference = viewMatrix(eye, orient)
-    const probes: Vec3[] = [[0, 0, -100], [30, 10, -60], [-15, -5, -120]]
-    for (const p of probes) {
-      const got = transform(need(cam.flightView, 'flightView')(att, eye), p)
-      const want = transform(reference, p)
-      expect(got[0]).toBeCloseTo(want[0], 6)
-      expect(got[1]).toBeCloseTo(want[1], 6)
-      expect(got[2]).toBeCloseTo(want[2], 6)
-    }
-    // silence unused-in-some-paths lint by referencing the direct build once
-    expect(flightView(att, eye).length).toBe(16)
-  })
-})
-
-describe('camera — eye position is the pilot (translation / altitude)', () => {
+describe('camera — the world is TRANSLATED: pan & altitude come through the eye', () => {
   it('the eye point itself maps to the origin (view translates by −eye)', () => {
     const eye: Vec3 = [50, 120, -30]
-    const mapped = transform(need(cam.flightView, 'flightView')(need(cam.LEVEL, 'LEVEL'), eye), eye)
+    const mapped = transform(view(need(cam.LEVEL, 'LEVEL'), eye), eye)
     expect(mapped[0]).toBeCloseTo(0, 6)
     expect(mapped[1]).toBeCloseTo(0, 6)
     expect(mapped[2]).toBeCloseTo(0, 6)
   })
 
-  it('climbing (raising eye Y) drops a fixed ground point lower in view — you fly OVER the terrain', () => {
-    const flightView = need(cam.flightView, 'flightView')
-    const level = need(cam.LEVEL, 'LEVEL')
-    const ground: Vec3 = [0, -40, -500] // a point on the ground ahead
-    const low = transform(flightView(level, [0, 0, 0]), ground)
-    const high = transform(flightView(level, [0, 80, 0]), ground)
-    expect(high[1]).toBeLessThan(low[1]) // higher altitude ⇒ ground sits further below the eye
+  it('a lateral eye pan (the UNIV4X turn) slides a forward object sideways WITHOUT changing its depth', () => {
+    const ahead: Vec3 = [0, 0, -1000]
+    const centred = transform(view(need(cam.LEVEL, 'LEVEL'), ORIGIN), ahead)
+    const panned = transform(view(need(cam.LEVEL, 'LEVEL'), [300, 0, 0]), ahead)
+    expect(panned[0]).not.toBeCloseTo(centred[0], 3) // it panned horizontally…
+    expect(panned[2]).toBeCloseTo(centred[2], 6) // …but the depth is unchanged (translation, not rotation)
+    expect(panned[1]).toBeCloseTo(centred[1], 6) // …and a level pan never lifts it
+  })
+
+  it('a vertical eye rise (climbing, I4YPOS) drops a fixed ground point WITHOUT changing its depth', () => {
+    const ground: Vec3 = [0, -40, -500]
+    const low = transform(view(need(cam.LEVEL, 'LEVEL'), [0, 0, 0]), ground)
+    const high = transform(view(need(cam.LEVEL, 'LEVEL'), [0, 80, 0]), ground)
+    expect(high[1]).toBeLessThan(low[1]) // higher eye ⇒ ground sits further below…
+    expect(high[2]).toBeCloseTo(low[2], 6) // …with its depth unchanged (an eye translation, not a pitch)
   })
 })
 
 describe('camera — purity & Math Box compatibility', () => {
   it('is pure — identical (attitude, eye) give a bit-identical matrix (determinism)', () => {
-    const flightView = need(cam.flightView, 'flightView')
-    const a = flightView({ roll: 0.12, pitch: 0.34, yaw: -0.56 }, [7, 8, 9])
-    const b = flightView({ roll: 0.12, pitch: 0.34, yaw: -0.56 }, [7, 8, 9])
+    const a = view(bank(0.12), [7, 8, 9])
+    const b = view(bank(0.12), [7, 8, 9])
     expect(a.length).toBe(16)
     for (let i = 0; i < 16; i++) expect(a[i]).toBe(b[i])
   })
 
   it('returns a valid length-16, all-finite Mat4 that composes with multiply()', () => {
-    const view = need(cam.flightView, 'flightView')({ roll: 0.4, pitch: 0.2, yaw: 1.0 }, [1, 2, 3])
-    expect(view.length).toBe(16)
-    const composed = multiply(view, view)
+    const v = view(bank(0.4), [1, 2, 3])
+    expect(v.length).toBe(16)
+    const composed = multiply(v, v)
     expect(composed.length).toBe(16)
-    for (const v of composed) expect(Number.isFinite(v)).toBe(true)
+    for (const x of composed) expect(Number.isFinite(x)).toBe(true)
   })
 })

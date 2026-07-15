@@ -61,9 +61,11 @@
 //   * `core/guns.step` — the COLLISION arm. Its return value IS the live shell pool the cockpit
 //     is about to draw, and its `targets` argument IS the live enemy/blimp list. This is the
 //     sim's own ground truth, taken from the function that decides what the bullet KILLS.
-//   * `core/scene.projectSegment` — the ONE gate every vector on screen passes through
-//     (main.ts is already forbidden from importing it, or from building a `perspective(`).
-//     It sees each segment's WORLD-SPACE endpoints and the matrix it is divided by.
+//   * `core/scene.projectSegment` + `core/scene.projectWorldSegment` — the two gates every
+//     vector on screen passes through (main.ts is forbidden from importing either, or from
+//     building a `perspective(`). Motion objects take the pure divide; playfield objects take
+//     the divide plus the ROM's HORIZN lift (rb4-5). Both see each segment's WORLD-SPACE
+//     endpoints and the matrix it is divided by, and both are recorded here.
 //
 // Everything below is a comparison BETWEEN those two independent observations. The expected
 // depths are derived from the shells the collision arm reports; the actual depths are read out
@@ -174,15 +176,25 @@ vi.mock('../../src/shell/audio', () => ({
   }),
 }))
 
-// THE ONE GATE. Every vector on screen is divided by a matrix here — main.ts may not import this
-// function (screen-scale.test.ts) and may not build its own `perspective(`. So this sees the
-// whole scene, in WORLD SPACE, before the perspective divide hides the depth.
+// THE TWO GATES. Every vector on screen is divided by a matrix here — main.ts may not import
+// either function (screen-scale.test.ts) and may not build its own `perspective(`. So this sees
+// the whole scene, in WORLD SPACE, before the perspective divide hides the depth. rb4-5 split the
+// substrate: `projectSegment` is the pure divide the MOTION objects (planes, blimp, wrecks,
+// tracers) take, and `projectWorldSegment` is the same divide PLUS the ROM's POSITH HORIZN lift
+// that the PLAYFIELD objects (horizon, mountains) take (RBGRND.MAC:303 vs :359). Both are recorded
+// into the SAME ordered `rec.proj` roster, so INVARIANT 4 still sees every vector that hits the
+// glass — a world stroke lands with its HORIZN lift already in it, exactly as it is drawn.
 vi.mock('../../src/core/scene', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/core/scene')>()
   return {
     ...actual,
     projectSegment: (a: Vec3, b: Vec3, mvp: Mat4): SceneSegment | null => {
       const seg = actual.projectSegment(a, b, mvp)
+      rec.proj.push({ a: [...a], b: [...b], mvp: [...mvp], seg })
+      return seg
+    },
+    projectWorldSegment: (a: Vec3, b: Vec3, mvp: Mat4): SceneSegment | null => {
+      const seg = actual.projectWorldSegment(a, b, mvp)
       rec.proj.push({ a: [...a], b: [...b], mvp: [...mvp], seg })
       return seg
     },
