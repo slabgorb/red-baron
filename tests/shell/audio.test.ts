@@ -33,6 +33,9 @@
 //
 // src/shell/audio.ts is absent pre-GREEN — the import failure is the RED signal.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { dirname, join } from 'node:path'
 import { EXPL2_FRAMES } from '../../src/core/explosion'
 
 // --- recording fake Web Audio surface (battlezone bz1-11 harness) -----------
@@ -571,5 +574,63 @@ describe('SH2-18 (round 2) — hum and whine come back after a context recovery'
     engine.setGun(true)
     const ctxB = FakeAudioContext.instances[1]
     expect(ctxB.sources.length, 'the rat-a-tat is rebuilt on the live context').toBeGreaterThan(0)
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SH2-22 — hum AND whine are self-healing PERSISTENT VOICES, not hand-held nodes
+//
+// Red Baron holds TWO out-of-registry nodes: the detuned engine hum and the enemy-approach
+// whine (three raw refs — `humGain`, `whineOsc`, `whineGain`). SH2-18 recovered them by
+// nulling all three inside a `synth.onRebuild(...)` callback — and the round-1 fix that
+// forgot exactly this shipped the half-recovery trap into BOTH cabinets. Losing the whine
+// is the worst case: it is the only warning a plane is on you, and a HALF recovery looks
+// like it works.
+//
+// SH2-22 makes it STRUCTURAL (design fork → Option A): hum and whine become
+// `synth.persistentVoice(build)` handles. The cabinet holds no raw node and registers no
+// onRebuild reset — the engine rebuilds each controller on recovery. Three refs to forget
+// becomes zero. These guards fail the moment the raw-node-behind-a-null-gate pattern
+// reappears; the behavioural recovery tests above are the runtime proof it works.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('SH2-22 — hum and whine are engine-owned, not cabinet-held nodes', () => {
+  const audioSrc = () =>
+    readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'src', 'shell', 'audio.ts'), 'utf8')
+
+  it('holds NO nullable WebAudio node as cabinet state — that is the footgun signature', () => {
+    const src = audioSrc()
+    // `let humGain: GainNode | null`, `let whineOsc: OscillatorNode | null`, ... ARE the
+    // trap: raw nodes the engine cannot reset, behind `=== null` gates a recovery leaves
+    // pointing at a dead context. Under Option A the engine holds them inside persistentVoice
+    // and the cabinet holds only opaque handles. Anchored to the declaration form, not a
+    // fuzzy substring (SH2-18 lesson: raw `.toContain` scans false-positive and go vacuous).
+    const nullableNodeDecl =
+      /\b(?:let|var)\s+\w+\s*:\s*(?:OscillatorNode|GainNode|AudioBufferSourceNode|BiquadFilterNode|AudioNode)\s*\|\s*null\b/g
+    const offenders = src.match(nullableNodeDecl) ?? []
+    expect(
+      offenders,
+      `nullable WebAudio nodes held as cabinet state re-open the half-recovery trap: ${offenders.join(', ')}`,
+    ).toEqual([])
+  })
+
+  it('registers NO manual synth.onRebuild — the engine owns the rebuild now', () => {
+    const src = audioSrc()
+    // Three refs to null by hand is exactly where SH2-18 round 1 forgot one. persistentVoice
+    // makes the reset the ENGINE's job; a hand-rolled onRebuild here means the cabinet is
+    // still juggling raw nodes — Option B, which the story rejected.
+    expect(src, 'the cabinet must not hand-roll a rebuild reset').not.toMatch(/\.onRebuild\s*\(/)
+  })
+
+  it('drives its continuous hum and whine through synth.persistentVoice', () => {
+    const src = audioSrc()
+    // The positive assertion: both continuous voices are registry-managed, self-healing.
+    // Two of them, so require at least two persistentVoice registrations — otherwise a
+    // cabinet could satisfy the negative guards by migrating one voice and deleting the other.
+    const registrations = src.match(/\.persistentVoice\s*[<(]/g) ?? []
+    expect(
+      registrations.length,
+      'both the engine hum and the approach whine must be persistentVoice handles',
+    ).toBeGreaterThanOrEqual(2)
   })
 })
