@@ -73,6 +73,11 @@
 
 import { describe, it, expect, beforeAll } from 'vitest'
 import { createRng, type Rng } from '@arcade/shared/rng'
+// ROUND 3: the ramp pin asserts the REAL exported table. Round 2 hand-copied PLNLVL into a
+// local literal, which made the test tautological — the review mutated the real export's [5]
+// and all 11 tests stayed green. scoring.ts is not part of this suite's RED contract surface,
+// so a static import is safe and correct here.
+import { PLNLVL } from '../../src/core/scoring'
 
 type Vec3 = readonly [number, number, number]
 
@@ -126,9 +131,15 @@ interface FlightModule {
   toEye?: (state: FlightState) => Vec3
 }
 
+interface WavesModule {
+  /** rb4-6 R3 — AC-R3 drives the wave through the REAL stepper so drones/fly-past ride the guard. */
+  stepWave?: (enemies: readonly Enemy[], level?: number) => readonly Enemy[]
+}
+
 let m: EnemyModule = {}
 let g: GunsModule = {}
 let f: FlightModule = {}
+let w: WavesModule = {}
 
 beforeAll(async () => {
   // Each cast goes through `unknown` on purpose: these are the round-2 CONTRACT shapes, and
@@ -150,6 +161,11 @@ beforeAll(async () => {
   } catch {
     f = {}
   }
+  try {
+    w = (await import('../../src/core/waves')) as unknown as WavesModule
+  } catch {
+    w = {}
+  }
 })
 
 function need<T>(value: T | undefined, name: string): T {
@@ -157,7 +173,14 @@ function need<T>(value: T | undefined, name: string): T {
   return value
 }
 
-/** The gun's absolute best-case reach: the rotated 32x32 box's circumscribed radius. */
+/**
+ * The rotated 32x32 box's circumscribed radius — AC-R2's "definitely outside" offset ONLY.
+ * ROUND 3: AC-R3 no longer judges reach with this. The review proved a hypot-vs-MAX_REACH
+ * check is a parallel REIMPLEMENTATION of the gun: it stayed green with `collides` reverted
+ * to ignore its eye (round 1's exact defect), and the circle CIRCUMSCRIBES the real box, so
+ * it inflated GMLEVL 4's margin (11.6 by the circle; 10.8 through the real gun). Reach is
+ * now judged by `guns.collides` itself — the guard exercises the thing it guards.
+ */
 const MAX_REACH = 32 * Math.SQRT2
 
 const LEVELS = [0, 1, 2, 3, 4] as const
@@ -268,10 +291,21 @@ describe('rb4-6 R2 AC-R3 — a plane is reachable at EVERY GMLEVL (the soft-lock
   // past (correctly), which shortens lifetimes and confounds any raw per-run hit count. And
   // count from the SPAWN frame explicitly — a probe that skips frame 0 over-reports the
   // failure (it reported "never reachable" when the honest number was "the spawn frame only").
-  it.each(LEVELS)('GMLEVL %i: a chasing pilot keeps planes within reach for more than the spawn frame', (lvl) => {
+  //
+  // ROUND 3 (review round 2): reach is judged by the REAL `guns.collides`, not a hypot circle.
+  // The round-2 version reimplemented reach as `hypot(x, y) <= 32*sqrt(2)` and was mutation-
+  // proven blind: reverting `collides` to ignore its eye — the EXACT regression this guard
+  // names — left every AC-R3 test green, and the circumscribed circle over-reported the real
+  // rotated-box margin (GMLEVL 4: 11.6 by the circle, 10.8 through the gun). The boresight
+  // shell is placed at the plane's exact depth (`z = depth/256`, the AC-R2 convention) so the
+  // z-window is satisfied by construction and what this measures is X/Y reach — through the
+  // same box, bank rotation and all, that the game scores kills with. The wave advances via
+  // the REAL `stepWave`, so the fly-past drop and formation seam ride the guard too.
+  it.each(LEVELS)('GMLEVL %i: a chasing pilot keeps planes within the REAL gun for more than the spawn frame', (lvl) => {
     const spawn = need(m.spawn, 'spawn')
-    const step = need(m.step, 'step')
+    const stepWave = need(w.stepWave, 'stepWave')
     const displayPos = need(m.displayPos, 'displayPos')
+    const collides = need(g.collides, 'collides(shell, enemy, eye)')
     const toEye = need(f.toEye, 'toEye')
     const flightStep = need(f.step, 'step(flight)')
     const INITIAL_FLIGHT = need(f.INITIAL_FLIGHT, 'INITIAL_FLIGHT')
@@ -280,10 +314,11 @@ describe('rb4-6 R2 AC-R3 — a plane is reachable at EVERY GMLEVL (the soft-lock
     let lives = 0
     const SEEDS = 25
     for (let seed = 1; seed <= SEEDS; seed++) {
-      let e = spawn(createRng(seed), lvl)
+      let wave: readonly Enemy[] = [spawn(createRng(seed), lvl)]
       let flight = INITIAL_FLIGHT
       let framesThisLife = 0
-      for (let fr = 0; fr < 600 && e.active; fr++) {
+      for (let fr = 0; fr < 600 && wave.length > 0; fr++) {
+        const e = wave[0]
         // a CHASING pilot: steer the stick toward wherever the plane currently is on screen
         const d = displayPos(e, toEye(flight))
         flight = flightStep(flight, {
@@ -291,9 +326,10 @@ describe('rb4-6 R2 AC-R3 — a plane is reachable at EVERY GMLEVL (the soft-lock
           pitch: Math.max(-1, Math.min(1, d.y / 64)),
           proximity: 'far',
         })
-        const now = displayPos(e, toEye(flight))
-        if (Math.hypot(now.x, now.y) <= MAX_REACH) framesThisLife++
-        e = step(e, lvl)
+        // judge with the gun that scores kills: a boresight shell at the plane's exact depth
+        const shell: Shell = { x: 0, y: 0, z: e.depth / 256, active: true }
+        if (collides(shell, e, toEye(flight))) framesThisLife++
+        wave = stepWave(wave, lvl) // fly-past drops the plane and the life ends, as in play
       }
       reachableFrames += framesThisLife
       lives++
@@ -301,9 +337,11 @@ describe('rb4-6 R2 AC-R3 — a plane is reachable at EVERY GMLEVL (the soft-lock
     const avg = reachableFrames / lives
     // > 1.0 is the exact bar round 1 failed: at GMLEVL 2/3/4 it scored exactly 1.0 — the spawn
     // frame and nothing else. A pilot who can fly must do better than a pilot who cannot move.
+    // Through the real gun the shipped machine measures 597.3/112.5/24.1/20.2/10.8 — GMLEVL 4's
+    // margin is REAL but thin. Do not re-tune this bar to manufacture slack; read the level.
     expect(
       avg,
-      `GMLEVL ${lvl}: a chasing pilot averaged ${avg.toFixed(1)} frames in reach per plane — the plane ` +
+      `GMLEVL ${lvl}: a chasing pilot averaged ${avg.toFixed(1)} frames in gun-reach per plane — the plane ` +
         `outruns the stick, so this level is unwinnable (round 1 scored exactly 1.0 here: the spawn frame)`,
     ).toBeGreaterThan(10)
   })
@@ -313,7 +351,13 @@ describe('rb4-6 R2 AC-R3 — a plane is reachable at EVERY GMLEVL (the soft-lock
     // so the player reaches GMLEVL 2 after five kills and can never leave it if planes are
     // unreachable there. This pins the coupling so nobody "fixes" the soft-lock by re-tuning
     // the ramp instead of the seam.
-    const PLNLVL = [0, 0, 0, 0, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 4, 4, 5]
-    expect(PLNLVL[5], 'PLNLVL changed — re-derive which GMLEVL the reachability guard must cover').toBe(2)
+    //
+    // ROUND 3: asserts the REAL export. Round 2 hand-copied the table into a local literal,
+    // which could never fail — the review mutated scoring.ts's PLNLVL[5] to 1 and all 11 tests
+    // in this file stayed green. A literal compared to itself is not a guard.
+    expect(
+      PLNLVL[5],
+      'scoring.ts PLNLVL changed — re-derive which GMLEVL the reachability guard must cover',
+    ).toBe(2)
   })
 })

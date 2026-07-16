@@ -75,6 +75,10 @@ interface Enemy {
   readonly y: number
   readonly depth: number
   readonly deltaX: number
+  /** rb4-6 — the vertical weave velocity (round 3: the mirror gains it for the ΔY convergence pins). */
+  readonly deltaY?: number
+  /** rb4-6 — entry-bank frames remaining; round-3 fixtures zero it so the weave is judged, not the flourish. */
+  readonly entryFrames?: number
   readonly bank: number
   readonly side: -1 | 1
   readonly active: boolean
@@ -689,5 +693,130 @@ describe('rb4-6 — rule coverage (totality, 0-not-falsy, purity)', () => {
     const snapshot = JSON.stringify(e)
     expect(step(e, 2)).toEqual(step(e, 2)) // deterministic
     expect(JSON.stringify(e)).toBe(snapshot) // input untouched
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ROUND 3 — the tables are CONSUMED, not just declared (Reviewer round 2)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Round 2 byte-pinned P.ODLX/P.IDLX/P.IIDL and the review proved the pins bite on the
+// TABLES — but not on their CONSUMPTION: mutating `target = iidl` to `iidl || 48` (the
+// exact 0-is-valid trap P_IIDL's own doc warns about) and `target = odlx` to `odlx * 2`
+// inside windowServo both left all 1069 tests green. Only the middle band had a
+// convergence test. These pin the other two zones END-TO-END through step().
+//
+// A derivation note on the OUTER zone, because the obvious test cannot work: on the X
+// axis our ±P_OLIM position clamp makes the outer zone a ONE-FRAME wall event (any
+// inward delta puts |x| < olim next frame), so ΔX never converges to P.ODLX — the value
+// is unobservable there until the PLONSN successor removes the clamp / ports MAXDEL
+// entry deltas. The Y axis is different: at GMLEVL 0 the UPDPLN altitude floor (128)
+// sits ABOVE the level-0 window (olim = 64), so the plane is pinned INSIDE the outer
+// zone permanently and its ΔY genuinely servos all the way to -P.ODLX[0] and holds.
+// That pin is also the documented home of the round-2 audit annotation: at every level
+// the eye-free servo eventually parks the altitude at a band edge (128 or 320) — the
+// sustained vertical cat-and-mouse is the successor story's business (PLONSN).
+describe('rb4-6 R3 — zone targets consumed through step() (P.WCHK :2806-2864)', () => {
+  it('OUTER: GMLEVL 0 altitude-floored plane servos ΔY to exactly -P_ODLX[0] and HOLDS', () => {
+    const step = need(m.step, 'step')
+    const odlx0 = need(m.P_ODLX, 'P_ODLX')[0]
+    let e = spawnAt(5, 0)
+    for (let f = 0; f < 20; f++) e = step(e, 0)
+    // y is pinned at the UPDPLN floor (the ROM's own [PFPLOW, PFPHI] band, :2595-2611) —
+    // above the level-0 window, so the zone is OUTER forever and the target is P.ODLX[0].
+    expect(
+      e.deltaY,
+      `ΔY settled at ${e.deltaY} instead of -P.ODLX[0] = ${-odlx0} — the outer-zone target ` +
+        'is not being consumed (an over/under-scaled odlx changes nothing in the X cycle, only here)',
+    ).toBe(-odlx0)
+    const held = step(e, 0)
+    expect(held.deltaY, 'the settled outer delta must HOLD (snap-to-target, :2826)').toBe(-odlx0)
+  })
+
+  it('INNER: a boresight-centred GMLEVL 2 plane accelerates ΔX to exactly +P_IIDL[2] inside the window', () => {
+    const step = need(m.step, 'step')
+    const iidl2 = need(m.P_IIDL, 'P_IIDL')[2]
+    const ilim2 = need(m.P_ILIM, 'P_ILIM')[2]
+    // |x| < P_ILIM[2] = 128 → inner zone; heading AWAY from centre (+1 for x >= 0), target
+    // P_IIDL[2] = 72. From rest: 48, then snap to 72 (:2834-2840) — settled by frame 3,
+    // still deep inside the 128-wide window, so the settle is provably an INNER-zone fact.
+    let e = withEnemy({ x: 0, y: 200, deltaX: 0, deltaY: 0, entryFrames: 0, kind: 'lead', parallel: false }, 1, 2)
+    for (let f = 0; f < 3; f++) e = step(e, 2)
+    expect(Math.abs(e.x), 'the plane left the inner window before settling — retune the frame count').toBeLessThan(ilim2)
+    expect(
+      e.deltaX,
+      `ΔX reached ${e.deltaX} instead of +P.IIDL[2] = ${iidl2} — the inner-zone target is not consumed`,
+    ).toBe(iidl2)
+  })
+
+  it('INNER at GMLEVL 0: P_IIDL[0] = 0 is CONSUMED as a dead stop — `|| 48` would move the plane', () => {
+    // The 0-is-valid trap, pinned END-TO-END: the export-level toEqual above catches a
+    // corrupted TABLE, but `target = iidl || 48` inside the servo corrupts CONSUMPTION and
+    // left the whole suite green (review round 2). Here a level-0 plane parked dead-centre
+    // must STAY parked: want = heading × 0 = 0, so ΔX pins at 0 and x never moves.
+    const step = need(m.step, 'step')
+    let e = withEnemy({ x: 0, y: 200, deltaX: 0, deltaY: 0, entryFrames: 0, kind: 'lead', parallel: false }, 1, 0)
+    for (let f = 0; f < 15; f++) {
+      e = step(e, 0)
+      expect(e.deltaX, 'a GMLEVL-0 inner plane grew ΔX — P.IIDL[0]=0 was defaulted away at the point of use').toBe(0)
+      expect(e.x, 'a GMLEVL-0 inner plane MOVED — the dead stop is not being honoured').toBe(0)
+    }
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ROUND 3 — STPLNE's spawn altitude is a transcription, so PIN it (Reviewer round 2)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Round 2 shipped `spawnAltitude` as a fully-cited byte transcription (:2310-2316) with
+// ZERO tests behind it — reverting it to round 1's ±40 screen offset left 1069 green
+// (Dev self-reported it; the review confirmed). A citation with no test is scenery.
+//
+// The pin needs no golden float and no RNG mirroring: the bit-twiddle is RECOVERABLE
+// from its own output. STPLNE computes lsb = (r + 0x80) & 0xFF and msb = (lsb & 1) + 1
+// + carry, where the carry from `ADC I,80` is set iff r >= 0x80 — and r >= 0x80 ⟺
+// lsb < 0x80. So for every UNCLAMPED spawn, msb must equal (lsb&1) + 1 + (lsb<0x80 ? 1:0).
+// Dropping the carry, mis-anding, or reverting to ±40 all break the identity.
+describe('rb4-6 R3 — spawn altitude is STPLNE (RBARON.MAC:2310-2316), not an offset', () => {
+  it("every spawn's y×4 sits in STPLNE's band and satisfies the bit-twiddle identity", () => {
+    const spawn = need(m.spawn, 'spawn')
+    const PFPLOW = 0x80 * 4 // topology.ts:396, RBARON.MAC:448 — the UPDPLN altitude floor
+    const RAW_MAX = 0x37f // r=0xFF → lsb=0x7F, carry=1 → msb=3 → 0x37F: the twiddle's true max
+    let unclamped = 0
+    for (let seed = 1; seed <= 200; seed++) {
+      const raw = spawn(createRng(seed), 0).y * 4 // undo ALT_TO_Y = 1/4 exactly (raw is integer)
+      expect(Number.isInteger(raw), `seed ${seed}: y×4 = ${raw} is not an integer — not a 16-bit altitude`).toBe(true)
+      expect(raw, `seed ${seed}: spawn altitude ${raw} below the PFPLOW clamp`).toBeGreaterThanOrEqual(PFPLOW)
+      expect(raw, `seed ${seed}: spawn altitude ${raw} above STPLNE's reachable max`).toBeLessThanOrEqual(RAW_MAX)
+      if (raw === PFPLOW) continue // the UPDPLN floor clamp — lsb not recoverable here
+      unclamped++
+      const lsb = raw & 0xff
+      const msb = raw >> 8
+      expect(
+        msb,
+        `seed ${seed}: msb ${msb} ≠ (lsb&1)+1+carry for lsb=0x${lsb.toString(16)} — ` +
+          'the STPLNE bit-twiddle (:2312-2316, carry surviving the AND) is not what produced this altitude',
+      ).toBe((lsb & 1) + 1 + (lsb < 0x80 ? 1 : 0))
+    }
+    // anti-vacuity: the identity branch must actually run (the clamp cannot eat every seed)
+    expect(unclamped, 'every spawn hit the clamp — the identity above never ran').toBeGreaterThan(50)
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ROUND 3 — step() is TOTAL on a degenerate altitude (RED for Dev: harden clamp)
+// ═══════════════════════════════════════════════════════════════════════════
+describe('rb4-6 R3 — totality: a NaN coordinate cannot poison the per-frame state', () => {
+  it('step() returns finite x/y for a hand-built NaN fixture (clamp must not propagate NaN)', () => {
+    // Review round 2 [SEC]: `clamp(NaN, lo, hi)` is NaN (Math.max/min semantics), so a NaN
+    // that ever reaches enemy.x/y persists forever. Unreachable from spawn today (all
+    // producers finite, levelIndex sanitizes) — this pins the boundary so it STAYS
+    // unreachable when future callers hand-build fixtures or thread new inputs in.
+    // RED on HEAD by design: Dev hardens the clamp (one line) to make it green.
+    const step = need(m.step, 'step')
+    const badY = step(withEnemy({ y: Number.NaN, entryFrames: 0 }, 1, 2), 2)
+    expect(Number.isFinite(badY.y), 'a NaN altitude survived step() — clamp() propagates NaN').toBe(true)
+    const badX = step(withEnemy({ x: Number.NaN, entryFrames: 0 }, 1, 2), 2)
+    expect(Number.isFinite(badX.x), 'a NaN x survived step() — clamp() propagates NaN').toBe(true)
   })
 })
