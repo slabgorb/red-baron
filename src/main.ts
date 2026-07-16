@@ -26,9 +26,9 @@
 import { flightView } from './core/camera'
 import { horizonSegments } from './core/horizon'
 import { INITIAL_FLIGHT, step, toAttitude, toEye, controlBand, type FlightInput, type FlightState } from './core/flight'
-import { step as stepEnemy, proximityBand, type Enemy } from './core/enemy'
+import { proximityBand, type Enemy } from './core/enemy'
 import {
-  spawnWave, promoteLead, INITIAL_WAVE_CLOCK, stepWaveClock,
+  spawnWave, stepWave, promoteLead, INITIAL_WAVE_CLOCK, stepWaveClock,
   grmodeForWave, planeGenDisabled, isGroundMode, GRMODE_PLANE,
 } from './core/waves'
 import { biplaneLOD, renderModel } from './core/biplane'
@@ -398,13 +398,24 @@ function preMotionFrame(events: GameEvent[]): boolean {
     accumulator -= SIM_TIMESTEP_S
   }
 
-  // 1 — EOLSEQ: the ace, consulted every calc frame (:825).
-  if (closesPast(nearestDepth(enemies)) && !gameOver && dying === null) {
+  // 1 — EOLSEQ: the returning ace, consulted every calc frame (:825).
+  // ARM once: the fly-by arms the pass the frame the closest plane reaches the P.MNDP floor
+  // (P.UPD0, :2727) — it then flies PAST and is destroyed (rb4-6 stepWave drops it), and a
+  // returning plane (NWENME) re-enters from its side. So once armed the ace attacks on its
+  // PLSTAT+7 cadence INDEPENDENTLY of the closing wave — it IS that separate returning attacker,
+  // no longer the plane that flew by (which is why the old "only while a plane hovers past the
+  // floor" gate no longer holds: nothing hovers there anymore).
+  // `JSR EOLSEQ` runs EVERY calc frame (:825): consult closesPast unconditionally so the per-frame
+  // cadence holds even once the pass is armed (the returning plane keeps re-entering off the floor).
+  const closing = closesPast(nearestDepth(enemies))
+  if (!gameOver && dying === null) {
     if (ace === null) {
-      let closest = enemies[0]
-      for (const e of enemies) if (e.depth < closest.depth) closest = e
-      ace = beginPass(closest.side)
-      aceCountdown = ACE_ATTACK_FRAMES
+      if (closing) {
+        let closest = enemies[0]
+        for (const e of enemies) if (e.depth < closest.depth) closest = e
+        ace = beginPass(closest.side)
+        aceCountdown = ACE_ATTACK_FRAMES
+      }
     } else if (!enemiesDisabled(lives)) {
       aceCountdown -= 1
       if (aceCountdown <= 0) {
@@ -518,11 +529,14 @@ function frame(nowMs: number): void {
 
     const level = gmlevlForKills(kills)
 
-    // The live wave weaves at the kill-ramped level (rb2-7). Downed planes still score BY
-    // KIND, bump OBJKLD, wreck, and PLNXCG-promote below — but the shells now fire + collide
-    // in ONE pass against the planes AND the blimp, so a shot connects with whatever it meets.
+    // The live wave weaves at the kill-ramped level (rb2-7/rb4-6). stepWave runs the two-axis
+    // window machine on each plane, holds/breaks the drone formation (PARALLEL → FREE), and
+    // DROPS planes that have bored past P.MNDP (rb4-6: they fly PAST and are destroyed as
+    // objects, not floored) so the wave empties instead of hovering in the pilot's face. Downed
+    // planes still score BY KIND, bump OBJKLD, wreck, and PLNXCG-promote below — the shells fire
+    // + collide in ONE pass against the planes AND the blimp, so a shot connects with what it meets.
     if (enemies.length > 0) {
-      enemies = enemies.map((e) => stepEnemy(e, level))
+      enemies = stepWave(enemies, level)
     }
 
     // ── the blimp (rb2-13): drift + fire, every calc-frame while present ──

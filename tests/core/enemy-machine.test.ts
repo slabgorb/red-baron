@@ -150,7 +150,6 @@ function trace(seed: number, level: number, n: number): { xs: number[]; ys: numb
   return { xs, ys, depths, deltas }
 }
 
-const mean = (xs: readonly number[]): number => xs.reduce((a, b) => a + b, 0) / xs.length
 const range = (xs: readonly number[]): number => Math.max(...xs) - Math.min(...xs)
 
 // ═══════════════════════════════════════════════════════════════════════════

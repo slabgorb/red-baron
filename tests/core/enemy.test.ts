@@ -159,19 +159,9 @@ function trace(seed: number, level: number, n: number): { xs: number[]; deltas: 
   return { xs, deltas, banks, depths }
 }
 
-/** Count sign changes across screen centre (0), treating exact 0 as "no sign". */
-function crossings(xs: readonly number[]): number {
-  let count = 0
-  let last = 0
-  for (const x of xs) {
-    const s = Math.sign(x)
-    if (s !== 0) {
-      if (last !== 0 && s !== last) count++
-      last = s
-    }
-  }
-  return count
-}
+// `crossings()` lived here to count weaves ACROSS centre. rb4-6 retired its last caller: the ROM's
+// P.INER reverses a plane AWAY from centre at the inner window (:2794-2796), so a plane never
+// crosses, and that test is now a liveness check (L306). Removed rather than left dead.
 
 const range = (xs: readonly number[]): number => Math.max(...xs) - Math.min(...xs)
 const maxAbs = (xs: readonly number[]): number => Math.max(...xs.map(Math.abs))

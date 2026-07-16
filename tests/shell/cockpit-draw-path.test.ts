@@ -442,8 +442,15 @@ const FRAMES = 24
  * fire connects mid-run, the shells death sequence grounds the pilot for .TIME2 = 28 calc frames
  * (EOL clears GUN.ST, RBARON.MAC:1109-1110 — no new shells while dying), and the gun cools
  * through the sequence. Same sky, same crash, every run — still a property of the code.
+ *
+ * Re-measured for rb4-6 (52 → 53): re-read on purpose, exactly as the guard below asks. The enemy
+ * stepper became the ROM's machine — planes now weave on the Y axis as well as X (PLNDEL runs the
+ * window servo on both, :2747/:2865-2873), so the sky under this clock is a different sky, and one
+ * more shell lives out its flight instead of ending early on a plane that used to sit still in Y.
+ * The move is +1, not a collapse: the pool still fills, the trigger is still held, and the count is
+ * stable across runs (verified 3×). A drift toward zero would still fail, which is the point.
  */
-const TOTAL_LIVE_SHELLS = 52
+const TOTAL_LIVE_SHELLS = 53
 
 beforeAll(async () => {
   await import('../../src/main') // the module body runs: resize(), the listeners, the first rAF

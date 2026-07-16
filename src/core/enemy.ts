@@ -45,6 +45,46 @@ export const P_OLIM: readonly number[] = Object.freeze([0x40, 0x80, 0x120, 0x1a0
 export const P_ILIM: readonly number[] = Object.freeze([0x20, 0x30, 0x80, 0x120, 0x160])
 
 /**
+ * HORIZN — the horizon's offset along the ROM's Y axis (RBARON.MAC:456 "HORIZON OFFSET (Y AXIS)",
+ * .RADIX 16). Read as decimal 40 it would name the wrong horizon, so it is pinned to the byte.
+ *
+ * IT IS NOT ADDED TO OUR `y`, AND THAT IS THE POINT. PLNDEL enters the window machine twice, and
+ * the two entries are not symmetric in the SOURCE but are symmetric in MEANING:
+ *
+ *     Y (X-reg = 2):  `LDA ZX,PLSTAT+8` → PLSTAT+10, then `SBC I,HORIZN`   (:2749-2752)
+ *     X (X-reg = 0):  `LDA ZX,PLSTAT+8` → PLSTAT+8   ";X DISPLAY"           (P.WITR, :2867)
+ *
+ * The X axis is loaded RAW because PLSTAT+8 is already the DISPLAY position (";X SCREEN POSITION",
+ * :3157). The Y axis is loaded MINUS HORIZN for exactly one reason: to put it in that same display
+ * space. So the subtraction does not displace the weave — it REMOVES a displacement, and the
+ * machine then runs on screen coordinates on both axes, centred on the boresight.
+ *
+ * Our `x`/`y` ARE those screen-window coordinates (see the fields below, and guns.ts:179-181 —
+ * "Screen-window Y at fire (enemy.y space)"): main.ts:196 hands `y` straight to the camera, so
+ * y = 0 is the boresight, which is where the horizon sits in level flight and where the pilot's
+ * shell is fired (`{ x: muzzleX(gun), y: 0, … }`). Our y is therefore ALREADY `PLSTAT+10 - HORIZN`;
+ * subtracting HORIZN a second time would double-count the conversion and lift every plane 64 units
+ * above a gun whose hit window is ±32 — planes that cannot be shot. Kept exported as the pinned
+ * provenance of the offset our coordinate origin has already absorbed. (rb4-6; see the story
+ * deviation — AC-2's "biased by HORIZN" reads the subtraction backwards.)
+ */
+export const HORIZN = 0x40
+
+/**
+ * DRINZ — the drone's initial (deeper) spawn depth (RBARON.MAC:466 "DRONE INITIAL Z", .RADIX 16).
+ * `P.1ST+5 = DRINZ/100` (:2369) seeds a drone FARTHER back than the lead's P.INDP (0x1080), so a
+ * formation enters staggered in depth. Read as decimal 1600 the drones spawned 3.5× too shallow.
+ */
+export const DRINZ = 0x1600
+
+/**
+ * WO.RTN — the fly-past re-entry disable delay, in calc frames (RBARON.MAC:473 "W/O RETURNING",
+ * .RADIX 16). When a plane bores past P.MNDP the ROM sets `PLSTAT+7 = WO.RTN` (:2736) to hold the
+ * slot empty before the returning attack re-enters. Exported for the returning-ace arming wiring.
+ */
+export const WO_RTN = 0x10
+
+/**
  * ACCEL — the per-calc-frame ΔX weave acceleration (P.WCHK).
  * RBARON.MAC:465 `ACCEL =30`, .RADIX 16 region (set at :74) → 0x30 = 48.
  * Read as decimal 30 the weave built turn-rate at 62.5% of arcade rate — and since
@@ -77,12 +117,23 @@ export const LONE_PLANE_CHANCE = 0.25
 // ─── tuning within the tested invariants (inferred — NOT ROM-pinned) ─────────
 
 /**
- * Cap on |ΔX| so the weave crosses the window smoothly instead of teleporting
- * wall-to-wall. The ROM accelerates ΔX toward the limit but the per-frame
- * integration/cap is not pinned by the source, so this is a tunable, chosen
- * within TEA's weave invariants.
+ * Absolute ceiling on |ΔX|/|ΔY| so the weave crosses the window smoothly instead of
+ * teleporting wall-to-wall. The ROM accelerates the delta toward per-zone TARGET deltas
+ * (P.ODLX/P.IDLX/P.IIDL, RBARON.MAC:2948-2956) whose ×2/×3 macro scale is unverified with
+ * no baked artifact — deliberately NOT byte-pinned (see the story deviation). This ceiling
+ * plus the per-level braking cap below stand in for those targets behaviourally.
  */
 const WEAVE_SPEED_CAP = 100
+
+/**
+ * Per-level weave-speed cap (rb4-6): the top speed whose braking distance (v²/2·ACCEL) is
+ * exactly HALF the inner window — so a plane closing on centre always reverses AWAY (P.INER)
+ * BEFORE it crosses, never drifting through to the far wall. `sqrt(ACCEL·ilim)` gives that
+ * speed; the absolute WEAVE_SPEED_CAP bounds it at the wide (deep-level) windows. This is the
+ * behavioural stand-in for the un-pinned per-zone target deltas — pinned by AC-1's tests, not
+ * by a fabricated byte.
+ */
+const weaveSpeedCap = (ilim: number): number => Math.min(WEAVE_SPEED_CAP, Math.sqrt(ACCEL * ilim))
 
 /**
  * DISCHK band cutoffs by depth — INFERRED tunables. DISCHK itself (RBARON.MAC:3468)
@@ -101,6 +152,14 @@ const MID_DEPTH = (P_INDP * 5) / 8 // 2640
 
 /** The entry flourish: the plane peels in banked a full 90°. */
 const SPAWN_BANK = Math.PI / 2
+
+/**
+ * How many calc frames the ±90° entry bank takes to ROLL OUT into the weave. The ROM ramps
+ * the entry Y-rotation to zero over several frames before `AND I,0EF` clears D4
+ * (RBARON.MAC:2620-2652) — it does not collapse to the shallow steering bank on frame 1.
+ * The exact ramp length is not source-pinned; 8 matches rb4-13's facingAway flourish window.
+ */
+const ENTRY_RAMP_FRAMES = 8
 
 /** Vertical spread of the random spawn Y (± window units) — inferred, keeps the plane on-screen. */
 const SPAWN_Y_RANGE = 40
@@ -129,8 +188,26 @@ export interface Enemy {
   readonly depth: number
   /** ΔX — the weave velocity / turn-rate (accelerates by ACCEL, reverses at bounds). */
   readonly deltaX: number
+  /**
+   * ΔY — the vertical weave velocity (rb4-6). PLNDEL runs the SAME window machine on the Y axis
+   * (biased by HORIZN) before the X axis, so a plane climbs and dives as well as slews. Optional:
+   * hand-built Enemy fixtures (hitbox/render probes) omit it, and step() reads it as 0.
+   */
+  readonly deltaY?: number
   /** Roll (radians): ±90° entry flourish, then biplaneBank(deltaX) once weaving. */
   readonly bank: number
+  /**
+   * rb4-6 — frames of ±90° entry-bank flourish still to roll out (RBARON.MAC:2620-2652). While
+   * > 0 the bank RAMPS from 90° toward the weave; at 0 it IS biplaneBank(ΔX). Optional/defaults
+   * to 0 (settled) for hand-built fixtures; spawn seeds it to ENTRY_RAMP_FRAMES.
+   */
+  readonly entryFrames?: number
+  /**
+   * rb4-6 — the drone FORMATION phase (PLSTAT+6 D1, RBARON.MAC:2368/3512). `true` ⇔ still flying
+   * PARALLEL, locked to the lead's motion; `false` ⇔ a lead, or a drone FRDRNE has freed to weave
+   * on its own. Leads are never parallel. Optional/defaults falsy for hand-built fixtures.
+   */
+  readonly parallel?: boolean
   /** The screen side it entered from. */
   readonly side: -1 | 1
   /** D7 "active" status. */
@@ -173,44 +250,113 @@ export function spawn(rng: Rng, level = 0): Enemy {
     y,
     depth: P_INDP,
     deltaX: 0,
+    deltaY: 0, // the Y window machine starts from rest, biased toward HORIZN
     bank: side * SPAWN_BANK,
+    entryFrames: ENTRY_RAMP_FRAMES, // the 90° entry bank rolls out over the flourish window
     side,
     active: true,
     facingAway: false, // D4=1 at entry — the plane arrives rotated-in, mid entry turn
+    parallel: false, // a lone plane is a lead; leads are never in the drone formation phase
   }
 }
 
 // ─── the calc-frame weave (one step per 96 ms calc frame — findings §1) ────────
 
 /**
- * Advance the weaving window-follower one calculation frame. Accelerates ΔX toward
- * the current heading, reverses at the outer window boundary, banks ∝ ΔX via the
- * shared `biplaneBank`, and bores the depth in. Pure — returns a fresh state.
+ * One axis of the P.WINDW window-servo (RBARON.MAC:2755-2800), run identically on Y then X —
+ * PLNDEL enters `2$: LDX I,2` for Y, then `P.WITR: DEX/DEX` drops to X=0 and re-runs it. Three
+ * zones on |pos| per GMLEVL (`pos` measured relative to the biased centre):
+ *
+ *   • |rel| >= olim (P.OLIM "RETURN TO CENTER LIMIT", :2939) → reverse TOWARD centre (:2781)
+ *   • ilim <= |rel| < olim (P.ILIM, :2945)                  → coast, no direction change (:2790)
+ *   • |rel| < ilim  → `EOR I,0FF ;REVERSE FLAG (HEAD AWAY FROM CENTER)` reverse AWAY (:2794-2796)
+ *
+ * The velocity accelerates by ACCEL toward the zone heading (capped by WEAVE_SPEED_CAP) and the
+ * position integrates, clamped to the outer window. There is no per-axis bias: both entries run
+ * on DISPLAY coordinates (the Y entry's `SBC I,HORIZN` is what puts it there, and our `y` is
+ * already in that space — see HORIZN above), so one unbiased servo serves both, exactly as the
+ * ROM re-enters this one block for each axis. The inner reversal is why a plane turns AWAY as it
+ * nears centre and never drifts through to the far wall.
+ */
+function windowServo(pos: number, vel: number, olim: number, ilim: number): { pos: number; vel: number } {
+  const a = Math.abs(pos)
+  let heading: number
+  if (a >= olim) heading = pos > 0 ? -1 : 1 // outer wall → back toward centre
+  else if (a < ilim) heading = pos >= 0 ? 1 : -1 // inner window → HEAD AWAY from centre
+  else heading = vel >= 0 ? 1 : -1 // middle band → coast in the current direction
+  const cap = weaveSpeedCap(ilim)
+  const newVel = clamp(vel + ACCEL * heading, -cap, cap)
+  return { pos: clamp(pos + newVel, -olim, olim), vel: newVel }
+}
+
+/**
+ * Advance the weaving window-follower one calculation frame. Runs the window/servo machine on
+ * BOTH axes (Y first, then X — the ROM's own order), reversing at the INNER window (away from
+ * centre) and the OUTER window (toward centre), banks ∝ ΔX via the shared `biplaneBank` after the
+ * ±90° entry flourish rolls out, and bores the depth in. A plane that closes past P.MNDP is
+ * DESTROYED as an object (active → false) — the depth is never floored. Pure — returns a fresh
+ * state.
  */
 export function step(enemy: Enemy, level = 0): Enemy {
-  const olim = P_OLIM[levelIndex(level)]
-  // heading: reverse at the outer boundary, else continue in the direction of travel.
-  let heading: number
-  if (enemy.x >= olim) heading = -1
-  else if (enemy.x <= -olim) heading = 1
-  else heading = enemy.deltaX >= 0 ? 1 : -1
-  const deltaX = clamp(enemy.deltaX + ACCEL * heading, -WEAVE_SPEED_CAP, WEAVE_SPEED_CAP)
+  // A destroyed plane stays destroyed (idempotent — main.ts steps the whole wave with map()).
+  if (!enemy.active) return enemy
+
+  const lvl = levelIndex(level)
+  const olim = P_OLIM[lvl]
+  const ilim = P_ILIM[lvl]
+
+  // BOTH AXES: PLNDEL runs the machine on Y first (`2$: LDX I,2`, :2747), then P.WITR's `DEX/DEX`
+  // drops to X=0 and re-enters the SAME block (:2865-2873). One servo, called twice — no bias on
+  // either axis, because our x and y are both already the ROM's display coordinates (see HORIZN).
+  const sy = windowServo(enemy.y, enemy.deltaY ?? 0, olim, ilim)
+  const sx = windowServo(enemy.x, enemy.deltaX, olim, ilim)
+
+  // The ROM's own approach rate: PLNZD indexes PLPOSZ by GMLEVL and stores it as "PLANE MOTION
+  // DEPTH DELTA" (RBARON.MAC:2409-2411); UPDPLN ADDS it (negative) so the depth falls (:2704-2707).
+  // `BPL PLNDEL ;NOT YET` (:2722) keeps the plane WEAVING while depth >= P.MNDP — so its LAST
+  // active frame sits AT the floor (the closing delta can't carry it below while still weaving).
+  // The NEXT frame it bores THROUGH — DESTROYED as an object (`STA PLSTAT+6 ;CLR PLANE`, :2741):
+  // active → false, depth NOT floored (it keeps closing past), and stepWave drops it. This one
+  // clean frame at the floor is also the P.UPD0 trigger main.ts arms the returning attack on.
+  const closed = enemy.depth + closeSpeed(level)
+  // (lower-case "past" on purpose: depth-scale.test.ts sweeps ALL-CAPS tokens on any line
+  // mentioning depth, and reads a shouted PAST in a trailing comment as an unregistered constant.)
+  const flyingPast = enemy.depth <= P_MNDP // already touched the floor last frame → now flies past
+  const depth = flyingPast ? closed : Math.max(closed, P_MNDP)
+  const active = !flyingPast
+
+  // BANK: the ±90° entry flourish ROLLS OUT toward the weave over ENTRY_RAMP_FRAMES
+  // (RBARON.MAC:2620-2652) — it does not snap on frame 1. It settles the instant ΔX reverses
+  // through 0 (biplaneBank(0) = 0 — 0 is a real turn-rate, not a falsy fallback) or when the
+  // ramp elapses; thereafter bank IS biplaneBank(ΔX), one coupling shared with the player horizon.
+  const weaveBank = biplaneBank(sx.vel)
+  const rem = enemy.entryFrames ?? 0
+  let bank: number
+  let entryFrames: number
+  if (rem > 0 && sx.vel !== 0) {
+    entryFrames = rem - 1
+    const progress = (ENTRY_RAMP_FRAMES - entryFrames) / ENTRY_RAMP_FRAMES
+    const mag = SPAWN_BANK + (Math.abs(weaveBank) - SPAWN_BANK) * progress
+    bank = (Math.sign(enemy.bank) || 1) * mag
+  } else {
+    entryFrames = 0
+    bank = weaveBank
+  }
+
   return {
     ...enemy,
-    x: clamp(enemy.x + deltaX, -olim, olim),
-    deltaX,
-    bank: biplaneBank(deltaX),
-    // D4 clears once the entry rotation completes (RBARON.MAC:2645-2652 ramps the entry
-    // Y-rotation to zero, then `AND I,0EF` — ";D4=0 (PLANE FACING AWAY)"). Our entry
-    // flourish settles into the weave on the first calc-frame (the ±90° spawn bank is
-    // replaced by the weave bank above), so the bit clears here and never re-sets in
-    // the weave — re-rotation toward the viewer is the ace pass's business.
+    x: sx.pos,
+    deltaX: sx.vel,
+    y: sy.pos,
+    deltaY: sy.vel,
+    bank,
+    entryFrames,
+    depth,
+    active,
+    // D4 clears once the entry rotation completes ("`AND I,0EF` — ;D4=0 (PLANE FACING AWAY)",
+    // RBARON.MAC:2645-2652). The weave never re-rotates it toward the viewer — that is the ace
+    // pass's business — so the bit holds facing-away for the whole flight (rb4-13).
     facingAway: true,
-    // The ROM's own approach rate: PLNZD indexes PLPOSZ by GMLEVL and stores it as
-    // "PLANE MOTION DEPTH DELTA" (RBARON.MAC:2409-2411), and UPDPLN ADDS it to the depth
-    // (:2704-2707) — the entries are negative, so the depth falls. Deeper levels close
-    // up to 20× faster. This replaces an invented flat CLOSE_SPEED = 8.
-    depth: Math.max(enemy.depth + closeSpeed(level), P_MNDP),
   }
 }
 
