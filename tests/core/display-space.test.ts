@@ -132,8 +132,15 @@ interface FlightModule {
 }
 
 interface WavesModule {
-  /** rb4-6 R3 — AC-R3 drives the wave through the REAL stepper so drones/fly-past ride the guard. */
-  stepWave?: (enemies: readonly Enemy[], level?: number) => readonly Enemy[]
+  /**
+   * rb4-6 R3 — AC-R3 drives the wave through the REAL stepper so drones/fly-past ride the guard.
+   *
+   * rb4-16: the stepper now takes the PILOT'S EYE. rb4-6 shipped an eye-FREE servo and said so in
+   * its own deviation (archive :583-585); this guard drove `stepWave(wave, lvl)` and therefore
+   * could not have caught a servo that read the wrong position — it measured the machine it was
+   * handed. Threading the eye is what makes this guard cover the DISPLAY-space servo in the act.
+   */
+  stepWave?: (enemies: readonly Enemy[], level?: number, eye?: Vec3) => readonly Enemy[]
 }
 
 let m: EnemyModule = {}
@@ -329,7 +336,11 @@ describe('rb4-6 R2 AC-R3 — a plane is reachable at EVERY GMLEVL (the soft-lock
         // judge with the gun that scores kills: a boresight shell at the plane's exact depth
         const shell: Shell = { x: 0, y: 0, z: e.depth / 256, active: true }
         if (collides(shell, e, toEye(flight))) framesThisLife++
-        wave = stepWave(wave, lvl) // fly-past drops the plane and the life ends, as in play
+        // rb4-16: the eye goes THROUGH the stepper, not just to the gun. The servo reads DISPLAY
+        // (RBARON.MAC:2749 Y / :2867 X), so the pilot is an INPUT to the weave — the plane reacts
+        // to where it sits on screen, and PLONSN (:2877-2937) bounds that. rb4-6 passed no eye
+        // here, which is exactly why an eye-free servo could sit under a green guard.
+        wave = stepWave(wave, lvl, toEye(flight)) // fly-past drops the plane and the life ends, as in play
       }
       reachableFrames += framesThisLife
       lives++
