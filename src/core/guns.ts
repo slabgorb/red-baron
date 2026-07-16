@@ -46,7 +46,7 @@ import type { Mat4, Vec3 } from '@arcade/shared/math3d'
  * meant: at the origin the display position IS the stored one, so a hand-built fixture that
  * places a target "at (0, 0), dead ahead" still does. Live callers — main.ts — pass `toEye(flight)`.
  */
-const EYE_ORIGIN: Vec3 = Object.freeze([0, 0, 0]) as unknown as Vec3
+const EYE_ORIGIN: Vec3 = Object.freeze([0, 0, 0])
 
 // ─── ROM-exact data (findings §5, §1) ────────────────────────────────────────
 

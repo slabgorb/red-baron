@@ -343,7 +343,10 @@ export interface Enemy {
 
 // ─── pure helpers ─────────────────────────────────────────────────────────────
 
-const clamp = (v: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, v))
+// NaN-safe: Math.min/max PROPAGATE NaN, and a NaN that ever reaches x/y persists across every
+// later frame (state is fed back through step). Unreachable from spawn today; the floor is the
+// total answer for a degenerate hand-built fixture (rb4-6 R3 totality pin).
+const clamp = (v: number, lo: number, hi: number): number => (Number.isNaN(v) ? lo : Math.max(lo, Math.min(hi, v)))
 
 /** Clamp a GMLEVL to a valid table index (0 .. .LEVLS-1). */
 const levelIndex = (level: number): number => clamp(Math.floor(level) || 0, 0, P_OLIM.length - 1)
@@ -398,7 +401,7 @@ export function spawn(rng: Rng, level = 0): Enemy {
     y,
     depth: P_INDP,
     deltaX: 0,
-    deltaY: 0, // the Y window machine starts from rest, biased toward HORIZN
+    deltaY: 0, // the Y window machine starts from rest — and UNBIASED (user ruling; see HORIZN above)
     bank: side * SPAWN_BANK,
     entryFrames: ENTRY_RAMP_FRAMES, // the 90° entry bank rolls out over the flourish window
     side,
