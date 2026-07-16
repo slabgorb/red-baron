@@ -36,12 +36,27 @@
 //         position (:3511-3528). We spawn them AT the lead's depth and weave them
 //         exactly like leads.
 //
-// WHAT THIS SUITE DELIBERATELY DOES NOT PIN (logged as a deviation): the per-level
-// weave-speed magnitudes P.ODLX/P.IDLX/P.IIDL (RBARON.MAC:2948-2956). Their
-// `.2WORD`/`.3WORD` macros carry an unverified ×2/×3 scale and there is NO baked
-// artifact to arbitrate a transcription — pinning a byte here would risk the exact
-// "read the table, ship a fabricated constant" trap the epic exists to kill. The
-// inner-window BEHAVIOUR (reverses away from centre, per-level) is pinned instead.
+// RETRACTED (round 2) — THIS SUITE'S OWN DESCOPE WAS WRONG. Round 1 said here that the
+// per-level weave-speed magnitudes P.ODLX/P.IDLX/P.IIDL (RBARON.MAC:2948-2956) could not
+// be pinned because "their `.2WORD`/`.3WORD` macros carry an unverified ×2/×3 scale and
+// there is NO baked artifact to arbitrate a transcription". That claim is FALSE, and
+// disproving it took one grep of the file this header already cites:
+//
+//     20:  .MACRO .3WORD .A,.B,.C,.D
+//     21:  .WORD  3*.A,3*.B,3*.C,3*.D
+//     25:  .MACRO .2WORD .A,.B,.C,.D
+//     26:  .WORD  2*.A,2*.B,2*.C,2*.D
+//
+// The scale is DEFINED at :20-27 — 47 lines above the `.RADIX 16` at :74 that this suite
+// DID read — and corroborated independently by the author writing each table's fifth entry
+// LONGHAND, because the macro only takes four arguments: `.WORD 80*2` (:2949), `2C*3`
+// (:2953), `40*3` (:2956). Same multiplier, spelled out. So the tables assemble with zero
+// ambiguity, and AC-1's "accelerates toward the P.IIDL target by level" was skipped for a
+// reason that does not exist — while `WEAVE_SPEED_CAP = 100` and
+// `weaveSpeedCap(ilim) = sqrt(ACCEL*ilim)` were invented to stand in for them. We shipped a
+// fabricated constant to avoid the risk of shipping a fabricated constant.
+//
+// A descope's RATIONALE is reviewable evidence, not context. Round 2 pins the bytes.
 //
 // Loaded defensively (await import in beforeAll — the flight.test.ts house pattern):
 // enemy.ts EXISTS, but its NEW exports (HORIZN, DRINZ, WO_RTN) and NEW behaviours
@@ -84,6 +99,12 @@ interface EnemyModule {
   DRINZ?: number
   /** WO.RTN — the fly-past re-entry disable delay in calc frames (RBARON.MAC:473). New in rb4-6. */
   WO_RTN?: number
+  /** P.ODLX — OUTER per-level target deltas, `.2WORD` scaled (RBARON.MAC:2948-2949). Round 2. */
+  P_ODLX?: readonly number[]
+  /** P.IDLX — MIDDLE per-level target deltas, `.3WORD` scaled (RBARON.MAC:2952-2953). Round 2. */
+  P_IDLX?: readonly number[]
+  /** P.IIDL — INNER per-level target deltas, `.3WORD` scaled (RBARON.MAC:2955-2956). Round 2. */
+  P_IIDL?: readonly number[]
   spawn?: (rng: Rng, level?: number) => Enemy
   step?: (enemy: Enemy, level?: number) => Enemy
 }
@@ -273,19 +294,139 @@ describe('rb4-6 AC-2 — the Y axis runs the same machine (PLNDEL LDX I,2 → P.
     expect(up && down, 'y only moved one way — that is a drift, not the window weave').toBe(true)
   })
 
-  it('the vertical weave is BIASED by HORIZN — it oscillates off screen-centre, not around y=0', () => {
-    // `SBC I,HORIZN` (:2750) offsets the Y position before the window test, so the
-    // plane weaves around y ≈ HORIZN, not around 0. Pin the CENTRE-LINE of the
-    // oscillation (its range midpoint), which the mean-of-a-constant can't fake:
-    // require a real vertical excursion first (fails on the frozen-y old machine),
-    // then that its midpoint is displaced from 0 by order HORIZN.
-    const horizn = need(m.HORIZN, 'HORIZN')
-    const { ys } = trace(7, 3, 400)
-    expect(range(ys), 'y never moved — the Y window machine is absent').toBeGreaterThan(8)
-    const midpoint = (Math.max(...ys) + Math.min(...ys)) / 2
-    expect(Math.abs(midpoint), 'the vertical weave is centred on 0 — HORIZN was not applied').toBeGreaterThan(
-      horizn / 2,
-    )
+  // RETIRED (round 2): `the vertical weave is BIASED by HORIZN`.
+  //
+  // It was mutation-proven vacuous TWICE independently (Dev, then the Reviewer and
+  // test-analyzer): re-adding the HORIZN bias to the Y servo left all 23 tests GREEN. It
+  // asserted only that the weave's range-midpoint sits further than HORIZN/2 from zero —
+  // which AC-1's ONE-SIDED weave satisfies on its own. Once |y| drops under P.ILIM the plane
+  // is driven away from centre on whichever side it is already on, locking into an excursion
+  // band of order hundreds of units; HORIZN/2 = 32 is swamped. It passed identically with
+  // HORIZN = 0, 0x40, or 999, and would have passed with HORIZN deleted.
+  //
+  // Worse than vacuous: it asserted a behaviour the code DELIBERATELY does not have (the user
+  // ruled the servo unbiased — `SBC I,HORIZN` NORMALIZES Y into display space, it does not
+  // displace it), so it could not fail in either direction. It is not replaced by a "better
+  // bias test", because there is no bias to test. What the ROM actually does with the pilot's
+  // Y is subtract I4YPOS (:91, :2909-2913) — and that is pinned properly, as a real claim
+  // with a real failure mode, in tests/core/display-space.test.ts (AC-R1).
+  //
+  // What survives here is the honest, load-bearing half: HORIZN's BYTE (above) and the Y
+  // axis MOVING at all (above). Both bite under mutation.
+
+  it('HORIZN has exactly ONE home — enemy.ts must not fork topology.ts:394 (rb4-6 round 2)', async () => {
+    // topology.ts already binds this equate (RBARON.MAC:456) and is wired through
+    // scene.ts:49's HORIZN_NDC. Round 1 declared a SECOND `export const HORIZN = 0x40` in
+    // enemy.ts, referenced nowhere but its own doc comment and the byte assertion above.
+    // One identifier, two homes: edit one, miss the other, and they drift silently — the
+    // exact fragility enemy.ts's own P_MNDP comment says this epic exists to kill.
+    // Dev: import/re-export from ./topology, or drop it.
+    //
+    // NOTE (TEA self-check, phase C): the obvious version of this test —
+    //   expect(enemy.HORIZN).toBe(topology.HORIZN)
+    // is VACUOUS. Both are 0x40 today, so it passes while the fork it exists to catch is
+    // sitting right there; it can only ever fire AFTER the two have already drifted, which is
+    // the damage. The fork is a STRUCTURAL fact, so assert structure: enemy.ts must not carry
+    // its own `export const HORIZN =` binding at all.
+    const src = (await import('../../src/core/enemy.ts?raw')).default as string
+    const declaresOwn = /^\s*export\s+const\s+HORIZN\s*=/m.test(src)
+    expect(
+      declaresOwn,
+      'enemy.ts declares its own `export const HORIZN` — topology.ts:394 already owns this equate ' +
+        '(RBARON.MAC:456) and is wired via scene.ts:49. Import/re-export it instead of forking it.',
+    ).toBe(false)
+    // ...and whatever enemy.ts exposes must BE topology's value, not a copy that agrees today.
+    const topo = (await import('../../src/core/topology')) as { HORIZN?: number }
+    expect(topo.HORIZN, 'topology.ts lost its HORIZN — re-derive which module owns the equate').toBe(0x40)
+    expect(need(m.HORIZN, 'HORIZN')).toBe(topo.HORIZN)
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════
+// AC-1 (round 2) — the per-zone, per-level TARGET DELTAS. The bytes ARE knowable.
+// ═══════════════════════════════════════════════════════════════════════════
+describe('rb4-6 R2 AC-1 — P.ODLX / P.IDLX / P.IIDL are transcribed, not invented', () => {
+  // The three tables are CONTIGUOUS and indexed by zone x GMLEVL. P.WINDW picks the zone by
+  // loading a base offset and adding SAVY (= GMLEVL*2, :2760-2761):
+  //   outer  -> falls through to P.WCHK with Y = SAVY            -> P.ODLX  (:2782)
+  //   middle -> `LDA I,.LEVLS*2` / `JMP P.INR0`                  -> P.IDLX  (:2791-2792)
+  //   inner  -> `LDA I,.LEVLS*4` (after `EOR I,0FF`)             -> P.IIDL  (:2797)
+  // with `.LEVLS = 5` (:504) — so the offsets *2 and *4 land exactly one and two 5-word
+  // tables along. P.WCHK then reads `LDA AY,P.ODLX` (:2806) and servos the CURRENT delta
+  // TOWARD it: "CURRENT DELTA=MAX DELTA" -> stop (:2826), else "ACCELERATE SO DELTA=MAX"
+  // by +-ACCEL (:2832, :2843-2846), else snap exactly to it (:2834-2840).
+  //
+  // That is a per-zone TARGET, not one symmetric speed cap. `weaveSpeedCap(ilim)` must go.
+
+  it('P.ODLX — OUTER deltas, `.2WORD 90,8C,84,7C` + `.WORD 80*2` (RBARON.MAC:2948-2949)', () => {
+    expect(need(m.P_ODLX, 'P_ODLX')).toEqual([0x90 * 2, 0x8c * 2, 0x84 * 2, 0x7c * 2, 0x80 * 2])
+    expect(need(m.P_ODLX, 'P_ODLX')).toEqual([288, 280, 264, 248, 256]) // the assembled decimal
+  })
+
+  it('P.IDLX — MIDDLE deltas, `.3WORD 8,14,1C,24` + `.WORD 2C*3` (RBARON.MAC:2952-2953)', () => {
+    expect(need(m.P_IDLX, 'P_IDLX')).toEqual([8 * 3, 0x14 * 3, 0x1c * 3, 0x24 * 3, 0x2c * 3])
+    expect(need(m.P_IDLX, 'P_IDLX')).toEqual([24, 60, 84, 108, 132])
+  })
+
+  it('P.IIDL — INNER deltas, `.3WORD 0,10,18,28` + `.WORD 40*3` (RBARON.MAC:2955-2956)', () => {
+    // AC-1 names this table by name: "accelerates toward the P.IIDL target by level".
+    // Note P.IIDL[0] = 0 — at GMLEVL 0 the inner target really is a dead stop. 0 is a REAL
+    // target, not a missing one; a `|| ` default here would silently promote level 0 to
+    // level 1's 48 and nobody would see it.
+    expect(need(m.P_IIDL, 'P_IIDL')).toEqual([0 * 3, 0x10 * 3, 0x18 * 3, 0x28 * 3, 0x40 * 3])
+    expect(need(m.P_IIDL, 'P_IIDL')).toEqual([0, 48, 72, 120, 192])
+  })
+
+  it('the radix is not misread — every table entry is HEX (no trailing dot)', () => {
+    // The tp1-7 trap, one game over. `.RADIX 16` from :74 makes bare operands HEX; a trailing
+    // dot means decimal (`L.OBJ =28.`, :462). Every operand in these three tables is bare, so
+    // a decimal reading of `.3WORD ...,28` would give 84 where the ROM assembles 120.
+    expect(need(m.P_IIDL, 'P_IIDL')[3], 'P.IIDL[3] read as decimal 28*3=84 — it is 0x28*3=120').toBe(120)
+    expect(need(m.P_ODLX, 'P_ODLX')[1], 'P.ODLX[1] read as decimal 8C is not even a number — 0x8C*2=280').toBe(280)
+  })
+
+  it('the servo ACCELERATES THE DELTA TOWARD the zone target and holds there (P.WCHK :2806-2864)', () => {
+    // The behaviour the tables exist for. Park a plane in the MIDDLE band (coast zone) where
+    // the target is P.IDLX[lvl], and let the servo settle: |deltaX| must converge to that
+    // target — not to sqrt(ACCEL*ilim), and not to a flat 100.
+    const step = need(m.step, 'step')
+    const lvl = 2
+    const olim = need(m.P_OLIM, 'P_OLIM')[lvl]
+    const ilim = need(m.P_ILIM, 'P_ILIM')[lvl]
+    const target = need(m.P_IDLX, 'P_IDLX')[lvl]
+    // start mid-band, already moving outward so the zone stays 'middle' for a while
+    let e = withEnemy({ x: (ilim + olim) / 2, y: 0, deltaX: 1, kind: 'lead', parallel: false }, 1, lvl)
+    let settled = Number.NaN
+    for (let f = 0; f < 12 && e.active; f++) {
+      e = step(e, lvl)
+      const a = Math.abs(e.x)
+      if (a >= ilim && a < olim) settled = Math.abs(e.deltaX)
+    }
+    expect(
+      settled,
+      `the middle-band delta settled at ${settled} instead of P.IDLX[${lvl}] = ${target} — ` +
+        `the servo is still chasing the invented weaveSpeedCap, not the ROM's target`,
+    ).toBeCloseTo(target, 0)
+  })
+
+  it('WEAVE_SPEED_CAP and weaveSpeedCap are GONE — no invented speed stands in for the tables', async () => {
+    // TEA self-check (phase C): the export-probe version of this —
+    //   expect((m as any).WEAVE_SPEED_CAP).toBeUndefined()
+    // is VACUOUS. Both are module-PRIVATE `const`s, so the probe reads undefined today and
+    // would keep reading undefined no matter how alive they are. It proves nothing. They are
+    // source-level facts; assert the source.
+    const src = (await import('../../src/core/enemy.ts?raw')).default as string
+    // strip comments first: the RETRACTION above names both symbols in prose, and a raw grep
+    // would match THAT and pass on a comment instead of the code (the tp1-10 trap).
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    expect(
+      /\bconst\s+WEAVE_SPEED_CAP\s*=/.test(code),
+      'WEAVE_SPEED_CAP survived — the fabricated cap must be deleted in favour of P.ODLX/P.IDLX/P.IIDL',
+    ).toBe(false)
+    expect(
+      /\bconst\s+weaveSpeedCap\s*=/.test(code),
+      'weaveSpeedCap survived — the invented sqrt(ACCEL*ilim) must be deleted in favour of the ROM tables',
+    ).toBe(false)
   })
 })
 
@@ -296,6 +437,36 @@ describe('rb4-6 AC-3 — fly-past destruction at P.MNDP (P.UPD0, RBARON.MAC:2722
   it('WO_RTN is the byte-exact re-entry delay — 0x10 = 16 frames (RBARON.MAC:473, .RADIX 16)', () => {
     expect(need(m.WO_RTN, 'WO_RTN')).toBe(0x10)
     expect(need(m.WO_RTN, 'WO_RTN')).not.toBe(10)
+  })
+
+  it('WO_RTN is actually WIRED — a constant whose only consumer is this test is not a delay', async () => {
+    // Round 1 exported WO_RTN with the doc "Exported for the returning-ace arming wiring" and
+    // then wired nothing: `grep -rn WO_RTN src/` returns the declaration and nothing else. Its
+    // only "consumer" was the byte assertion above, which is why AC-3's "with the WO.RTN
+    // re-entry delay" reads as covered while being entirely absent.
+    //
+    // The ROM: a fly-past stores `PLSTAT+7 = WO.RTN` (:2736) to hold the slot empty, and the
+    // returning pass resolves when that same counter reaches 0x0C (`CMP I,0C`, :1078-1080 —
+    // our ACE_ATTACK_FRAMES). So WO.RTN=0x10 SEEDS the counter that ACE_ATTACK_FRAMES=0x0C
+    // then triggers on: a real 4-frame re-entry delay, not two unrelated constants.
+    //
+    // Dev: either wire it (seed the ace countdown from WO_RTN on the fly-past) or DELETE the
+    // export and log the descope. Do not leave fidelity-shaped scenery.
+    //
+    // This reads source because "is it referenced outside its own declaration?" has no runtime
+    // seam. It therefore matches an IMPORT BINDING, not the bare token: a `?raw` guard that
+    // greps for a name is defeated the moment someone writes the name in a COMMENT near the
+    // call site (the tp1-10 lesson — the guard then passes on prose, not code). An import list
+    // is code by construction, so a comment cannot satisfy it.
+    const importsWoRtn = (src: string): boolean =>
+      /import\s*{[^}]*\bWO_RTN\b[^}]*}\s*from\s*['"][^'"]*enemy['"]/.test(src)
+    const main = (await import('../../src/main.ts?raw')).default as string
+    const ace = (await import('../../src/core/returning-ace.ts?raw')).default as string
+    expect(
+      importsWoRtn(main) || importsWoRtn(ace),
+      "WO_RTN is imported by neither main.ts nor returning-ace.ts — AC-3's re-entry delay is unimplemented " +
+        'and the export is dead. Wire it (seed the ace countdown on fly-past), or drop the export and log it.',
+    ).toBe(true)
   })
 
   it('a closing plane is DEACTIVATED when it bores past P.MNDP — it does not stay active forever', () => {
@@ -345,14 +516,23 @@ describe('rb4-6 AC-3 — fly-past destruction at P.MNDP (P.UPD0, RBARON.MAC:2722
     const mndp = need(m.P_MNDP, 'P_MNDP')
     let e = spawnAt(7, 4)
     let lastActiveDepth = e.depth
+    let deactivated = false
     for (let f = 0; f < 4000; f++) {
       const next = step(e, 4)
-      if (!next.active) break
+      if (!next.active) {
+        deactivated = true
+        break
+      }
       lastActiveDepth = next.depth
       e = next
     }
-    // On the last frame it was still alive it had already closed to (or past) P.MNDP —
-    // it was never destroyed while far away.
+    // BOTH HALVES (round 2). This test only ever asserted the second half — that the plane
+    // is not destroyed while far away — and was mutation-proven to pass against the OLD
+    // clamp-forever machine, where the loop simply runs out at 4000 frames and
+    // `lastActiveDepth` settles at the clamped floor, still satisfying `<= mndp+1`. A guard
+    // that holds when the behaviour it guards never happens is scenery. Assert the event.
+    expect(deactivated, 'the plane NEVER deactivated in 4000 frames — it is hovering at a floor again').toBe(true)
+    // ...and it was never destroyed while it was still a far, live threat.
     expect(lastActiveDepth, 'the plane deactivated while still far from the player').toBeLessThanOrEqual(mndp + 1)
   })
 
@@ -419,6 +599,11 @@ describe('rb4-6 AC-4 — drone two-phase formation (spawn :2362-2389, FRDRNE :35
       return ws.filter((e) => e.kind === 'drone' && e.parallel).map((d) => d.x - ld.x)
     }
     const first = offsetsOf(wave)
+    // PRECONDITION (round 2). `offsetsOf` filters on `e.parallel`, so if drones are never
+    // flagged parallel at spawn this test compares [] to [] and passes having asserted
+    // NOTHING — mutation-proven: reverting the spawn to `{...lead, kind:'drone'}` left it
+    // GREEN. Pin the precondition explicitly, or the guard is scenery.
+    expect(first.length, 'no PARALLEL drone at spawn — this test would compare two empty arrays').toBeGreaterThan(0)
     for (let f = 0; f < 5; f++) live = stepWave(live, 0)
     const later = offsetsOf(live)
     expect(later.length, 'the drones left formation immediately — no PARALLEL phase').toBe(first.length)
@@ -438,6 +623,13 @@ describe('rb4-6 AC-4 — drone two-phase formation (spawn :2362-2389, FRDRNE :35
     const stepWave = need(w.stepWave, 'stepWave')
     const { wave } = droneWave()
     let live = wave
+    // PRECONDITION (round 2). `sawFree` looks for a drone with `!parallel` — which is
+    // trivially TRUE from frame 0 if drones are never flagged parallel at all. Mutation-proven
+    // vacuous in that state. Require the formation to EXIST before proving it breaks.
+    expect(
+      wave.some((e) => e.kind === 'drone' && e.parallel),
+      'no PARALLEL drone at spawn — `sawFree` would be true from frame 0 having proven nothing',
+    ).toBe(true)
     let sawFree = false
     for (let f = 0; f < 300 && !sawFree; f++) {
       live = stepWave(live, 0)
