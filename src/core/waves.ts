@@ -27,7 +27,7 @@
 // PURE and deterministic — the ONLY randomness is the seeded Rng handed to `spawnWave`.
 
 import { type Rng, nextFloat } from '@arcade/shared/rng'
-import { spawn, LONE_PLANE_CHANCE, type Enemy } from './enemy'
+import { spawn, step, LONE_PLANE_CHANCE, DRINZ, type Enemy } from './enemy'
 
 // ─── ROM-exact data (findings §3, §4) ────────────────────────────────────────
 
@@ -77,9 +77,8 @@ export function planeCountForScore(score: number): number {
 /**
  * Spawn one wave. First the 25 % RANDOM lone-plane roll (LONE_PLANE_CHANCE) — if it
  * fires, a single lead regardless of score; otherwise a score-scaled count: a 'lead'
- * plane (from enemy.spawn) plus drones at DRONE_OFFSETS, each sharing the lead's depth
- * and flight state. Consumes the seeded Rng (the lone roll, then enemy.spawn for the
- * lead; drones are deterministic offsets). Pure per seed.
+ * plane (from enemy.spawn) plus drones at DRONE_OFFSETS. Consumes the seeded Rng (the
+ * lone roll, then enemy.spawn for the lead; drones are deterministic offsets). Pure per seed.
  */
 export function spawnWave(rng: Rng, score: number, level = 0): readonly Enemy[] {
   const lone = nextFloat(rng) < LONE_PLANE_CHANCE
@@ -88,9 +87,57 @@ export function spawnWave(rng: Rng, score: number, level = 0): readonly Enemy[] 
   const wave: Enemy[] = [lead]
   for (let i = 0; i < count - 1; i++) {
     const [dx, dy] = DRONE_OFFSETS[i]
-    wave.push({ ...lead, kind: 'drone', x: lead.x + dx, y: lead.y + dy })
+    // rb4-6: a drone enters FARTHER back than the lead (`LDA I,DRINZ/100 / STA P.1ST+5`,
+    // RBARON.MAC:2369-2370 — the depth MSB, so 0x1600) and flagged FORMATION FLIGHT
+    // (`LDA I,2 / STA P.1ST+6`, :2367-2368) — it flies PARALLEL until FREPAR frees it.
+    wave.push({ ...lead, kind: 'drone', x: lead.x + dx, y: lead.y + dy, depth: DRINZ, parallel: true })
   }
   return wave
+}
+
+/**
+ * Advance the whole wave one calculation frame — the PLMOTN/FREPAR seam (RBARON.MAC:3500-3529) a
+ * single-enemy step() cannot see. Each plane weaves (enemy.step); a PARALLEL drone RIDES the lead's
+ * motion, holding its entry (x, y) offset instead of weaving independently, until FREPAR frees it.
+ * Planes that bore past P.MNDP deactivate in step() and are DROPPED here, so the live wave shrinks
+ * rather than piling up destroyed objects at a depth floor. Pure — the input array and its planes
+ * are untouched.
+ *
+ * WHAT FREES A DRONE. `FRDRNE` itself (:3511-3528) carries NO distance or timer test — it frees a
+ * parallel drone (`LSR ZX,PLOBDB+6 ;FREE DRONE`) unconditionally and resolves its stored offset to
+ * an absolute position by adding the lead's. So the break is decided entirely by WHEN `FREPAR` is
+ * called, and the ROM calls it in exactly two places:
+ *
+ *   1. :2652-2653 — the frame the LEAD's entry rotation finishes ramping to zero: `AND I,0EF`
+ *      (";D4=0 (PLANE FACING AWAY)") is immediately followed by `JSR FREPAR ;FREE PARALLEL DRONES`.
+ *      The formation holds for exactly as long as the lead is still rotating in, and breaks the
+ *      instant it settles — so problem item 5's entry ramp and AC-4's break are ONE event.
+ *   2. :5587 — a shell kills the lead (`JSR PLNSCR` / `SPIRAL`): the survivors go free.
+ *
+ * Both are keyed on the LEAD, never on the drone's own depth. An earlier draft of this story
+ * proxied the break as a fixed `DRINZ - 0x30` closing distance; that constant is not in the ROM
+ * (see the story deviation), and inventing a depth is the exact failure rb4-1 exists to prevent.
+ */
+export function stepWave(enemies: readonly Enemy[], level = 0): readonly Enemy[] {
+  const preLead = enemies.find((e) => e.kind === 'lead' && e.active)
+  const stepped = enemies.map((e) => step(e, level))
+  const postLead = stepped.find((e) => e.kind === 'lead' && e.active)
+  // FREPAR fires when the lead's entry rotation has finished ramping (call site 1), or when there
+  // is no live lead left to fly formation on at all (call site 2 — the shell that killed it).
+  const freed = !postLead || (postLead.entryFrames ?? 0) === 0
+  return stepped
+    .map((s, i): Enemy => {
+      if (s.kind !== 'drone' || !s.active || !s.parallel) return s
+      if (freed) return { ...s, parallel: false } // FRDRNE: 2 → 1, offset resolved to absolute
+      // Still PARALLEL: ride the lead — re-impose the drone's pre-step offset onto the new lead
+      // position (a fixed offset, so the formation holds exactly across the frame).
+      if (preLead && postLead) {
+        const pre = enemies[i]
+        return { ...s, x: postLead.x + (pre.x - preLead.x), y: postLead.y + (pre.y - preLead.y) }
+      }
+      return s
+    })
+    .filter((e) => e.active)
 }
 
 /**

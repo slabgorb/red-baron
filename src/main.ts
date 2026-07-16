@@ -26,9 +26,9 @@
 import { flightView } from './core/camera'
 import { horizonSegments } from './core/horizon'
 import { INITIAL_FLIGHT, step, toAttitude, toEye, controlBand, type FlightInput, type FlightState } from './core/flight'
-import { step as stepEnemy, proximityBand, type Enemy } from './core/enemy'
+import { proximityBand, displayPos, WO_RTN, type Enemy } from './core/enemy'
 import {
-  spawnWave, promoteLead, INITIAL_WAVE_CLOCK, stepWaveClock,
+  spawnWave, stepWave, promoteLead, INITIAL_WAVE_CLOCK, stepWaveClock,
   grmodeForWave, planeGenDisabled, isGroundMode, GRMODE_PLANE,
 } from './core/waves'
 import { biplaneLOD, renderModel } from './core/biplane'
@@ -51,7 +51,7 @@ import { groundCollision } from './core/ground-collision'
 import type { GameEvent } from './core/events'
 import { createAudioEngine } from './shell/audio'
 import { playEventSounds, updateContinuousSounds } from './shell/audio-dispatch'
-import { multiply, translation, rotationZ, type Mat4 } from '@arcade/shared/math3d'
+import { multiply, translation, rotationZ, type Mat4, type Vec3 } from '@arcade/shared/math3d'
 import { createRng, nextFloat } from '@arcade/shared/rng'
 import { INITIAL_PAUSED, isPauseKey, togglePaused } from '@arcade/shared/pause'
 import { drawEscOverlay } from '@arcade/shared/esc-overlay'
@@ -177,13 +177,26 @@ function draw(
   // Empty (renders nothing) outside a ground wave.
   strokeSegments(mountainSegments(mountains, attitude, eye, aspect), width, height)
 
-  // the wave — each live plane is a CAMERA-RELATIVE screen-window object (x, y) at
-  // `depth`, banked, tilting with the player's attitude. Unlike the world-anchored
-  // mountains/horizon, motion objects are already in view-relative coords, so they take
-  // ONLY the bank (eye at the origin) — the UNIV4X/I4YPOS world pan must not drift them
-  // off as the pilot turns or climbs. MVP = projection · view · model; the model is
-  // picked by the PLSTAT+6 D4 orientation bit (biplaneLOD(enemy.facingAway), rb4-13 —
-  // never by depth). Downed planes fall away as UPPLEX wrecks (rb2-6).
+  // the wave — each live plane is a WORLD object at `depth`, banked, tilting with the player's
+  // attitude, and drawn where the pilot can actually see it: `displayPos(enemy, eye)`, the ROM's
+  // PLSTAT − UNIV4X (:2909-2913).
+  //
+  // rb4-6 round 2 RETRACTS the exemption that used to sit here. It read "motion objects are
+  // already in view-relative coords, so they take ONLY the bank (eye at the origin) — the
+  // UNIV4X/I4YPOS world pan must not drift them off as the pilot turns or climbs", and it was the
+  // one claim the ROM contradicts outright: a plane's stored position IS world, and turning or
+  // climbing is EXACTLY what moves it across the screen. That is how the pilot aims. Exempting
+  // motion objects from the pan meant the stick could not move a plane one unit, so the servo wove
+  // it out of a gun window nothing could steer — the round-1 soft-lock. rb4-5's own suite already
+  // stated the correct model ("objects are drawn at (their X − UNIV4X)", camera-shape.test.ts:10-11);
+  // motion objects were simply wrongly excused from it.
+  //
+  // The eye enters through `displayPos` rather than through `flightView` so the plane is DRAWN
+  // through the identical function the gun KILLS it with — one seam, no second copy of the pan to
+  // rot (the lesson guns.ts's own `shellDepth` comment records). `view` therefore stays at the
+  // origin: it is the display-space camera the tracers, wrecks and airship already live in.
+  // MVP = projection · view · model; the model is picked by the PLSTAT+6 D4 orientation bit
+  // (biplaneLOD(enemy.facingAway), rb4-13 — never by depth).
   const view = flightView(attitude, [0, 0, 0])
   const projView: Mat4 = multiply(sceneProjection(aspect), view)
 
@@ -193,7 +206,8 @@ function draw(
     strokeSegments(wreckSegments(wreck, projView), width, height)
   }
   for (const enemy of enemies) {
-    const model = multiply(translation(enemy.x, enemy.y, -enemy.depth), rotationZ(enemy.bank))
+    const screen = displayPos(enemy, eye)
+    const model = multiply(translation(screen.x, screen.y, -enemy.depth), rotationZ(enemy.bank))
     strokeSegments(renderModel(biplaneLOD(enemy.facingAway), multiply(projView, model)), width, height)
   }
 
@@ -328,6 +342,20 @@ let blimp: Blimp | null = null // the drifting airship (rb2-13) — null when no
 let lives: Lives = initialLives() // the player's planes remaining (rb2-9) — the blimp's fire is the first wired damage
 let mountains: readonly Mountain[] = [] // the scrolling ground-wave landscape (rb3-3); populated only in GRMODE
 let wrecks: Wreck[] = [] // downed planes falling/exploding as UPPLEX wrecks, coexisting with survivors
+
+/**
+ * The airship as a WORLD-space target, so it can ride the same collision pass the planes do.
+ *
+ * `blimpTarget` reports the airship where it is ON SCREEN (rb2-13 stores it that way), while a
+ * plane's (x, y) is now its world position and `guns.collides` subtracts the eye from every target
+ * it is handed. Lifting the airship by that same eye makes the round trip exact, so its hit window
+ * lands precisely where it always did. See the call site for why this is the ROM's conversion and
+ * what rb4-15 does with it.
+ */
+function worldBlimpTarget(b: Blimp, eye: Vec3): Enemy {
+  const t = blimpTarget(b)
+  return { ...t, x: t.x + eye[0], y: t.y + eye[1] }
+}
 let waveClock = INITIAL_WAVE_CLOCK // MODECT/MCOUNT schedule — spaces waves at the calc-frame cadence
 let grmode = GRMODE_PLANE // GRMODE ground-wave byte — set to INITGR (0C0) on a ground slot, cleared (STPLNE) on a plane slot (rb3-2)
 let guns: Guns = INITIAL_GUNS
@@ -355,7 +383,13 @@ const blimpRng = createRng((seed ^ 0x5e_ed) >>> 0) // the BLMOTN spawn roll + th
 // The ace's 50/50 rolls draw from their OWN seeded stream — sharing blimpRng
 // would shift the airship's whole life (TEA's rng-discipline finding).
 let ace: ReturningAce | null = null // the armed pass (ENSIDE + BEFLAG); one per game, like the ROM's globals
-let aceCountdown = ACE_ATTACK_FRAMES // calc frames until the armed ace's next attack (PLSTAT+7 → 0x0C)
+// PLSTAT+7, the fly-past slot counter. WO.RTN SEEDS it ("DISABLE PLANE FOR WO.RTN FRAMES",
+// :2736-2737) and the returning pass resolves its evade check on the frame it reads 0x0C
+// (`LDA PLSTAT+7 / CMP I,0C`, :1078-1080 — our ACE_ATTACK_FRAMES). The two constants are ONE
+// mechanism: the gap between them, WO_RTN − ACE_ATTACK_FRAMES = 4 frames, IS AC-3's "WO.RTN
+// re-entry delay". Round 1 exported WO_RTN, wired nothing, and seeded this from ACE_ATTACK_FRAMES,
+// which left two unrelated numbers and no delay at all.
+let aceCountdown = WO_RTN
 let dying: EolState | null = null // the EOGTMR sequence in progress; freezes the pilot's world
 let gameOver = false // ENDLFE with no lives left (RBARON.MAC:1207-1212)
 const aceRng = createRng((seed ^ 0xace5) >>> 0) // the EOLSEQ JSR RANDOM (:1090)
@@ -398,17 +432,30 @@ function preMotionFrame(events: GameEvent[]): boolean {
     accumulator -= SIM_TIMESTEP_S
   }
 
-  // 1 — EOLSEQ: the ace, consulted every calc frame (:825).
-  if (closesPast(nearestDepth(enemies)) && !gameOver && dying === null) {
+  // 1 — EOLSEQ: the returning ace, consulted every calc frame (:825).
+  // ARM once: the fly-by arms the pass the frame the closest plane reaches the P.MNDP floor
+  // (P.UPD0, :2727) — it then flies PAST and is destroyed (rb4-6 stepWave drops it), and a
+  // returning plane (NWENME) re-enters from its side. So once armed the ace attacks on its
+  // PLSTAT+7 cadence INDEPENDENTLY of the closing wave — it IS that separate returning attacker,
+  // no longer the plane that flew by (which is why the old "only while a plane hovers past the
+  // floor" gate no longer holds: nothing hovers there anymore).
+  // `JSR EOLSEQ` runs EVERY calc frame (:825): consult closesPast unconditionally so the per-frame
+  // cadence holds even once the pass is armed (the returning plane keeps re-entering off the floor).
+  const closing = closesPast(nearestDepth(enemies))
+  if (!gameOver && dying === null) {
     if (ace === null) {
-      let closest = enemies[0]
-      for (const e of enemies) if (e.depth < closest.depth) closest = e
-      ace = beginPass(closest.side)
-      aceCountdown = ACE_ATTACK_FRAMES
+      if (closing) {
+        let closest = enemies[0]
+        for (const e of enemies) if (e.depth < closest.depth) closest = e
+        ace = beginPass(closest.side)
+        aceCountdown = WO_RTN // :2736 — the slot is held empty for WO.RTN frames before re-entry
+      }
     } else if (!enemiesDisabled(lives)) {
       aceCountdown -= 1
-      if (aceCountdown <= 0) {
-        aceCountdown = ACE_ATTACK_FRAMES
+      if (aceCountdown <= ACE_ATTACK_FRAMES) {
+        // :1078-1080 — the pass resolves the frame PLSTAT+7 reads 0x0C, WO.RTN−0x0C frames after
+        // the fly-past armed it; then the slot re-seeds for the next re-entry.
+        aceCountdown = WO_RTN
         const attack = evadeCheck(ace, flight.turnRate, nextFloat(aceRng))
         ace = attack.ace
         if (attack.result === 'hit') {
@@ -518,11 +565,14 @@ function frame(nowMs: number): void {
 
     const level = gmlevlForKills(kills)
 
-    // The live wave weaves at the kill-ramped level (rb2-7). Downed planes still score BY
-    // KIND, bump OBJKLD, wreck, and PLNXCG-promote below — but the shells now fire + collide
-    // in ONE pass against the planes AND the blimp, so a shot connects with whatever it meets.
+    // The live wave weaves at the kill-ramped level (rb2-7/rb4-6). stepWave runs the two-axis
+    // window machine on each plane, holds/breaks the drone formation (PARALLEL → FREE), and
+    // DROPS planes that have bored past P.MNDP (rb4-6: they fly PAST and are destroyed as
+    // objects, not floored) so the wave empties instead of hovering in the pilot's face. Downed
+    // planes still score BY KIND, bump OBJKLD, wreck, and PLNXCG-promote below — the shells fire
+    // + collide in ONE pass against the planes AND the blimp, so a shot connects with what it meets.
     if (enemies.length > 0) {
-      enemies = enemies.map((e) => stepEnemy(e, level))
+      enemies = stepWave(enemies, level)
     }
 
     // ── the blimp (rb2-13): drift + fire, every calc-frame while present ──
@@ -563,9 +613,23 @@ function frame(nowMs: number): void {
     // ── ONE shared collision pass (rb2-5): the player's shells vs the planes AND the blimp ──
     // The blimp rides the shared guns seam via blimpTarget(); it sits AFTER the planes in the
     // target list, so a hit on that index is the airship going down.
+    //
+    // rb4-6 round 2: the shot is judged in DISPLAY space, so the gun takes the pilot's own eye —
+    // the same `toEye` pair the camera uses (UNIV4X on X, I4YPOS on Y). Without it a plane is shot
+    // at in world coordinates the stick cannot move, and the sky goes bulletproof.
+    //
+    // The airship is still a DISPLAY-space drifter (rb2-13; the ROM's approaching-Z airship is
+    // rb4-15's story), so it is LIFTED into world space here to ride the one collision pass the
+    // planes now use. That is the ROM's own conversion, not a fudge — every spawn site stores
+    // `offset + UNIV4X` (`ADC UNIV4X / STA PLSTAT`, RBARON.MAC:2291-2297, :2223, :2500) precisely
+    // because positions live in world and only screen READS subtract the pilot back out. Adding the
+    // eye here and subtracting it in `collides` is that round trip, so the airship's behaviour is
+    // bit-identical to what it shipped: it stays pinned to the screen. When rb4-15 gives the blimp
+    // real world coordinates, this lift is what it deletes.
+    const eyeNow = toEye(flight)
     const blimpTargetIndex = enemies.length
-    const targets: readonly Enemy[] = blimp !== null ? [...enemies, blimpTarget(blimp)] : enemies
-    const shotResult = stepGuns(guns, targets)
+    const targets: readonly Enemy[] = blimp !== null ? [...enemies, worldBlimpTarget(blimp, eyeNow)] : enemies
+    const shotResult = stepGuns(guns, targets, eyeNow)
     guns = shotResult.guns
     if (shotResult.hits.length > 0) {
       const downed = new Set<number>(shotResult.hits.map((h) => h.target))
@@ -588,7 +652,11 @@ function frame(nowMs: number): void {
           const points = scoreKill(plane.kind, plane.depth)
           countUp = queueScore(countUp, points) // ";QUEUE SCORE" (:3049) — SCOREM drains it
           kills += 1
-          wrecks.push(explode(plane))
+          // The wreck bursts where the plane WAS ON SCREEN. A downed plane leaves the world sim
+          // (the ROM's `STA PLSTAT+6 ;CLR PLANE`, :2741) and becomes a display-space object that
+          // falls out of frame, which is the space wrecks/tracers/the airship already share — so
+          // the world→display conversion happens once, here, at the boundary the object crosses.
+          wrecks.push(explode({ ...plane, ...displayPos(plane, toEye(flight)) }))
           // A kill worth the flat 300 also rings the TH jingle (findings §6A).
           events.push({ type: 'enemy-destroyed', kind: plane.kind, points })
         }

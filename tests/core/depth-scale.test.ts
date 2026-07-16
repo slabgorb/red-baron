@@ -587,6 +587,12 @@ describe('COMPLETENESS — every depth-denominated constant is enumerated, or th
       // The axis itself, and the ROM constants that define it.
       'P_INDP',
       'P_MNDP',
+      // DRINZ — rb4-6. The DRONE's spawn depth (RBARON.MAC:466 "DRONE INITIAL Z", .RADIX 16),
+      // seeded by `LDA I,DRINZ/100 / STA P.1ST+5` (:2369-2370) — the depth MSB, so 0x1600. It is a
+      // position ON the axis, transcribed from the ROM with a citation rather than derived from
+      // P_INDP, and it is a ROM NAME: renaming it to DRONE_SPAWN_DEPTH to satisfy the sweep would
+      // trade the provenance for the spelling. Registered here for the same reason P_INDP is.
+      'DRINZ',
       'S_MAXZ',
       'S_DPTH',
       'SPAWN_DEPTH',
