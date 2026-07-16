@@ -127,8 +127,10 @@ vi.mock('../../src/core/guns', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/core/guns')>()
   return {
     ...actual,
-    step: (guns: Parameters<typeof actual.step>[0], targets: readonly Enemy[]) => {
-      const out = actual.step(guns, targets)
+    // rb4-6: forward the display-space EYE (see cockpit-draw-path.test.ts's note) — a passthrough
+    // that re-declares the signature silently drops any argument the real gun later grows.
+    step: (guns: Parameters<typeof actual.step>[0], targets: readonly Enemy[], eye: Vec3) => {
+      const out = actual.step(guns, targets, eye)
       rec.gunSteps.push({ shells: out.guns.shells, targets, hits: out.hits.length })
       return out
     },

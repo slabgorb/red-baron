@@ -394,6 +394,10 @@ export const HORZ = 0x1000 // 4096
 export const HORIZN = 0x40 // 64
 /** `PFPLOW` = $80·4 — plane minimum altitude above the horizon (I4YPOS floor, ground mode). */
 export const PFPLOW = 0x80 * 4 // 512
+/** `PFPHI` = $140·4 — plane MAXIMUM altitude (RBARON.MAC:449). The ceiling half of the band
+ *  UPDPLN clamps every plane's world Y into (:2595-2611); PFPLOW is its floor. rb4-6 needs both:
+ *  the pair is what keeps a weaving plane inside the altitude the pilot's own eye can reach. */
+export const PFPHI = 0x140 * 4 // 1280
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MOUNTAIN RENDER CONNECT-TABLES (rb3-3) — the SEGSTR stitch data rb3-1 DEFERRED.

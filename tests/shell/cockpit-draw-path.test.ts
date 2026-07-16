@@ -111,7 +111,7 @@ import {
 } from '../../src/core/flight'
 import { sceneProjection, type SceneSegment } from '../../src/core/scene'
 import { shellDepth, S_DPTH, type Shell } from '../../src/core/guns'
-import { P_INDP, type Enemy } from '../../src/core/enemy'
+import { P_INDP, displayPos, type Enemy } from '../../src/core/enemy'
 import type { Wreck } from '../../src/core/explosion'
 
 // ─────────────────────────────────────────────────────────────────────────────────
@@ -151,6 +151,14 @@ interface GunStep {
   readonly shells: readonly Shell[]
   /** The live targets the shells were tested against: the planes, plus the airship if present. */
   readonly targets: readonly Enemy[]
+  /**
+   * rb4-6 — the EYE the shells were tested FROM. A target's stored position is WORLD; where it is
+   * on screen (and therefore where it can be hit, and where it must be drawn) is that minus the
+   * pilot. Capturing the eye the collision arm actually used is what lets TARGET TRUTH keep
+   * measuring the drawn position against the killed position now that the two share a projection
+   * rather than a coordinate.
+   */
+  readonly eye: Vec3
   readonly hits: number
 }
 
@@ -208,9 +216,14 @@ vi.mock('../../src/core/guns', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/core/guns')>()
   return {
     ...actual,
-    step: (guns: Parameters<typeof actual.step>[0], targets: readonly Enemy[]) => {
-      const out = actual.step(guns, targets)
-      rec.gunSteps.push({ shells: out.guns.shells, targets, hits: out.hits.length })
+    // rb4-6: forward the EYE. This wrapper used to take (guns, targets) and call through with
+    // exactly those two — so when the gun gained a display-space eye, the recorded cockpit silently
+    // collided from the origin while the real one collided from the pilot. A passthrough mock that
+    // re-declares its parameters is a copy of the signature, and a copy cannot track anything: the
+    // suite went on measuring a sim that no longer existed. Forward and record what was really used.
+    step: (guns: Parameters<typeof actual.step>[0], targets: readonly Enemy[], eye: Vec3) => {
+      const out = actual.step(guns, targets, eye)
+      rec.gunSteps.push({ shells: out.guns.shells, targets, eye, hits: out.hits.length })
       return out
     },
     shellSegments: (shell: Shell, mvp: Mat4): readonly SceneSegment[] => {
@@ -399,10 +412,24 @@ function originNdc(mvp: readonly number[]): { x: number; y: number; w: number } 
   return { x: mvp[3] / mvp[15], y: mvp[7] / mvp[15], w: mvp[15] }
 }
 
-/** Where the sim says an object at (x, y, depth) belongs on the screen. */
-function ndcOfTarget(t: Enemy): { x: number; y: number } {
-  const c = clipOf(PROJ_VIEW, [t.x, t.y, -t.depth])
+/** Where the sim says an object at DISPLAY (x, y, depth) belongs on the screen. */
+function ndcOfDisplay(x: number, y: number, depth: number): { x: number; y: number } {
+  const c = clipOf(PROJ_VIEW, [x, y, -depth])
   return { x: c.x / c.w, y: c.y / c.w }
+}
+
+/**
+ * Where the sim says a WORLD-space target belongs on the screen, seen from `eye`.
+ *
+ * rb4-6: a plane's stored (x, y) is its WORLD position and its screen position is that minus the
+ * pilot (`PLSTAT − UNIV4X`, RBARON.MAC:2909-2913) — so the ground truth for "where must it be
+ * drawn" is `displayPos` at the eye the gun COLLIDED from. That keeps this measurement exactly
+ * what it always was — the drawn position versus the killed position — through the one function
+ * both arms call, rather than through a second copy of the pan that could drift from it.
+ */
+function ndcOfTarget(t: Enemy, eye: Vec3): { x: number; y: number } {
+  const s = displayPos(t, eye)
+  return ndcOfDisplay(s.x, s.y, t.depth)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────
@@ -443,19 +470,28 @@ const FRAMES = 24
  * (EOL clears GUN.ST, RBARON.MAC:1109-1110 — no new shells while dying), and the gun cools
  * through the sequence. Same sky, same crash, every run — still a property of the code.
  *
- * Re-measured for rb4-6 (52 → 53): re-read on purpose, exactly as the guard below asks. The enemy
- * stepper became the ROM's machine — planes now weave on the Y axis as well as X (PLNDEL runs the
- * window servo on both, :2747/:2865-2873), so the sky under this clock is a different sky, and one
- * more shell lives out its flight instead of ending early on a plane that used to sit still in Y.
- * The move is +1, not a collapse: the pool still fills, the trigger is still held, and the count is
- * stable across runs (verified 3×). A drift toward zero would still fail, which is the point.
+ * Re-measured for rb4-6 (52 → 53), and the REASON is not the one round 1 recorded here.
+ *
+ * Round 1 wrote that the +1 was "one more shell lives out its flight instead of ending early on a
+ * plane that used to sit still in Y". The Reviewer read that back as what it was: a shell that used
+ * to CONNECT now MISSED, i.e. this number had noticed the soft-lock and been re-pinned over it. The
+ * instruction was to re-read it only once the reachability defect was fixed, so that is what this
+ * is — measured on the far side of the display seam, not before it.
+ *
+ * What the run now does: planes spawn at STPLNE's absolute altitude (:2310-2316) rather than a ±40
+ * screen offset, settle onto the boresight, and are SHOT DOWN — the wreck guards below require a
+ * kill to land and they pass, which is the assertion round 1's sky could not have satisfied. The
+ * count arriving back at 53 is a coincidence of a genuinely different sky, not a survival of the
+ * old one. Stable across runs (verified 3×), the pool still fills, the trigger is still held.
+ *
+ * A drift toward zero would still fail, which is the point.
  */
 const TOTAL_LIVE_SHELLS = 53
 
 beforeAll(async () => {
   await import('../../src/main') // the module body runs: resize(), the listeners, the first rAF
 
-  let live: GunStep = { shells: [], targets: [], hits: 0 }
+  let live: GunStep = { shells: [], targets: [], eye: [0, 0, 0], hits: 0 }
   let t = 0
   for (let i = 0; i < FRAMES; i++) {
     fire() // hold the trigger — `held` is a Set, so this is idempotent
@@ -784,7 +820,7 @@ describe('TARGET TRUTH — every plane and the airship are DRAWN where the sim s
       for (const target of f.live.targets) {
         if (!(target.depth > 0)) continue // behind/at the eye — nothing to place
         checked += 1
-        const want = ndcOfTarget(target)
+        const want = ndcOfTarget(target, f.live.eye)
         const found = mvps.some((m) => {
           const o = originNdc(m)
           return (
@@ -873,11 +909,11 @@ describe('WRECK TRUTH — the downed plane bursts where it died', () => {
         if (calls.length === 0) continue // wholly behind the eye — nothing was drawn
         measured += 1
 
-        const want = ndcOfTarget({
-          kind: 'lead', x: d.wreck.x, y: d.wreck.y, depth: d.wreck.depth,
-          deltaX: 0, bank: 0, side: 1, active: true,
-          facingAway: true, // rb4-13 D4 mirror — position probe only; the bit is irrelevant here
-        })
+        // rb4-6: a wreck is a DISPLAY-space object. A downed plane leaves the world sim (the ROM's
+        // `STA PLSTAT+6 ;CLR PLANE`, :2741) and main.ts converts it through `displayPos` once, at
+        // the `explode` boundary — so its stored (x, y) is already where it is on screen, and
+        // measuring it needs no eye. (Which is also why the fake Enemy literal is gone.)
+        const want = ndcOfDisplay(d.wreck.x, d.wreck.y, d.wreck.depth)
         const o = originNdc(calls[0].mvp)
         if (o.w <= 0 || Math.abs(o.x - want.x) > 1e-9 || Math.abs(o.y - want.y) > 1e-9) {
           misplaced.push(
