@@ -443,8 +443,13 @@ describe('rb4-16 AC-4 — outer-zone depth gate', () => {
   // CENTER", RBARON.MAC:2776-2781), AND the compare is on PLSTAT+19 (the POSITION Z **LSB**), whose
   // "4" has no defined meaning in our world-unit `positionZ`. Both the direction and the threshold
   // must be resolved against the ROM (with the user) before this can be pinned. Guessing either is
-  // the exact failure this epic exists to prevent. Filed as a blocking Delivery Finding.
-  it.todo('the outer-window return-to-centre is depth-gated on positionZ — BLOCKED on ROM/spec direction conflict')
+  // the exact failure this epic exists to prevent.
+  //
+  // USER RULING 2026-07-17: AC-4 is DESCOPED to a successor story (like the epic's N.PLNZ gate and
+  // STPLNE seeding). The successor resolves the FLAG+1 direction and the LSB-vs-value threshold
+  // against the ROM, then pins it. The firsthand ROM evidence above is the successor's starting
+  // point — it does not need re-deriving. rb4-16 ships AC-1/2/3/R3.
+  it.todo('outer-window return-to-centre depth gate — DESCOPED to a successor (ROM/spec direction conflict)')
 })
 
 // ════════════════════════════════════════════════════════════════════════════════════════════
