@@ -303,8 +303,27 @@ export interface Enemy {
    * band, so it is always an altitude the pilot can fly to. Screen Y is `displayPos`'s job.
    */
   readonly y: number
-  /** Depth in front of the eye; P_INDP at spawn, closes toward the player. */
+  /**
+   * PICTURE SIZE Z — the ROM's PLSTAT+4/+5 (":272 Z LSB PICTURE SIZE"). P_INDP at spawn,
+   * closes toward the player. This Z sizes the drawn VERTICES (PLNLBS reloads O.DPTH from
+   * +4/+5 for the vertex divide, RBARON.MAC:4848-4850) and is the Z the P.MNDP fly-by-over
+   * check reads (UPDPLN:2722-2726) — so every existing consumer (size, fly-by, scoring's
+   * depth MSB, the gun's Z gate via CDSSET:5529-5533) correctly reads THIS field. Where the
+   * CENTRE sits is `positionZ`'s job (rb4-17 dual-Z).
+   */
   readonly depth: number
+  /**
+   * POSITION Z — the ROM's PLSTAT+19/+1A (":295 POSITION Z"), rb4-17. The depth the plane's
+   * CENTRE is placed at: PLNLBS divides world X/Y by THIS Z to position the picture
+   * (RBARON.MAC:4817-4822 → POSITP) before reloading O.DPTH with picture Z for the vertices.
+   * Spawned WITH `depth` at P.INDP (STPLNE stores P.INDP to +4 AND +19, :2319-2324) and
+   * stepped by its OWN delta (+1B DELTA POS Z, UPDPLN:2704-2709) — never floored there (the
+   * normal-plane path has no floor; only `depth` carries our documented one-frame floor).
+   * Optional: hand-built fixtures omit it and every reader takes `?? depth` (the coherent
+   * single-depth pose). Read with `??`, never `||` — a legitimately small position Z must
+   * not be defaulted away (the P_IIDL[0] lesson).
+   */
+  readonly positionZ?: number
   /** ΔX — the weave velocity / turn-rate (accelerates by ACCEL, reverses at bounds). */
   readonly deltaX: number
   /**
@@ -400,6 +419,10 @@ export function spawn(rng: Rng, level = 0): Enemy {
     x: side * mag,
     y,
     depth: P_INDP,
+    // STPLNE seeds BOTH Zs from the one P.INDP load — `LDA I,P.INDP&0FF / STA PLSTAT+4 /
+    // STA PLSTAT+19` and the MSB pair likewise (RBARON.MAC:2319-2324). Size and position
+    // start together and drift apart only through their separate deltas (step below).
+    positionZ: P_INDP,
     deltaX: 0,
     deltaY: 0, // the Y window machine starts from rest — and UNBIASED (user ruling; see HORIZN above)
     bank: side * SPAWN_BANK,
@@ -517,6 +540,15 @@ export function step(enemy: Enemy, level = 0): Enemy {
   const depth = flyingPast ? closed : Math.max(closed, P_MNDP)
   const active = !flyingPast
 
+  // DUAL-Z (rb4-17): the POSITION Z steps by its OWN delta — PLSTAT+1B "DELTA POS Z", which is
+  // exactly the PLPOSZ[GMLEVL] byte PLNZD stores there ("PLANE MOTION DEPTH DELTA",
+  // RBARON.MAC:2409-2411) and UPDPLN sign-extends into +19/+1A (:2704-2709). closeSpeed IS that
+  // table read, so the position rate is byte-true — and unfloored (the ROM's normal-plane path
+  // has no floor; the one-frame floor above is `depth`'s documented deviation, not this field's).
+  // The PICTURE Z's own delta (+10/+11) is a DIFFERENT, richer number the clone does not yet
+  // transcribe (PLNZD:2412-2442, N.PLNZ/PRPDEL-driven) — see the rb4-17 Delivery Finding.
+  const positionZ = (enemy.positionZ ?? enemy.depth) + closeSpeed(level)
+
   // BANK: the ±90° entry flourish ROLLS OUT toward the weave over ENTRY_RAMP_FRAMES
   // (RBARON.MAC:2620-2652) — it does not snap on frame 1. Thereafter bank IS biplaneBank(ΔX),
   // one coupling shared with the player horizon.
@@ -551,6 +583,7 @@ export function step(enemy: Enemy, level = 0): Enemy {
     bank,
     entryFrames,
     depth,
+    positionZ,
     active,
     // D4 clears once the entry rotation completes ("`AND I,0EF` — ;D4=0 (PLANE FACING AWAY)",
     // RBARON.MAC:2645-2652). The weave never re-rotates it toward the viewer — that is the ace

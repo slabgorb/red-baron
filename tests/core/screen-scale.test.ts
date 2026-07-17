@@ -72,7 +72,8 @@ import {
   BLIMP_HULL_RADIUS, type Blimp,
 } from '../../src/core/blimp'
 import { collides, shellDepth, type Shell } from '../../src/core/guns'
-import { PLANE_POINTS, biplaneLOD } from '../../src/core/biplane'
+import { PLANE_POINTS, PICTURE_SCALE, biplaneLOD } from '../../src/core/biplane'
+import { COLLD_POINTS } from '../../src/core/topology'
 import { debrisSpread } from '../../src/core/wreck-render'
 import { EXPL2_FRAMES } from '../../src/core/explosion'
 import { P_INDP, type Enemy } from '../../src/core/enemy'
@@ -410,11 +411,20 @@ describe('the collision window is an OBJECT-space hitbox — rescaling it would 
     expect(near).toBe(far)
   })
 
-  it('…and the box is about the size of the plane it is wrapped around', () => {
-    const wingHalfSpan = Math.max(...PLANE_POINTS.map((p) => Math.abs(p[0]))) // 40
+  it('…and the box is exactly the ROM collision plate — the fuselage band at picture scale', () => {
+    // rb4-17 re-baseline (was: "about the size of the plane", tolerance in (20, 40] off the RAW
+    // hull). The window is no longer sized "against the hull" — it IS the ROM's own plate:
+    // COLLD, "PLANE COLLISION WINDOW(POINTP FORMAT)" (RBARON.MAC:409; bytes 037007.XXX:602-605),
+    // the x ±12 FUSELAGE band lifted by the same ×4 POINTP/ZAXIS storage lift as the drawn
+    // vertices and divided by the same PICTURE Z (CDSSET RBARON.MAC:5529-5537). Model and hitbox
+    // ride ONE scale: you hit by hitting the fuselage the cabinet pays for — never by missing
+    // the plane, and NOT by grazing a wingtip (the drawn half-wingspan is 40 × 4 = 160, more
+    // than three times the window).
+    const plateHalfX = Math.max(...COLLD_POINTS.map((p) => Math.abs(p[0]))) * PICTURE_SCALE // 48
     const tolerance = aimTolerance(shellDepth(8))
-    expect(tolerance).toBeGreaterThan(wingHalfSpan / 2) // you can hit the plane by hitting a wing
-    expect(tolerance).toBeLessThanOrEqual(wingHalfSpan) // …but not by missing the plane entirely
+    expect(tolerance, 'the gun IS the plate — one scale for model and hitbox').toBe(plateHalfX)
+    const drawnHalfSpan = Math.max(...PLANE_POINTS.map((p) => Math.abs(p[0]))) * PICTURE_SCALE // 160
+    expect(tolerance, 'a wingtip graze is not a kill').toBeLessThan(drawnHalfSpan)
   })
 })
 
@@ -496,11 +506,19 @@ const NOT_A_SCREEN_CONSTANT: ReadonlyMap<string, string> = new Map([
   [
     'WINDOW_X',
     'guns.ts — a fraction of the TARGET, not of the frame: `collides` bounds an offset between ' +
-      "two objects in the world, and the box is sized against the plane's own hull (PLANE_POINTS " +
-      'spans x ±40). Model and hitbox are carried through the same perspective divide, so they ' +
-      'shrink together. Proved above (the aim tolerance is identical near and far).',
+      'two objects in the world, and the box is the ROM\'s own COLLD collision plate (rb4-17: ' +
+      '037007.XXX:602-605, x ±12 × the POINTP ×4 lift = ±48). Model and hitbox are carried ' +
+      'through the same perspective divide, so they shrink together. Proved above (the aim ' +
+      'tolerance is identical near and far).',
   ],
-  ['WINDOW_Y', 'guns.ts — as WINDOW_X, in y (the hull is y ±20).'],
+  [
+    'WINDOW_Y',
+    'guns.ts — a TOMBSTONE (rb4-17). Was the inferred symmetric ±32; the ROM\'s COLLD plate is ' +
+      'ASYMMETRIC in y (belly −16 to top wing +20, ×4), so the name split into WINDOW_Y_MIN / ' +
+      'WINDOW_Y_MAX below. Kept so a reintroduced symmetric NAME lands back in this sweep.',
+  ],
+  ['WINDOW_Y_MIN', 'guns.ts — as WINDOW_X: the COLLD plate\'s belly bound, −16 × 4 = −64. Object-space.'],
+  ['WINDOW_Y_MAX', 'guns.ts — as WINDOW_X: the COLLD plate\'s top-wing bound, +20 × 4 = +80. Object-space.'],
   [
     'WINDOW_Z',
     'guns.ts — in shell-Z COUNTS, the ROM\'s own range unit. Not a screen quantity at all; its ' +

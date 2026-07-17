@@ -31,7 +31,7 @@ import {
   spawnWave, stepWave, promoteLead, INITIAL_WAVE_CLOCK, stepWaveClock,
   grmodeForWave, planeGenDisabled, isGroundMode, GRMODE_PLANE,
 } from './core/waves'
-import { biplaneLOD, renderModel } from './core/biplane'
+import { biplaneLOD, planeModel, renderModel } from './core/biplane'
 import {
   shouldSpawnBlimp, spawn as spawnBlimp, step as stepBlimp, blimpFires,
   reapBlimp, blimpSegments, blimpTarget, type Blimp,
@@ -51,7 +51,7 @@ import { groundCollision } from './core/ground-collision'
 import type { GameEvent } from './core/events'
 import { createAudioEngine } from './shell/audio'
 import { playEventSounds, updateContinuousSounds } from './shell/audio-dispatch'
-import { multiply, translation, rotationZ, type Mat4, type Vec3 } from '@arcade/shared/math3d'
+import { multiply, type Mat4, type Vec3 } from '@arcade/shared/math3d'
 import { createRng, nextFloat } from '@arcade/shared/rng'
 import { INITIAL_PAUSED, isPauseKey, togglePaused } from '@arcade/shared/pause'
 import { drawEscOverlay } from '@arcade/shared/esc-overlay'
@@ -191,12 +191,13 @@ function draw(
   // stated the correct model ("objects are drawn at (their X − UNIV4X)", camera-shape.test.ts:10-11);
   // motion objects were simply wrongly excused from it.
   //
-  // The eye enters through `displayPos` rather than through `flightView` so the plane is DRAWN
-  // through the identical function the gun KILLS it with — one seam, no second copy of the pan to
-  // rot (the lesson guns.ts's own `shellDepth` comment records). `view` therefore stays at the
-  // origin: it is the display-space camera the tracers, wrecks and airship already live in.
-  // MVP = projection · view · model; the model is picked by the PLSTAT+6 D4 orientation bit
-  // (biplaneLOD(enemy.facingAway), rb4-13 — never by depth).
+  // The eye enters through `planeModel` → `displayPos` rather than through `flightView` so the
+  // plane is DRAWN through the identical function the gun KILLS it with — one seam, no second
+  // copy of the pan to rot (the lesson guns.ts's own `shellDepth` comment records). `view`
+  // therefore stays at the origin: it is the display-space camera the tracers, wrecks and
+  // airship already live in. MVP = projection · view · model; the model matrix is core's
+  // `planeModel` (rb4-17 — the ×4 picture scale + dual-Z), and the vertex set is picked by the
+  // PLSTAT+6 D4 orientation bit (biplaneLOD(enemy.facingAway), rb4-13 — never by depth).
   const view = flightView(attitude, [0, 0, 0])
   const projView: Mat4 = multiply(sceneProjection(aspect), view)
 
@@ -206,9 +207,10 @@ function draw(
     strokeSegments(wreckSegments(wreck, projView), width, height)
   }
   for (const enemy of enemies) {
-    const screen = displayPos(enemy, eye)
-    const model = multiply(translation(screen.x, screen.y, -enemy.depth), rotationZ(enemy.bank))
-    strokeSegments(renderModel(biplaneLOD(enemy.facingAway), multiply(projView, model)), width, height)
+    // The model matrix is core's `planeModel` (rb4-17): the eye still enters through
+    // `displayPos` — inside planeModel — so the plane is DRAWN through the identical pan the
+    // gun KILLS it with, and the ROM's ×4 picture scale + dual-Z live where a test can reach.
+    strokeSegments(renderModel(biplaneLOD(enemy.facingAway), multiply(projView, planeModel(enemy, eye))), width, height)
   }
 
   // the drifting blimp (rb2-13) — the authentic BLIMP_PICTURE yawed BROADSIDE, posed and

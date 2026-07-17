@@ -484,9 +484,15 @@ const FRAMES = 24
  * count arriving back at 53 is a coincidence of a genuinely different sky, not a survival of the
  * old one. Stable across runs (verified 3×), the pool still fills, the trigger is still held.
  *
+ * Re-measured for rb4-17 (53 → 52): the gun window is no longer the inferred ±32 square but the
+ * ROM's own COLLD plate — x ±48, y −64..+80 (037007.XXX:602-605 × the POINTP ×4 lift; guns.ts
+ * WINDOW_X). A wider X window means one shell CONNECTS a sub-step earlier than it used to, and a
+ * shell that kills sooner is consumed sooner — one fewer frame of it alive in the pool. The kill
+ * still lands (the wreck guards below stay green); the sky is the same seeded sky.
+ *
  * A drift toward zero would still fail, which is the point.
  */
-const TOTAL_LIVE_SHELLS = 53
+const TOTAL_LIVE_SHELLS = 52
 
 beforeAll(async () => {
   await import('../../src/main') // the module body runs: resize(), the listeners, the first rAF
