@@ -90,7 +90,11 @@ export function spawnWave(rng: Rng, score: number, level = 0): readonly Enemy[] 
     // rb4-6: a drone enters FARTHER back than the lead (`LDA I,DRINZ/100 / STA P.1ST+5`,
     // RBARON.MAC:2369-2370 — the depth MSB, so 0x1600) and flagged FORMATION FLIGHT
     // (`LDA I,2 / STA P.1ST+6`, :2367-2368) — it flies PARALLEL until FREPAR frees it.
-    wave.push({ ...lead, kind: 'drone', x: lead.x + dx, y: lead.y + dy, depth: DRINZ, parallel: true })
+    // Both Zs at DRINZ: the ROM's drone init overrides only the picture MSB (`LDA I,DRINZ/100 /
+    // STA P.1ST+5`, RBARON.MAC:2369-2370) over a PLNXCG-initialized record whose +19/+1A seed is
+    // NOT yet verified firsthand — so the drone keeps the coherent single-depth pose it has today
+    // rather than guessing a split (rb4-17 Delivery Finding: Question, for the drone story).
+    wave.push({ ...lead, kind: 'drone', x: lead.x + dx, y: lead.y + dy, depth: DRINZ, positionZ: DRINZ, parallel: true })
   }
   return wave
 }

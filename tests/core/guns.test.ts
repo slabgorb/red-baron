@@ -516,16 +516,18 @@ describe('guns — collides() window in isolation', () => {
   })
 
   it('CDSSET rotation is REAL — an offset that misses axis-aligned HITS once the enemy banks', () => {
-    // Rotation must be load-bearing, not decorative. Pick an offset (40u) that sits OUTSIDE the
-    // square window axis-aligned but INSIDE it rotated 45° (40 > window ≈ 32, yet 40·cos45° ≈ 28
-    // < 32). If collides() ignored enemy.bank, the banked case would ALSO miss — so this test
-    // FAILS if the rotation math is ever removed. (Replaces a prior test that a rotation-free
-    // collides() could pass, because a dead-centre target is rotation-invariant.)
+    // Rotation must be load-bearing, not decorative. Pick an offset (60u) that sits OUTSIDE the
+    // COLLD plate axis-aligned but INSIDE it rotated 45° (60 > WINDOW_X = 48, yet 60·cos45° ≈ 42
+    // < 48 with the rotated |y| ≈ 42 inside the −64..+80 band — rb4-17 re-seated the numbers
+    // from the old ±32 window onto the ROM plate, same intent). If collides() ignored
+    // enemy.bank, the banked case would ALSO miss — so this test FAILS if the rotation math is
+    // ever removed. (Replaces a prior test that a rotation-free collides() could pass, because
+    // a dead-centre target is rotation-invariant.)
     const collides = need(m.collides, 'collides')
     const depth = reachDepth()
     const { hits } = fireOnceThenStep(enemyAt(0, 0, depth), 40)
     const shell = hits[0].shell // a real shell at a z that collides at this depth
-    const off = enemyAt(shell.x + 40, 0, depth) // enemy 40u to one side of the shell's line
+    const off = enemyAt(shell.x + 60, 0, depth) // enemy 60u to one side of the shell's line
     expect(collides(shell, { ...off, bank: 0 })).toBe(false) // axis-aligned → outside the window
     expect(collides(shell, { ...off, bank: Math.PI / 4 })).toBe(true) // banked → rotated inside
   })

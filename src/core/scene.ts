@@ -39,16 +39,42 @@ export interface SceneSegment {
 /**
  * ROM screen half-height, in the VG screen units HORIZN is expressed in. The ROM adds
  * HORIZN = $40 = 64 to the divided screen-Y of a PLAYFIELD object (POSITH, RBGRND.MAC:303);
- * our screen is NDC [-1, 1], so the offset is HORIZN / ROM_SCREEN_HALF. The exact
- * ROM-unit → NDC scale is not byte-pinned (rb4-5 Dev seam) — 512 keeps the horizon a
- * short lift above centre, matching the ROM's low-altitude look.
+ * our screen is NDC [-1, 1], so the offset is HORIZN / ROM_SCREEN_HALF.
+ *
+ * RE-AFFIRMED against the ROM's own screen windows (rb4-17 AC-3; both routines in RBGRND.MAC,
+ * `.RADIX 16` from :6 — bytes pinned in tests/core/plane-scale-source.test.ts):
+ *
+ *   • SETBM (:326-334) hard-culls a beam once |screen| ≥ 0x300 = 768 (`JSR DPABS` → `CPX I,3`:
+ *     an MSB of 3 means the coordinate left the drawable universe entirely).
+ *   • SETGRS (:345-355) windows a drawn object to |X| < 0x220 = 544 (`CPY I,20 / SBC I,2`)
+ *     and |Y| < 0x188 = 392 (`CPY I,88 / SBC I,1`).
+ *
+ * 512 is BRACKETED by those anchors, not read from a byte — it remains a declared seam, now
+ * with its walls named: the Y window (±392) must sit INSIDE the visible frame (392/512 = 77%
+ * of the half-height — an object windowed in Y before it leaves the screen), the wider X
+ * window (±544) reaches just PAST the frame's half (544/512 = 1.06 — an object may straddle
+ * the edge before SETGRS drops it, the 4:3 monitor's X headroom), and the SETBM kill line is
+ * 1.5 screen-halves out (768/512). Any re-derivation must keep that ordering
+ * (0x188 < HALF ≤ 0x220 < 0x300); 512 also matches the AVG convention of the Battlezone
+ * hardware twin, and puts HORIZN at a 0.125 NDC lift — the ROM's low-altitude look.
  */
 const ROM_SCREEN_HALF = 512
 /** HORIZN as an NDC screen-Y offset added to a WORLD/playfield object's projected point
  *  (rb4-5 AC5 — the POSITH path; see `projectWorldSegment`). */
 const HORIZN_NDC = HORIZN / ROM_SCREEN_HALF
 
-/** Vertical field of view of the cockpit — a 60° window over the vector world. */
+/**
+ * Vertical field of view of the cockpit — a 60° window over the vector world.
+ *
+ * RE-AFFIRMED, not re-derived (rb4-17 AC-3): the ROM has no FOV byte — its projection is the
+ * Math Box divide into the SETBM/SETGRS screen units above, so the angle is OUR seam. What
+ * anchors 60° is behaviour, pinned in tests/core/plane-picture-scale.test.ts (AC-4): with the
+ * ROM's own ×4 POINTP/ZAXIS vertex lift (biplane.ts PICTURE_SCALE), a plane's 320-unit drawn
+ * wingspan reads ~0.073 NDC at its P.INDP spawn (a clearly visible aircraft) and ~0.87 NDC at
+ * the P.MNDP fly-by (frame-dominating) — the cabinet look. The same 60° over the RAW model
+ * gave the ~0.018 speck the rb4-17 symptom video showed, so the story's bug was the missing
+ * vertex scale, not this angle. Re-derive only with those two pins re-seated.
+ */
 const VERTICAL_FOV = Math.PI / 3
 /** Near clip: just in front of the eye. */
 const NEAR = 1

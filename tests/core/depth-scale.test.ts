@@ -614,6 +614,12 @@ describe('COMPLETENESS — every depth-denominated constant is enumerated, or th
       //                     never deletes an airship whose tail is still on screen.
       'PLANE_SPAN',
       'BLIMP_HULL_RADIUS',
+      // PICTURE_SCALE — rb4-17. The ROM's DIMENSIONLESS ×4 vertex lift (POINTP stores .X*2/.Y*4,
+      // ZAXIS lifts X once more — RBARON.MAC POINTP macro / RBGRND.MAC:469-495). It legitimately
+      // appears beside a depth in planeModel's arithmetic (the dual-Z size compensation,
+      // PICTURE_SCALE × positionZ / depth) but is a pure ratio, not a position on the axis —
+      // rescaling it with the axis would be the mirror bug, exactly as for PLANE_SPAN above.
+      'PICTURE_SCALE',
     ])
 
     const unannounced: string[] = []

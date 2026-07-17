@@ -174,14 +174,17 @@ function need<T>(value: T | undefined, name: string): T {
 }
 
 /**
- * The rotated 32x32 box's circumscribed radius — AC-R2's "definitely outside" offset ONLY.
+ * The rotated collision plate's circumscribed radius — AC-R2's "definitely outside" offset ONLY.
+ * rb4-17 re-baselined the window from the inferred ±32 square to the ROM's own COLLD plate —
+ * x ±48, y −64..+80 (037007.XXX:602-605 ×PICTURE_SCALE; see guns.ts WINDOW_X) — so "definitely
+ * outside at any bank" is beyond the plate's farthest corner, hypot(48, 80).
  * ROUND 3: AC-R3 no longer judges reach with this. The review proved a hypot-vs-MAX_REACH
  * check is a parallel REIMPLEMENTATION of the gun: it stayed green with `collides` reverted
  * to ignore its eye (round 1's exact defect), and the circle CIRCUMSCRIBES the real box, so
  * it inflated GMLEVL 4's margin (11.6 by the circle; 10.8 through the real gun). Reach is
  * now judged by `guns.collides` itself — the guard exercises the thing it guards.
  */
-const MAX_REACH = 32 * Math.SQRT2
+const MAX_REACH = Math.hypot(48, 80)
 
 const LEVELS = [0, 1, 2, 3, 4] as const
 
