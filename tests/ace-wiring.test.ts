@@ -18,12 +18,17 @@
 // dodge was the BEFLAG freebie, the attacks REPEAT, and a 'hit' verdict cost the
 // pilot something the player can hear (the CRSHSN crash).
 //
-// AC-1 pins the DRIVE and the REACH, not the attack cadence — the ROM's exact
-// re-attack rhythm (PLSTAT+7 cycling to 0x0C, :1078-1080, with SPRAY timing the
-// shells) is cited HERE for Dev but deliberately not pinned to a frame count.
+// AC-1 pins the DRIVE and the REACH. rb4-6 ROUND 3 adds the CADENCE: WO.RTN now
+// seeds the PLSTAT+7 counter (`STA PLSTAT+7`, :2736-2737) that the evade check
+// resolves at 0x0C (:1078-1080), so the WO.RTN − ACE_ATTACK_FRAMES = 4-frame
+// re-entry delay is wired behaviour and is pinned below. The round-2 guard for it
+// was an import-binding regex — provably green with the wiring reverted (review
+// round 2) — so the delay is now asserted from the recorded frame numbers.
 
 import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest'
 import { bootCockpit } from './helpers/boot-cockpit'
+import { WO_RTN } from '../src/core/enemy'
+import { ACE_ATTACK_FRAMES } from '../src/core/returning-ace'
 import type { ReturningAce, EvadeResult } from '../src/core/returning-ace'
 
 // ─── the delegating taps ──────────────────────────────────────────────────────
@@ -155,6 +160,34 @@ describe('AC-1: the returning ace is DRIVEN from the booted sim (EOLSEQ every ca
   it('the attacks REPEAT — one freebie, then 50/50 "thereafter" implies a second attack exists', () => {
     expect(rec.evade.length).toBeGreaterThanOrEqual(2)
     expect(rec.evade.slice(1).every((e) => !e.firstPassBefore)).toBe(true)
+  })
+
+  it('rb4-6 R3: the WO.RTN re-entry delay is WIRED — first attack lands exactly WO_RTN − 0x0C frames after arming', () => {
+    // The ROM's one mechanism, two constants: the fly-past seeds PLSTAT+7 = WO.RTN = 0x10
+    // ("DISABLE PLANE FOR WO.RTN FRAMES", :2736-2737) and the evade check resolves on the
+    // frame the same counter reads 0x0C (`LDA PLSTAT+7 / CMP I,0C / BNE 25$`, :1078-1080).
+    // The delay between arming and the first attack is therefore WO_RTN − ACE_ATTACK_FRAMES
+    // = 4 calc frames — a BEHAVIOUR, not an import. (Round 2 guarded this with an import-
+    // binding regex; the review proved it green with every `aceCountdown = WO_RTN` site
+    // reverted to ACE_ATTACK_FRAMES, which collapses the delay to 1 frame. This pins the
+    // recorded frame numbers instead — the regex could not tell 4 from 1; this can.)
+    const delay = WO_RTN - ACE_ATTACK_FRAMES
+    expect(delay, 'the two constants no longer differ by the ROM gap — re-derive :2736 vs :1078').toBe(4)
+    expect(rec.beginPass.length).toBeGreaterThan(0)
+    expect(rec.evade.length).toBeGreaterThan(0)
+    expect(
+      rec.evade[0].frame - rec.beginPass[0].frame,
+      `the first attack resolved ${rec.evade[0].frame - rec.beginPass[0].frame} frames after arming — ` +
+        `the WO.RTN seed (:2736) is not driving the 0x0C resolve (:1078); the re-entry delay is ${delay}`,
+    ).toBe(delay)
+    // The SHIPPED repeat cadence is the same 4-frame reseed. This is a KNOWN divergence from
+    // the ROM (which resolves ONCE per fly-past — the `BNE 25$` fires at exactly 0x0C, then the
+    // counter runs to 0 and the slot re-enters a new plane; logged as a Delivery Finding). If a
+    // successor ports the once-per-pass shape, re-seat this line CONSCIOUSLY — do not delete it.
+    expect(
+      rec.evade[1].frame - rec.evade[0].frame,
+      'the repeat cadence moved — the reseed no longer comes from WO_RTN',
+    ).toBe(delay)
   })
 
   it("every 'hit' verdict costs the pilot — the CRSHSN crash follows within two calc frames", () => {

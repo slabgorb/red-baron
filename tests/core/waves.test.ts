@@ -210,7 +210,7 @@ describe('waves — spawnWave formation + lone roll (findings §3, PLANE1/PLANE2
     expect(off.length).toBe(2) // exactly two drones — the object budget is 1 lead + 2 drones
   })
 
-  it('a full (non-lone) wave at score ≥ 1000 is 1 lead + 2 drones at the exact offsets, sharing the lead depth', () => {
+  it('a full (non-lone) wave at score ≥ 1000 is 1 lead + 2 drones at the exact offsets, spawned DEEPER (rb4-6: DRINZ, not the lead depth)', () => {
     const spawnWave = need(m.spawnWave, 'spawnWave')
     const off = need(m.DRONE_OFFSETS, 'DRONE_OFFSETS')
     // Take the first seed that yields the full 3-plane formation (i.e. not the lone roll).
@@ -223,13 +223,18 @@ describe('waves — spawnWave formation + lone roll (findings §3, PLANE1/PLANE2
     expect(kindOf(d1)).toBe('drone')
     expect(kindOf(d2)).toBe('drone')
 
-    // drones are the lead's position + the fixed formation offsets (x, y); depth is shared.
+    // The lateral formation offsets (x, y) are unchanged — the drones still flank the
+    // lead at ±0x100. What rb4-6 changes is the DEPTH: they enter FARTHER back, at
+    // DRINZ = 0x1600 (RBARON.MAC:2369-2370), not sharing the lead's P.INDP depth.
+    // (Byte-exact DRINZ is pinned in enemy-machine.test.ts; here it is the "deeper
+    // than the lead, and equal to each other" contract.)
     expect(d1.x).toBe(lead.x + off[0][0])
     expect(d1.y).toBe(lead.y + off[0][1])
     expect(d2.x).toBe(lead.x + off[1][0])
     expect(d2.y).toBe(lead.y + off[1][1])
-    expect(d1.depth).toBe(lead.depth)
-    expect(d2.depth).toBe(lead.depth)
+    expect(d1.depth, 'the drone still inherits the lead depth — rb4-6 spawns it at DRINZ').toBeGreaterThan(lead.depth)
+    expect(d2.depth).toBeGreaterThan(lead.depth)
+    expect(d1.depth).toBe(d2.depth) // both drones enter at the same DRINZ depth
   })
 
   it('a two-plane wave at score in [300,1000) is 1 lead + 1 drone at PLANE1', () => {

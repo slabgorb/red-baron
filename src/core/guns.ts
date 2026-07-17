@@ -34,9 +34,19 @@
 //
 // PURE and deterministic. No DOM, no time, no randomness.
 
-import type { Enemy } from './enemy'
+import { displayPos, type Enemy } from './enemy'
 import { projectSegment, type SceneSegment } from './scene'
 import type { Mat4, Vec3 } from '@arcade/shared/math3d'
+
+/**
+ * The eye a shot is judged from when no caller supplies one — the boresight itself.
+ *
+ * rb4-6 round 2 made the gun's collision DISPLAY-space, so it needs the pilot's eye (see
+ * `collides`). The default keeps every existing two-argument caller meaning exactly what it
+ * meant: at the origin the display position IS the stored one, so a hand-built fixture that
+ * places a target "at (0, 0), dead ahead" still does. Live callers — main.ts — pass `toEye(flight)`.
+ */
+const EYE_ORIGIN: Vec3 = Object.freeze([0, 0, 0])
 
 // ─── ROM-exact data (findings §5, §1) ────────────────────────────────────────
 
@@ -331,9 +341,9 @@ export function fire(guns: Guns, fireHeld: boolean): Guns {
 // ─── motion + collision: SHLMOT / SHCDCK (findings §1, §5) ─────────────────────
 
 /** SHCDCK — the first target this shell is inside the collision window of, or -1. */
-function firstHit(shell: Shell, targets: readonly Enemy[]): number {
+function firstHit(shell: Shell, targets: readonly Enemy[], eye: Vec3): number {
   for (let i = 0; i < targets.length; i++) {
-    if (collides(shell, targets[i])) return i
+    if (collides(shell, targets[i], eye)) return i
   }
   return -1
 }
@@ -344,8 +354,15 @@ function firstHit(shell: Shell, targets: readonly Enemy[]): number {
  * frames), expire shells that reach S.MAXZ, and remove + report shells that struck a
  * target. Pure — returns fresh guns plus this frame's hits (for rb2-6). Total on an
  * empty target list (respawn grace / between waves): shells still fly, zero hits.
+ *
+ * `eye` is the pilot's own position, passed through to `collides` so the hit is judged where the
+ * plane actually IS ON SCREEN (rb4-6 round 2). It defaults to the boresight — see EYE_ORIGIN.
  */
-export function step(guns: Guns, targets: readonly Enemy[]): { guns: Guns; hits: readonly Hit[] } {
+export function step(
+  guns: Guns,
+  targets: readonly Enemy[],
+  eye: Vec3 = EYE_ORIGIN,
+): { guns: Guns; hits: readonly Hit[] } {
   const survivors: Shell[] = []
   const hits: Hit[] = []
   for (const shell of guns.shells) {
@@ -355,7 +372,7 @@ export function step(guns: Guns, targets: readonly Enemy[]): { guns: Guns; hits:
     for (let s = 0; s < SHELL_SUBSTEPS; s++) {
       z += SHELL_SPEED
       if (z > S_MAXZ) break // travelled its full range — expire below (no out-of-range hit)
-      const t = firstHit({ ...shell, z }, targets)
+      const t = firstHit({ ...shell, z }, targets, eye)
       if (t >= 0) {
         hitTarget = t
         hitZ = z
@@ -378,10 +395,25 @@ export function step(guns: Guns, targets: readonly Enemy[]): { guns: Guns; hits:
  * frame (the window rotates with the plane, it is not axis-locked), then bounded in X, Y,
  * and shell-Z. Total: a degenerate depth (NaN/±Infinity) fails the Z bound and returns
  * false rather than throwing.
+ *
+ * IN DISPLAY SPACE, AND THAT IS THE WHOLE OF rb4-6 ROUND 2. The offset is measured against the
+ * plane's position ON SCREEN — `displayPos(enemy, eye)` — not against its stored world position.
+ * The shell is fired at the boresight and pinned there (`{ x: muzzleX(gun), y: 0 }` at :321;
+ * `step` only ever advances `z`), which is correct ONLY if the plane's coordinates are measured
+ * against the pilot too. Round 1 shipped a servo that wove the plane away from the world origin
+ * while the gun tested that same world position, so no amount of flying could change the verdict:
+ * planes became unhittable at GMLEVL ≥ 2 and the game soft-locked after five kills with all 1051
+ * tests green. The producer and the consumer now agree about where the plane is, by construction —
+ * both call `displayPos`, and there is no second copy of the pan to drift.
+ *
+ * This is the ROM's own arrangement: a motion object's stored position is WORLD and its screen
+ * position is that minus the pilot (`LDA ZX,PLSTAT ;PLANE POSITION` / `SBC ZX,UNIV4X ;- UNIVERSE
+ * CENTER`, RBARON.MAC:2909-2910), and the window/collision work happens on the screen side.
  */
-export function collides(shell: Shell, enemy: Enemy): boolean {
-  const dx = shell.x - enemy.x
-  const dy = shell.y - enemy.y
+export function collides(shell: Shell, enemy: Enemy, eye: Vec3 = EYE_ORIGIN): boolean {
+  const screen = displayPos(enemy, eye)
+  const dx = shell.x - screen.x
+  const dy = shell.y - screen.y
   const c = Math.cos(enemy.bank)
   const s = Math.sin(enemy.bank)
   const rx = dx * c + dy * s // rotate the offset into the enemy's banked frame

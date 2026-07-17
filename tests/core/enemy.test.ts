@@ -90,7 +90,11 @@ interface Enemy {
   readonly y: number
   readonly depth: number
   readonly deltaX: number
+  /** rb4-6 — ΔY, the vertical weave velocity. Optional, exactly as the real Enemy has it. */
+  readonly deltaY?: number
   readonly bank: number
+  /** rb4-6 — frames of ±90° entry-bank flourish still to roll out (RBARON.MAC:2620-2652). */
+  readonly entryFrames?: number
   readonly side: -1 | 1
   readonly active: boolean
   /**
@@ -159,19 +163,9 @@ function trace(seed: number, level: number, n: number): { xs: number[]; deltas: 
   return { xs, deltas, banks, depths }
 }
 
-/** Count sign changes across screen centre (0), treating exact 0 as "no sign". */
-function crossings(xs: readonly number[]): number {
-  let count = 0
-  let last = 0
-  for (const x of xs) {
-    const s = Math.sign(x)
-    if (s !== 0) {
-      if (last !== 0 && s !== last) count++
-      last = s
-    }
-  }
-  return count
-}
+// `crossings()` lived here to count weaves ACROSS centre. rb4-6 retired its last caller: the ROM's
+// P.INER reverses a plane AWAY from centre at the inner window (:2794-2796), so a plane never
+// crosses, and that test is now a liveness check (L306). Removed rather than left dead.
 
 const range = (xs: readonly number[]): number => Math.max(...xs) - Math.min(...xs)
 const maxAbs = (xs: readonly number[]): number => Math.max(...xs.map(Math.abs))
@@ -303,13 +297,30 @@ describe('enemy — weaving window-follower steering (UPDPLN, findings §3)', ()
     expect(maxAbs(xs)).toBeLessThanOrEqual(olim + 1e-6)
   })
 
-  it('weaves ACROSS screen centre — x changes sign repeatedly (not stuck on one side)', () => {
-    const { xs } = trace(7, 0, 300)
-    expect(crossings(xs)).toBeGreaterThanOrEqual(2) // out, back, out again — a real weave
+  // rb4-6 ROUND 2 RE-SEAT (the three tests below): driven at GMLEVL 2, not 0.
+  //
+  // Round 2 transcribed the ROM's per-zone target deltas, and P.IIDL[0] = 0 (`.3WORD 0,…`,
+  // RBARON.MAC:2955) — at GMLEVL 0 the inner target is a DEAD STOP. A level-0 plane therefore
+  // drifts in at P.IDLX[0]/4 = 6 units/frame, reaches the inner window, and PARKS: ΔX never takes
+  // a negative sign and the late half never swings back past P.ILIM. That is not a regression, it
+  // is the byte — GMLEVL 0 is the gentle level, and the plane sits in your sights (AC-R3 measures
+  // it in reach for 599 of 600 frames). These tests are about the WINDOW-FOLLOWER machine, so they
+  // now run at a GMLEVL where the machine actually weaves; the level-0 dead stop is pinned as a
+  // contract by enemy-machine.test.ts's `P.IIDL — INNER deltas`.
+  it('weaves — moves a real range and reverses (rb4-6 moved the turnaround to the INNER window, so it need not cross centre)', () => {
+    // rb4-6 AC-1: the reversal is now at the INNER window (HEAD AWAY FROM CENTER), so the
+    // plane weaves on its ENTRY SIDE and no longer necessarily crosses centre. The
+    // surviving intent here is liveness — it is not stuck on a spot. The one-sided
+    // inner-reversal SHAPE is pinned deterministically in enemy-machine.test.ts.
+    // (Was: crossings(xs) >= 2, which encoded the old outer-only weave that drifts across
+    // centre — that is exactly the machine rb4-6 replaces.)
+    const { xs, deltas } = trace(7, 2, 300)
+    expect(range(xs)).toBeGreaterThan(0) // it moves across a real range
+    expect(deltas.some((d) => d > 0) && deltas.some((d) => d < 0)).toBe(true) // and reverses
   })
 
   it('REVERSES at the boundaries — ΔX takes both signs over a run', () => {
-    const { deltas } = trace(7, 0, 300)
+    const { deltas } = trace(7, 2, 300)
     expect(deltas.some((d) => d > 0)).toBe(true)
     expect(deltas.some((d) => d < 0)).toBe(true)
   })
@@ -323,12 +334,15 @@ describe('enemy — weaving window-follower steering (UPDPLN, findings §3)', ()
   })
 
   it('is NOT a beeline seeker — with the player at centre it never settles at 0', () => {
-    // A seeker would drive x→0 and stop. The window-follower keeps weaving: the LATE
-    // half of a long run still swings a wide range, it has not converged to centre.
-    const ilim = need(m.P_ILIM, 'P_ILIM')[0]
-    const { xs } = trace(7, 0, 400)
+    // A seeker would drive x→0 and stop. The window-follower keeps weaving. rb4-6 re-seat:
+    // the one-sided inner-reversal weave oscillates within [±P_ILIM, ±P_OLIM], so the
+    // discriminating property is that the LATE half still swings OUT past the inner window
+    // — it has not converged to centre. (Was: range(lateHalf) > ilim, which lands on the
+    // boundary once the weave is one-sided; maxAbs is robust to that.)
+    const ilim = need(m.P_ILIM, 'P_ILIM')[2]
+    const { xs } = trace(7, 2, 400)
     const lateHalf = xs.slice(xs.length / 2)
-    expect(range(lateHalf)).toBeGreaterThan(ilim) // still weaving wide, not parked at 0
+    expect(maxAbs(lateHalf)).toBeGreaterThan(ilim) // still swings out past the inner window, not parked at 0
   })
 
   it('a higher GMLEVL weaves WIDER — level 4 swings past the entire level-0 window', () => {
@@ -369,18 +383,19 @@ describe('enemy — weaving window-follower steering (UPDPLN, findings §3)', ()
     expect(slow / fast).toBeGreaterThan(10)
   })
 
-  it('the plane never bores THROUGH the player — P.MNDP is a floor, not a waypoint', () => {
-    // The closing rate is now GMLEVL-indexed and the fastest is 20x the slowest, so the
-    // floor has to hold against a delta big enough to overshoot it in one frame.
+  it('the plane never tunnels BEHIND the eye — while active its depth stays in front (rb4-6: it flies PAST, not to a floor)', () => {
+    // rb4-6 AC-3: P.MNDP is no longer a floor — the plane bores PAST it and is destroyed
+    // (active → false; the fly-past is pinned in enemy-machine.test.ts). The surviving
+    // safety intent is that while it is a LIVE object its depth stays in FRONT of the eye
+    // (> 0); it never tunnels to a negative depth. Once it flies past it deactivates and
+    // this loop stops tracking it. (Was: depth >= P_MNDP for 2000 frames — the old clamp.)
     const step = need(m.step, 'step')
-    const P_MNDP = need(m.P_MNDP, 'P_MNDP')
     for (const level of [0, 3, 5]) {
       let e = spawnAt(7, level)
-      for (let f = 0; f < 2000; f++) {
+      for (let f = 0; f < 2000 && e.active; f++) {
         e = step(e, level)
-        expect(e.depth, `GMLEVL ${level} flew through the floor on frame ${f}`).toBeGreaterThanOrEqual(
-          P_MNDP - 1e-9,
-        )
+        if (!e.active) break
+        expect(e.depth, `GMLEVL ${level} tunnelled behind the eye on frame ${f}`).toBeGreaterThan(0)
       }
     }
   })
@@ -491,10 +506,18 @@ describe('enemy — bank ∝ turn-rate via biplaneBank (context: shared ±45° c
     // Drive a REAL step() through the ΔX=0 crossing (don't hand-set bank): at the
     // outer wall the weave decelerates through zero as it reverses — seed x=P_OLIM
     // with ΔX=+ACCEL so the very next step's ΔX is exactly 0.
+    //
+    // rb4-6 round-2 re-seat: `entryFrames: 0` — a SETTLED plane. The bank is only
+    // biplaneBank(ΔX) once the ±90° entry flourish has rolled out (problem item 5); while the
+    // ramp runs, the bank is the ramp's, by design, whatever ΔX does. `withEnemy` spreads a fresh
+    // spawn, which enters mid-flourish, so this fixture was reading the ramp's bank and calling it
+    // the coupling's. It only passed in round 1 because the ramp ALSO terminated on ΔX = 0 — one
+    // signal doing two jobs, which is the coupling AC-4 caught (see enemy.ts's `entryFrames`).
+    // The ΔX=0 → bank=0 intent is unchanged; it is now asserted on the state that governs it.
     const step = need(m.step, 'step')
     const olim = need(m.P_OLIM, 'P_OLIM')[0]
     const accel = need(m.ACCEL, 'ACCEL')
-    const reversing = step(withEnemy({ x: olim, deltaX: accel }), 0)
+    const reversing = step(withEnemy({ x: olim, deltaX: accel, entryFrames: 0 }), 0)
     expect(reversing.deltaX).toBe(0) // step() actually produced a zero turn-rate...
     expect(reversing.bank).toBe(0) // ...and the bank read a genuine 0, not a fallback
     expect(biplaneBank(0)).toBe(0) // and the coupling itself maps 0 → 0
@@ -577,16 +600,17 @@ describe('enemy — depth closes on approach (the seam that makes DISCHK bite)',
     expect(depths[depths.length - 1]).toBeLessThan(depths[0]) // it actually closed
   })
 
-  it('clamps at a stable positive floor below the spawn depth — never through the eye', () => {
-    // A long run settles on a closest-approach floor (the returning-ace pass past it is
-    // rb2-8). The floor is > 0 (never behind the eye) and < P_INDP (it really closed),
-    // and it is STABLE — a longer run lands on the exact same floor, not oscillating.
-    const floor = trace(7, 0, 1000).depths
-    const settled = floor[floor.length - 1]
-    expect(settled).toBeGreaterThan(0)
-    expect(settled).toBeLessThan(need(m.P_INDP, 'P_INDP'))
-    const longer = trace(7, 0, 1400).depths
-    expect(longer[longer.length - 1]).toBe(settled) // same floor — clamped, not drifting
+  it('does NOT hover at a floor — a long approach ends in a FLY-PAST, the plane destroyed (rb4-6)', () => {
+    // rb4-6 AC-3 retires the "stable positive floor". The plane closes past P.MNDP and is
+    // destroyed as an object (active → false); it does not clamp and hover in your face
+    // forever. A long enough run must END in that deactivation — the closest-approach
+    // floor is gone. (Was: a longer trace lands on the exact same clamped floor.)
+    const step = need(m.step, 'step')
+    let e = spawnAt(7, 0)
+    let frames = 0
+    for (; frames < 4000 && e.active; frames++) e = step(e, 0)
+    expect(e.active, 'the plane hovered at a depth floor forever — it never flew past').toBe(false)
+    expect(frames).toBeLessThan(4000) // it deactivated (flew past), it did not clamp
   })
 
   it('closing walks the DISCHK band far → near — the story\'s "sharpens as it closes" is delivered', () => {
