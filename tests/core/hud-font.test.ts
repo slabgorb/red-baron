@@ -5,7 +5,8 @@
 // hudTextSegments produces: the Reviewer mutation-tested an inverted y-flip and a
 // doubled centre offset (HUD upside-down / off-centre) and the whole 1248-test suite
 // stayed GREEN. This file pins the actual NDC output — orientation (the y-flip sign),
-// scale (linear in size), left/centre alignment, the empty/space case, and the
+// scale (ABSOLUTE cap height == size px AND linear in size — round-2 Reviewer F1: a ratio-only
+// check let a half-size HUD ship green), left/centre alignment, the empty/space case, and the
 // degenerate zero-size canvas — the way every sibling core renderer (livesGlyphs,
 // windscreenSegments, horizonSegments…) is pinned.
 import { describe, it, expect } from 'vitest'
@@ -19,7 +20,7 @@ const H = 900
 const px = (ndcX: number): number => ((ndcX + 1) / 2) * W
 const py = (ndcY: number): number => ((1 - ndcY) / 2) * H
 
-interface Box { minX: number; maxX: number; minY: number; maxY: number }
+interface Box { readonly minX: number; readonly maxX: number; readonly minY: number; readonly maxY: number }
 function pixelBBox(segs: readonly SceneSegment[]): Box {
   const xs = segs.flatMap((s) => [px(s.x1), px(s.x2)])
   const ys = segs.flatMap((s) => [py(s.y1), py(s.y2)])
@@ -44,11 +45,23 @@ describe('rb4-19 hudTextSegments — geometry (orientation / scale / alignment)'
     expect(segs.every((s) => s.intensity === V_BRIT_MAX), 'HUD draws at the bright tier').toBe(true)
   })
 
-  it('the drawn height scales linearly with `size` (catches a broken scale factor)', () => {
+  it('the drawn height is ABSOLUTE (≈ size px) and linear — catches a broken scale factor', () => {
+    // A full-cell cap/digit spans the whole CELL_H (24u), and scale = size/CELL_H, so the drawn
+    // cap height in px equals `size` EXACTLY (measured: 20.000px @ size 20, 40.000px @ size 40).
+    // ⚠ The earlier ratio-only check (h40/h20 ≈ 2) was scale-INVARIANT: a wrong CONSTANT coefficient
+    // — Reviewer round-2 mutation `scale = size/CELL_H` → `size/(CELL_H*2)`, a HALF-SIZE HUD with
+    // h20 = 10px — preserves the ratio and shipped GREEN across the whole 1253-test suite. So pin
+    // the ABSOLUTE magnitude, not just linearity (F1's "scale" axis; renderer-migration memory:
+    // "pin actual output COORDINATES, a mis-scaled HUD ships green").
     const at = (size: number): Box =>
       pixelBBox(hudTextSegments('SCORE 1234', { x: 16, y: 400, size, align: 'left', width: W, height: H }))
     const h20 = at(20).maxY - at(20).minY
     const h40 = at(40).maxY - at(40).minY
+    // ABSOLUTE: cap height == size px (±2px). `scale=size/(CELL_H*2)` → h20 = 10 → fails HERE.
+    expect(Math.abs(h20 - 20), `size-20 cap height ${h20}px must be ≈ 20px (catches a wrong scale coefficient)`).toBeLessThan(2)
+    expect(Math.abs(h40 - 40), `size-40 cap height ${h40}px must be ≈ 40px`).toBeLessThan(2)
+    // LINEARITY: doubling size doubles the drawn height (catches a NON-linear scale the absolute
+    // pins might both satisfy under an exotic mutation).
     expect(h20, 'a size-20 readout has real vertical extent').toBeGreaterThan(4)
     expect(Math.abs(h40 / h20 - 2), 'doubling size doubles the drawn height').toBeLessThan(0.1)
   })
