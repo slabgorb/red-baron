@@ -61,6 +61,7 @@
 import { describe, it, expect } from 'vitest'
 import { playEventSounds, updateContinuousSounds, type WorldSound } from '../../src/shell/audio-dispatch'
 import type { GameEvent } from '../../src/core/events'
+import type { OneShot } from '../../src/shell/audio'
 
 /** A recording fake of the audio surface — captures every call, in order. */
 function recorder() {
@@ -68,7 +69,10 @@ function recorder() {
   return {
     calls,
     audio: {
-      play(name: 'explosion' | 'crash'): void {
+      // Mirror the REAL AudioEngine.play(OneShot) signature — now that OneShot
+      // includes 'spiral', a narrower 'explosion' | 'crash' here drifts from the
+      // surface it stands in for (method bivariance hides it from tsc).
+      play(name: OneShot): void {
         calls.push(`play:${name}`)
       },
       playTone(name: 'TK' | 'TP' | 'BN' | 'WP' | 'TH'): void {

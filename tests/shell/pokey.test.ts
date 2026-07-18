@@ -33,8 +33,15 @@
 //
 //    THE DECISIVE PROOF: a sound's AUDF and AUDC chains must run out together, and
 //    under `values = NUMBER` all five do, EXACTLY (TK 28=28, TP 40=40, BN 288=288,
-//    WP 360=360, TH 256=256); under `values = NUMBER + 1` every one mismatches
-//    (e.g. TH AUDF 268 vs AUDC 258). 5-of-5 exact agreement is not coincidence.
+//    WP 360=360, TH 256=256). Under `values = NUMBER + 1` the three ASYMMETRIC
+//    sounds diverge (e.g. TH AUDF 268 vs AUDC 258; BN 294 vs 290; WP 366 vs 362) —
+//    the `chainFrames(audf) === chainFrames(audc)` check catches THOSE. But TK and TP
+//    are SYMMETRIC (AUDF and AUDC are the same 4-value shape), so their two chains
+//    stay equal to EACH OTHER even under the wrong rule; the AUDF===AUDC check is
+//    tautological for them. TK/TP are pinned instead by their exact rendered VALUE
+//    count — 4 AUDC levels ($A4·$A3·$A2·$A1), never a 5th — an AUDF-independent
+//    cross-check (see "renders exactly its NUMBER of distinct values" below) plus the
+//    hardcoded `TOTAL_FRAMES` pin. Do not drop either or TK/TP's off-by-one ships silent.
 //
 //    Our `EnvelopeStep.steps` yields `steps + 1` distinct values (`taken` runs
 //    0..steps), so the faithful mapping is `steps = romNUMBER − 1`. pokey.ts's old
@@ -84,6 +91,7 @@ import {
   POKEY_SOUNDS,
   stepEnvelope,
   stepChain,
+  envelopeFrames,
   type ToneName,
   type PokeySound,
   type EnvelopeStep,
@@ -107,7 +115,9 @@ const CHANNEL: Readonly<Record<ToneName, 1 | 2 | 3 | 4>> = {
 
 /** A register slot as a chain — the GREEN contract (an array, or null=untouched). */
 const chainOf = (sound: PokeySound, slot: number): readonly EnvelopeStep[] => {
-  const chain = sound.registers[slot] as unknown as readonly EnvelopeStep[] | null
+  // `registers[slot]` is already `RegisterChain` (= `readonly EnvelopeStep[] | null`);
+  // no cast needed — the tuple index gives exactly that type.
+  const chain = sound.registers[slot]
   expect(chain, `slot ${slot} must be a touched register (a chain)`).not.toBeNull()
   expect(Array.isArray(chain), `slot ${slot} must be a CHAIN (array of sequences)`).toBe(true)
   return chain as readonly EnvelopeStep[]
@@ -237,8 +247,21 @@ describe('stepChain — walks a register chain sequence-to-sequence', () => {
 
   it('degrades a non-finite frame to the first sequence start (no NaN)', () => {
     const chain = [{ start: 0x79, hold: 2, change: 0, steps: 15 }]
+    // Pin the ACTUAL degrade VALUE, not merely "not NaN": a `!isNaN` check passes for
+    // any finite result, so a degrade that returned 0 (or the wrong start) would slip
+    // through. It must fall back to the first sequence's start.
     expect(stepChain(chain, Number.NaN)).toBe(0x79)
-    expect(Number.isNaN(stepChain(chain, Number.POSITIVE_INFINITY))).toBe(false)
+    expect(stepChain(chain, Number.POSITIVE_INFINITY)).toBe(0x79)
+    expect(stepChain(chain, Number.NEGATIVE_INFINITY)).toBe(0x79)
+  })
+
+  it('an EMPTY chain renders silence (0) — a touched-but-empty register never NaNs', () => {
+    // The `chain.length === 0` branch (pokey.ts) returns the POKEY floor; a missing
+    // guard would index `chain[0]` and read `undefined`, poisoning the value to NaN.
+    expect(stepChain([], 0)).toBe(0)
+    expect(stepChain([], 42)).toBe(0)
+    expect(stepChain([], Number.NaN)).toBe(0)
+    expect(Number.isNaN(stepChain([], 5)), 'an empty chain must never yield NaN').toBe(false)
   })
 })
 
@@ -274,19 +297,58 @@ describe('SN-003 — a sound renders exactly NUMBER distinct values, never NUMBE
     expect(stepChain(audc, 100), 'rests at $A1, never underflows to $A0').toBe(0xa1)
   })
 
-  it('every sound renders NUMBER distinct values per sequence, not NUMBER+1', () => {
-    // A per-sequence check across the whole set: the count of distinct values a
-    // single sweep/hold produces equals its step count + 1, and the ROM totals fall
-    // out of that. If any table regressed to a raw NUMBER (or NUMBER+1) byte in
-    // `steps`, its TOTAL_FRAMES above breaks — this is the behavioural mirror.
+  it('TP renders exactly 4 AUDC values ($A4·$A3·$A2·$A1) — its own distinctValues guard', () => {
+    // TK's twin: TP is symmetric (AUDF==AUDC shape), so the AUDF===AUDC "decisive
+    // proof" is tautological for it — this exact-set check is what actually pins the
+    // −1 rule for TP. Under `steps = NUMBER` (or the old `+1`) it would gain a 5th
+    // level $A0. This is the AUDF-INDEPENDENT cross-check the header promises.
+    const audc = chainOf(POKEY_SOUNDS.TP, audcIndex(1))
+    expect(distinctValues(audc)).toEqual(new Set([0xa4, 0xa3, 0xa2, 0xa1]))
+    expect(stepChain(audc, 39)).toBe(0xa1)
+    expect(stepChain(audc, 100), 'rests at $A1, never underflows to $A0').toBe(0xa1)
+  })
+
+  it('every sound renders EXACTLY its NUMBER of distinct values, never NUMBER+1', () => {
+    // The behavioural mirror of the frame-count proof, pinned to EXACT counts (a
+    // `>= 1` here can never fail — the flaw the Reviewer's mutation exposed). Under
+    // the correct `steps = NUMBER − 1` each register renders precisely these many
+    // distinct bytes; the old `NUMBER + 1` rule (and the `steps = NUMBER` mutation)
+    // appends one extra value to every sound that actually MOVES — TK/TP gain a 5th
+    // AUDC level, BN a 49th divisor, WP a 61st. Held registers (change 0) render 1
+    // value regardless, so the discriminating axis differs per sound; pin BOTH.
+    const EXPECTED_DISTINCT: Readonly<Record<ToneName, { audf: number; audc: number }>> = {
+      TK: { audf: 1, audc: 4 }, //  $30 held;         $A4·$A3·$A2·$A1
+      TP: { audf: 1, audc: 4 }, //  $38 held;         $A4·$A3·$A2·$A1
+      BN: { audf: 48, audc: 1 }, // divisor 6..53 swept;  $A4 held
+      WP: { audf: 60, audc: 1 }, // divisor 25..84 swept; $A4 held
+      TH: { audf: 4, audc: 1 }, //  4 pitches;            $A4 held
+    }
     for (const name of ALL_NAMES) {
       const sound = POKEY_SOUNDS[name]
+      const audf = chainOf(sound, audfIndex(sound.channel))
       const audc = chainOf(sound, audcIndex(sound.channel))
-      // The AUDC of every sound is a single sequence; its distinct-value count is
-      // its rendered NUMBER.
-      const values = distinctValues(audc).size
-      expect(values, `${name}: AUDC distinct values`).toBeGreaterThanOrEqual(1)
+      expect(distinctValues(audf).size, `${name}: AUDF distinct values`).toBe(EXPECTED_DISTINCT[name].audf)
+      expect(distinctValues(audc).size, `${name}: AUDC distinct values`).toBe(EXPECTED_DISTINCT[name].audc)
     }
+  })
+
+  it('envelopeFrames() sizes each sound to its ROM NUMBER × FRCNT total (SN-016 duration)', () => {
+    // `envelopeFrames` is EXPORTED and drives every reward tone's rendered duration
+    // in pokeyTone (audio.ts). The suite's local `chainFrames` is a re-impl, so a
+    // bug in the real function (e.g. `return 1`) was invisible. Pin it directly
+    // against the ROM totals AND assert it agrees with the local model.
+    for (const name of ALL_NAMES) {
+      const sound = POKEY_SOUNDS[name]
+      const audf = chainOf(sound, audfIndex(sound.channel))
+      const audc = chainOf(sound, audcIndex(sound.channel))
+      expect(envelopeFrames(audf), `${name}: AUDF envelopeFrames`).toBe(TOTAL_FRAMES[name])
+      expect(envelopeFrames(audc), `${name}: AUDC envelopeFrames`).toBe(TOTAL_FRAMES[name])
+      expect(envelopeFrames(audf), `${name}: envelopeFrames matches the local model`).toBe(chainFrames(audf))
+    }
+  })
+
+  it('envelopeFrames() of an empty chain is 0 — no phantom duration', () => {
+    expect(envelopeFrames([])).toBe(0)
   })
 })
 

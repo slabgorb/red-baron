@@ -36,7 +36,6 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import type { OneShot } from '../../src/shell/audio'
 
 // --- recording fake Web Audio surface (battlezone bz1-11 harness) -----------
 
@@ -571,24 +570,46 @@ describe('rb4-10 discrete-board timbre + the SPIRAL cue (SN-013 / SN-015)', () =
     const m = await loadAudio()
     const engine = m.createAudioEngine()
     engine.resume()
-    // GREEN adds 'spiral' to OneShot (the `play()` exhaustiveness guard forces a case);
-    // the double cast is only needed pre-GREEN and Dev drops it. A missing case falls
-    // through the guard's `never` default and synthesises NOTHING — the RED signal.
+    // 'spiral' is a member of OneShot (the `play()` exhaustiveness guard forces a case);
+    // a missing case would fall through the guard's `never` default and synthesise
+    // NOTHING — so this asserts the cue actually builds nodes.
     const before = nodeCount()
-    engine.play('spiral' as unknown as OneShot)
+    engine.play('spiral')
     expect(nodeCount(), 'the spiral cue must synthesise, not silently no-op').toBeGreaterThan(before)
   })
 
   it('spiral is DISTINCT from the explosion and crash blasts (SN-015)', async () => {
     const m = await loadAudio()
-    const engine = m.createAudioEngine()
-    engine.resume()
-    // The shot-down dive whine fills the ~576 ms before the wreck explodes; it must not
-    // be the same burst as the kill/crash. Its analog timbre is off-CPU (Delivery
-    // Finding), so pin only that it is a SEPARATE cue with its own filter/shape.
-    engine.play('spiral' as unknown as OneShot)
-    const cutoffs = allCutoffValues()
-    expect(cutoffs, 'the spiral has its own voiced/filtered character').not.toEqual([])
+    // The shot-down dive whine fills the ~576 ms before the wreck explodes; it must NOT
+    // be the same code path as the kill/crash. The blasts are filtered NOISE bursts
+    // (buffer sources, no oscillator); the spiral is a VOICED descending tone (an
+    // oscillator, no noise). That structural split is the discriminator: aliasing
+    // `case 'spiral'` to `case 'crash'` (the exact mutation this pins) would make the
+    // spiral a buffer-source burst with zero oscillators and the crash's 500 Hz cutoff.
+
+    // The kill + crash: pure noise bursts.
+    const blasts = m.createAudioEngine()
+    blasts.resume()
+    const ctxBlast = FakeAudioContext.instances.at(-1)!
+    blasts.play('explosion')
+    blasts.play('crash')
+    const burstCutoffs = ctxBlast.filters.flatMap((f) => f.frequency.values)
+    expect(ctxBlast.sources.length, 'the kill/crash ARE noise bursts (buffer sources)').toBeGreaterThan(0)
+    expect(ctxBlast.oscillators.length, 'a noise burst is not a voiced tone — no oscillator').toBe(0)
+
+    // The spiral: a voiced dive whine on its OWN context.
+    const dive = m.createAudioEngine()
+    dive.resume()
+    const ctxDive = FakeAudioContext.instances.at(-1)!
+    dive.play('spiral')
+    const diveCutoffs = ctxDive.filters.flatMap((f) => f.frequency.values)
+    expect(ctxDive.oscillators.length, 'the spiral is a VOICED cue — it builds an oscillator').toBeGreaterThan(0)
+    expect(ctxDive.sources.length, 'the spiral is a tone, not a re-used noise burst').toBe(0)
+
+    // Its filter voice is its own — it never reuses the crash/explosion burst cutoffs.
+    expect(diveCutoffs, 'the spiral has its own voiced/filtered character').not.toEqual([])
+    const shared = diveCutoffs.filter((c) => burstCutoffs.includes(c))
+    expect(shared, 'the spiral must not reuse the explosion/crash burst filter').toEqual([])
   })
 })
 

@@ -30,7 +30,12 @@
 //
 // THE DECISIVE PROOF: a sound's AUDF and AUDC chains must run out together, and
 // under `values = NUMBER` all five do EXACTLY (TK 28=28, TP 40=40, BN 288=288,
-// WP 360=360, TH 256=256); under `values = NUMBER + 1` every one mismatches. Our
+// WP 360=360, TH 256=256). Under `values = NUMBER + 1` the three ASYMMETRIC sounds
+// (BN/WP/TH, whose AUDF and AUDC differ in shape) mismatch — but TK and TP are
+// SYMMETRIC (AUDF and AUDC share the one 4-value sequence), so their chains stay
+// equal to EACH OTHER even under the wrong rule. TK/TP are pinned instead by their
+// exact rendered value count (4 AUDC levels $A4..$A1, never a 5th) — an
+// AUDF-independent cross-check in pokey.test.ts. Our
 // `EnvelopeStep.steps` yields `steps + 1` values (`taken` runs 0..steps), so the
 // faithful transcription is `steps = romNUMBER − 1`. The `seq()` builder below
 // applies that subtraction in ONE place, and the name `steps` (not `NUMBER`)
