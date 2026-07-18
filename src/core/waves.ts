@@ -27,7 +27,11 @@
 // PURE and deterministic — the ONLY randomness is the seeded Rng handed to `spawnWave`.
 
 import { type Rng, nextFloat } from '@arcade/shared/rng'
+import type { Vec3 } from '@arcade/shared/math3d'
 import { spawn, step, LONE_PLANE_CHANCE, DRINZ, type Enemy } from './enemy'
+
+/** The pilot's eye when no caller threads one — the boresight (enemy.ts BORESIGHT / guns EYE_ORIGIN). */
+const BORESIGHT: Vec3 = Object.freeze([0, 0, 0]) as Vec3
 
 // ─── ROM-exact data (findings §3, §4) ────────────────────────────────────────
 
@@ -122,9 +126,11 @@ export function spawnWave(rng: Rng, score: number, level = 0): readonly Enemy[] 
  * proxied the break as a fixed `DRINZ - 0x30` closing distance; that constant is not in the ROM
  * (see the story deviation), and inventing a depth is the exact failure rb4-1 exists to prevent.
  */
-export function stepWave(enemies: readonly Enemy[], level = 0): readonly Enemy[] {
+export function stepWave(enemies: readonly Enemy[], level = 0, eye: Vec3 = BORESIGHT): readonly Enemy[] {
   const preLead = enemies.find((e) => e.kind === 'lead' && e.active)
-  const stepped = enemies.map((e) => step(e, level))
+  // rb4-16: thread the pilot's eye down to each plane's servo — it decides its zone from the plane's
+  // POST-DIVIDE SCREEN position (world − pilot, ÷ depth), so the stick can finally move the boresight.
+  const stepped = enemies.map((e) => step(e, level, eye))
   const postLead = stepped.find((e) => e.kind === 'lead' && e.active)
   // FREPAR fires when the lead's entry rotation has finished ramping (call site 1), or when there
   // is no live lead left to fly formation on at all (call site 2 — the shell that killed it).

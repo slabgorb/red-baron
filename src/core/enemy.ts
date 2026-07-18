@@ -363,8 +363,10 @@ export interface Enemy {
 // ─── pure helpers ─────────────────────────────────────────────────────────────
 
 // NaN-safe: Math.min/max PROPAGATE NaN, and a NaN that ever reaches x/y persists across every
-// later frame (state is fed back through step). Unreachable from spawn today; the floor is the
-// total answer for a degenerate hand-built fixture (rb4-6 R3 totality pin).
+// later frame (state is fed back through step). Unreachable from spawn today. rb4-16 corrects the
+// old overclaim that this floor was "the total answer" for a degenerate fixture: this `clamp` now
+// guards only the Y altitude band, while PLONSN's own clamp sinks a NaN X (plonsnClamp returns the
+// pilot). The two together keep step() total on a hand-built NaN fixture (rb4-6 R3 totality pin).
 const clamp = (v: number, lo: number, hi: number): number => (Number.isNaN(v) ? lo : Math.max(lo, Math.min(hi, v)))
 
 /** Clamp a GMLEVL to a valid table index (0 .. .LEVLS-1). */
@@ -398,6 +400,125 @@ const levelIndex = (level: number): number => clamp(Math.floor(level) || 0, 0, P
 export function displayPos(enemy: Enemy, eye: Vec3): { x: number; y: number } {
   return { x: enemy.x - eye[0], y: enemy.y - eye[1] }
 }
+
+// ─── PLONSN: the on-screen clamp, byte-pinned (RBARON.MAC:2877-2937) ───────────
+//
+// rb4-16 completes the seam displayPos opened. rb4-6 moved the GUN into display space but left the
+// SERVO reading the stored world position, bounded by an ad-hoc ±P_OLIM world fence (the old
+// windowServo clamp) the code itself called a stand-in for PLONSN. The ROM's real machine is two
+// coupled parts, and this story ports both:
+//
+//   • The window SERVO (PLNDEL / P.WINDW, :2740-2810) decides its zone from the POST-DIVIDE SCREEN
+//     position — PLSTAT+8/+A, the DISPLAY POSITION POSITH computes AFTER the perspective divide
+//     (RBGRND.MAC:296-306) — NOT the stored world position and NOT displayPos (which is pre-divide).
+//     `:2749 LDA ZX,PLSTAT+8` is the Y entry (X-reg = 2 set at :2747), `:2867` the X entry (X-reg =
+//     0). Both read the divided screen; the Y entry's `SBC I,HORIZN` only NORMALIZES back into the
+//     space X already occupies (POSITH added HORIZN on the way out) — it is not a positional bias,
+//     and our display Y is horizon-relative by construction, so this module adds NO HORIZN term
+//     (rb4-6, settled). See `screenPos` below.
+//
+//   • PLONSN (:2877-2937) is the hard on-screen bound. Per axis it takes `world − pilot` (:2909-2915,
+//     the same pre-divide offset displayPos returns), and if its magnitude exceeds a DEPTH-SCALED
+//     window it writes the plane back to the window edge THROUGH the pilot (:2921-2932 `LDY RESULT ;
+//     SET POSITION TO LIMIT` … `ADC ZX,UNIV4X ;ADD TO UNIVERSE CENTER / STA ZX,PLSTAT`). So the
+//     clamped world position TRACKS the pilot downrange — it is no longer fenced at the world origin.
+
+/**
+ * PLONSN_WINDOW — the on-screen window magnitude, transcribed from the ROM byte (RBARON.MAC:2886-2889,
+ * `.RADIX 16`). PLONSN loads `LDA I,0A0` (:2886) with `LDX I,1 / STX MM.XM` (:2884-2885) as the Math
+ * Box multiplier MSB, so the 16-bit multiplier is `0x01A0` = 416 — the comment says it out loud:
+ * ";SCALE WINDOW SIZE (1A0*1A0) BY DEPTH". Exported as the AC-2 byte pin.
+ */
+export const PLONSN_WINDOW = 0x1a0
+
+/**
+ * POSITH_SCALE — the perspective-divide fixed-point the SERVO's screen position is expressed in
+ * (`screen = (world − pilot) × POSITH_SCALE / positionZ`). A DECLARED SEAM with its derivation
+ * shown (the scene.ts:43 precedent), because it is the Math Box divide's fractional scale, not a
+ * single byte:
+ *
+ *   POSITH divides `world − eye` by depth through the 2901 Math Box (RBGRND.MAC:296-306). SETDIV
+ *   (RBARON.MAC:935-940) clears the numerator's low 16 bits (`D.NMLL/D.NMLH`) and POSITH loads the
+ *   offset into the HIGH word (`MATH+0F/10` = D.NMHL/D.NMHH), so the numerator is `(world − eye) ×
+ *   2^16` over the 16-bit depth divisor. The quotient is therefore `(world − eye) / depth` in a
+ *   fixed-point whose scale is a power of two set by the divide width (`D.NBIT = 0x0C`, a 12-bit
+ *   divide, RBARON.MAC:586). The exact power — the microcode's bit alignment between the <<16
+ *   numerator and the 12-bit quotient — is not pinned to a byte we can read from the source.
+ *
+ *   So it is pinned EMPIRICALLY, which is precisely what D4/D5 direct: `2^14` is the value the AC-R3
+ *   reachability guard holds at (the honest baseline captured through rb4-17's gun). It is a clean
+ *   power of two in the divide's plausible range (2^12 the raw 12-bit quotient … 2^16 the full
+ *   numerator shift), and it sits in the CENTRE of the band that keeps every GMLEVL at/above its bar
+ *   (measured 2026-07-17, 25 seeds × 600 frames: L0 600/600 exact, L1 244, L2 110, L3 66, L4 26 —
+ *   all ≥ 208/44/32/17): below ~2^13 the deep levels fall (L4 → 4 at 2^12), above ~2^15.3 L0 drops
+ *   off its 600 ceiling. This scale is the ONLY knob those guards permit — a regression is a finding
+ *   to investigate, never a re-tune of the bar.
+ *
+ * This scale does NOT change any AC-1/2/3 assertion (they pin ratio-invariance, sign, anti-symmetry,
+ * and the depth-scaled clamp — all scale-independent); it only sets where the servo's P.OLIM/P.ILIM
+ * zone boundaries fall in world terms, which the reachability guard measures.
+ */
+export const POSITH_SCALE = 0x4000
+
+/**
+ * The plane's SCREEN position (POSITH's post-divide space, the servo's input) along one axis:
+ * `(world − pilot) × POSITH_SCALE / positionZ`. positionZ is the POSITION Z the ROM divides by
+ * (PLNLBS/POSITP, :4817-4822); read `?? depth` for the coherent single-depth pose (never `||` — a
+ * legitimately small positionZ must survive, the P_IIDL[0] lesson). A zero/degenerate depth yields
+ * a non-finite screen the servo's zone check treats as the outer window (return to centre) rather
+ * than crashing.
+ */
+function screenPos(world: number, eye: number, positionZ: number): number {
+  return ((world - eye) * POSITH_SCALE) / positionZ
+}
+
+/**
+ * PLONSN's depth-scaled window in WORLD units — the bound on `|world − pilot|` for one axis. The ROM
+ * multiplies the window (0x1A0) by the plane's POSITION Z through the Math Box (`JSR MRSAB0`, the
+ * signed multiply returning the high 16 bits, :2888) and lifts the product by ^100 (:2890-2896):
+ *
+ *     RESULT = ((positionZ × 0x1A0) >> 16) × 0x100        (RBARON.MAC:2882-2896)
+ *
+ * so a DEEPER plane is allowed further off the boresight (the window is PROPORTIONAL to depth), and
+ * the constant works out to `positionZ × 0x1A0 / 0x100 = positionZ × 1.625` before the `>> 16`
+ * truncation. `>> 16` is replicated with Math.floor so the quantization matches MRSAB0's high-word
+ * multiply; positionZ is a depth (≥ 0), so this is exact for the domain.
+ *
+ * DEVIATION — the PFROTN rotation is NOT applied (declared seam). The ROM rotates this window by the
+ * inverse of the universe bank before comparing (`LDY PFROTN … JSR D.COMP / JSR TRIG / JSR MRSLT0`,
+ * :2898-2901, through the 037007.XXX sine table at :48-64). Our servo API threads the pilot's eye
+ * POSITION (a Vec3), not the pilot's bank — the same reason the servo's screen reading above is
+ * unbanked — so the window stays axis-aligned. It is EXACT at level flight (sin 0 = 0, cos 0 = 1,
+ * the rotation is identity) and differs only mid-bank, exactly where the servo already ignores the
+ * bank; the gun's own offset-rotation (guns.ts collides) is where our clone applies the bank. Logged
+ * as a Dev deviation; the successor that threads the bank ports the rotation from the cited bytes.
+ */
+function plonsnLimit(positionZ: number): number {
+  return Math.floor((positionZ * PLONSN_WINDOW) / 0x10000) * 0x100
+}
+
+/**
+ * PLONSN's per-axis clamp: if `|world − pilot|` exceeds the depth-scaled `limit`, set the world
+ * position to the window edge measured THROUGH the pilot (:2921-2932) — so it tracks him downrange
+ * — else leave it where the servo put it (`:2920 BCC 40$ ;PLANE W/I WINDOW`, PLONSN clamps, it does
+ * not attract). A non-finite limit (degenerate depth) leaves the position untouched.
+ */
+function plonsnClamp(world: number, eye: number, limit: number): number {
+  const offset = world - eye
+  // Totality (rb4-6 R3): a degenerate coordinate (NaN) centres on the pilot rather than propagating
+  // — the ±olim `clamp` used to be the NaN sink on X; PLONSN is now that bound, so it must sink it too.
+  if (Number.isNaN(offset)) return eye
+  if (!(Math.abs(offset) > limit)) return world // inside the window (or NaN limit) → untouched
+  return eye + Math.sign(offset) * limit
+}
+
+/**
+ * The eye `step` reads the screen against when no caller supplies one — the boresight. Keeps the
+ * two-argument callers meaning what they meant: at the origin the screen offset IS the stored world
+ * position, so a hand-built fixture placed "dead ahead" still reads that way. Live callers thread
+ * `toEye(flight)` down through `stepWave` (guns.ts EYE_ORIGIN precedent).
+ */
+const BORESIGHT: Vec3 = Object.freeze([0, 0, 0]) as Vec3
 
 // ─── spawn ─────────────────────────────────────────────────────────────────────
 
@@ -439,24 +560,30 @@ export function spawn(rng: Rng, level = 0): Enemy {
 /**
  * One axis of the P.WINDW window-servo (RBARON.MAC:2755-2800), run identically on Y then X —
  * PLNDEL enters `2$: LDX I,2` for Y, then `P.WITR: DEX/DEX` drops to X=0 and re-runs it. Three
- * zones on |pos| per GMLEVL, each with its OWN target delta:
+ * zones per GMLEVL, chosen from the plane's `screen` position — the POST-DIVIDE SCREEN coordinate
+ * (PLSTAT+8/+A), NOT the stored world position and NOT displayPos (see `screenPos`, rb4-16) — each
+ * with its OWN target delta:
  *
- *   • |pos| >= olim (P.OLIM "RETURN TO CENTER LIMIT", :2939) → head TOWARD centre, at P.ODLX
- *   • ilim <= |pos| < olim (P.ILIM, :2945) → coast, "NO DIRECTION CHANGES" (:2790), at P.IDLX
- *   • |pos| < ilim → `EOR I,0FF ;REVERSE FLAG (HEAD AWAY FROM CENTER)` (:2794-2796), at P.IIDL
+ *   • |screen| >= olim (P.OLIM "RETURN TO CENTER LIMIT", :2939) → head TOWARD centre, at P.ODLX
+ *   • ilim <= |screen| < olim (P.ILIM, :2945) → coast, "NO DIRECTION CHANGES" (:2790), at P.IDLX
+ *   • |screen| < ilim → `EOR I,0FF ;REVERSE FLAG (HEAD AWAY FROM CENTER)` (:2794-2796), at P.IIDL
  *
  * P.WCHK (:2806-2864) servos the delta toward that zone's target rather than clamping it to one
  * symmetric cap: equal → hold (:2826); |Δ − target| > ACCEL → step by ±ACCEL, "ACCELERATE SO
- * DELTA=MAX" (:2832, :2843-2846); otherwise snap exactly onto it (:2834-2840). The position then
- * integrates delta/DELTA_SCALE, which is UPDPLN's `JSR DIVBY4` (:2573) — see DELTA_SCALE above.
+ * DELTA=MAX" (:2832, :2843-2846); otherwise snap exactly onto it (:2834-2840). This returns only the
+ * new DELTA — the ROM's P.WINDW likewise only ever writes the delta (`STA ZX,PLSTAT+0C`); the
+ * position is integrated by UPDPLN (`JSR DIVBY4`, :2573) and bounded by PLONSN, both in `step`.
  *
- * The ±olim position clamp is OURS, not the ROM's (P.WINDW only ever writes the delta; the ROM
- * bounds the plane elsewhere — on Y by UPDPLN's altitude band, on screen by PLONSN's depth-scaled
- * window, :2877-2937). It stands in for PLONSN, which we do not model, and it is what keeps a
- * GMLEVL-0 plane provably inside GMLEVL 0's narrow window.
+ * rb4-16: the ad-hoc ±olim position clamp round 1 folded in here (its "stands in for PLONSN" note)
+ * is RETIRED — PLONSN (the depth-scaled screen bound) is now the real position bound. The zone read
+ * moved from stored world to `screen` in the same story, so the servo finally decides its zone from
+ * the same space the ROM's does.
  *
  * One servo, no per-axis bias: both ROM entries read the DISPLAY position (:2749, :2867) and the
  * Y entry's `SBC I,HORIZN` only normalizes into the space X is already in — see HORIZN above.
+ *
+ * A non-finite `screen` (degenerate depth) falls into the outer arm — head toward centre — rather
+ * than producing a NaN delta that would persist across frames.
  *
  * NOTE (deliberate simplification, behaviour-equivalent). The ROM carries the direction decision in
  * a sign FLAG (`FLAG+1` = sign(Δ) EOR sign(pos), EOR'd per zone, :2762-2797) and its reverse branch
@@ -466,22 +593,22 @@ export function spawn(rng: Rng, level = 0): Enemy {
  * target + |Δ| ≤ ACCEL. The ROM converges to the same delta on the following frame.
  */
 function windowServo(
-  pos: number,
+  screen: number,
   vel: number,
   olim: number,
   ilim: number,
   odlx: number,
   idlx: number,
   iidl: number,
-): { pos: number; vel: number } {
-  const a = Math.abs(pos)
+): number {
+  const a = Math.abs(screen)
   let heading: number
   let target: number
-  if (a >= olim) {
-    heading = pos > 0 ? -1 : 1 // outer wall → back toward centre
+  if (!(a < olim)) {
+    heading = screen > 0 ? -1 : 1 // outer wall (or degenerate depth) → back toward centre
     target = odlx
   } else if (a < ilim) {
-    heading = pos >= 0 ? 1 : -1 // inner window → HEAD AWAY from centre
+    heading = screen >= 0 ? 1 : -1 // inner window → HEAD AWAY from centre
     target = iidl
   } else {
     heading = vel >= 0 ? 1 : -1 // middle band → coast in the current direction
@@ -490,9 +617,7 @@ function windowServo(
   // P.WCHK: accelerate the delta toward this zone's target, snapping once within one ACCEL step.
   const want = heading * target
   const diff = want - vel
-  const newVel = Math.abs(diff) <= ACCEL ? want : vel + ACCEL * Math.sign(diff)
-  // UPDPLN: the position takes delta/4 (DIVBY4), never the raw delta.
-  return { pos: clamp(pos + newVel / DELTA_SCALE, -olim, olim), vel: newVel }
+  return Math.abs(diff) <= ACCEL ? want : vel + ACCEL * Math.sign(diff)
 }
 
 /**
@@ -510,7 +635,7 @@ function windowServo(
  * `Math.max` that floors it — an inferred timing choice asserted with the same confidence as the
  * byte-pinned claims around it. It is inferred. The depth does bore THROUGH on the fly-past frame.
  */
-export function step(enemy: Enemy, level = 0): Enemy {
+export function step(enemy: Enemy, level = 0, eye: Vec3 = BORESIGHT): Enemy {
   // A destroyed plane stays destroyed (idempotent — main.ts steps the whole wave with map()).
   if (!enemy.active) return enemy
 
@@ -519,12 +644,16 @@ export function step(enemy: Enemy, level = 0): Enemy {
   const ilim = P_ILIM[lvl]
 
   // BOTH AXES: PLNDEL runs the machine on Y first (`2$: LDX I,2`, :2747), then P.WITR's `DEX/DEX`
-  // drops to X=0 and re-enters the SAME block (:2865-2873). One servo, called twice.
-  const sy = windowServo(enemy.y, enemy.deltaY ?? 0, olim, ilim, P_ODLX[lvl], P_IDLX[lvl], P_IIDL[lvl])
-  const sx = windowServo(enemy.x, enemy.deltaX, olim, ilim, P_ODLX[lvl], P_IDLX[lvl], P_IIDL[lvl])
-  // …and Y alone then takes UPDPLN's altitude clamp (:2595-2611). The asymmetry is the ROM's own:
-  // UPDPLN bounds the Y it integrates to [PFPLOW, PFPHI] and leaves X unbounded. See PLANE_ALT_MIN.
-  const y = clamp(sy.pos, PLANE_ALT_MIN, PLANE_ALT_MAX)
+  // drops to X=0 and re-enters the SAME block (:2865-2873). One servo, called twice — each axis
+  // deciding its zone from the plane's POST-DIVIDE SCREEN position (`screenPos`, the space PLSTAT+8
+  // lives in), and each returning only the new DELTA (the position is integrated + bounded below).
+  const pz = enemy.positionZ ?? enemy.depth
+  const velY = windowServo(screenPos(enemy.y, eye[1], pz), enemy.deltaY ?? 0, olim, ilim, P_ODLX[lvl], P_IDLX[lvl], P_IIDL[lvl])
+  const velX = windowServo(screenPos(enemy.x, eye[0], pz), enemy.deltaX, olim, ilim, P_ODLX[lvl], P_IDLX[lvl], P_IIDL[lvl])
+  // UPDPLN integrates delta/DELTA_SCALE (`JSR DIVBY4`, :2573) into the WORLD position. The bounds
+  // (PLONSN on both axes, plus UPDPLN's altitude band on Y) are applied after the depth step, below.
+  const xi = enemy.x + velX / DELTA_SCALE
+  const yi = enemy.y + velY / DELTA_SCALE
 
   // The ROM's own approach rate: PLNZD indexes PLPOSZ by GMLEVL and stores it as "PLANE MOTION
   // DEPTH DELTA" (RBARON.MAC:2409-2411); UPDPLN ADDS it (negative) so the depth falls (:2704-2707).
@@ -549,6 +678,15 @@ export function step(enemy: Enemy, level = 0): Enemy {
   // transcribe (PLNZD:2412-2442, N.PLNZ/PRPDEL-driven) — see the rb4-17 Delivery Finding.
   const positionZ = (enemy.positionZ ?? enemy.depth) + closeSpeed(level)
 
+  // PLONSN (:2877-2937) is the world-position bound — the depth-scaled on-screen window, measured
+  // THROUGH the pilot, that RETIRES round 1's ad-hoc ±olim world fence (AC-3). Both axes are clamped
+  // (the ROM's `LDX I,2 … DEX/DEX/BPL` loop, :2905-2934); Y then also takes UPDPLN's absolute
+  // altitude band (:2595-2611), applied LAST so [PLANE_ALT_MIN, PLANE_ALT_MAX] stays a hard invariant
+  // (PLONSN-Y is a practical no-op inside it — the window dwarfs the band at every live depth).
+  const limit = plonsnLimit(positionZ)
+  const x = plonsnClamp(xi, eye[0], limit)
+  const y = clamp(plonsnClamp(yi, eye[1], limit), PLANE_ALT_MIN, PLANE_ALT_MAX)
+
   // BANK: the ±90° entry flourish ROLLS OUT toward the weave over ENTRY_RAMP_FRAMES
   // (RBARON.MAC:2620-2652) — it does not snap on frame 1. Thereafter bank IS biplaneBank(ΔX),
   // one coupling shared with the player horizon.
@@ -560,7 +698,7 @@ export function step(enemy: Enemy, level = 0): Enemy {
   // The two are genuinely independent, and coupling them broke AC-4: P.IIDL[0] = 0 means a GMLEVL-0
   // plane legitimately DEAD-STOPS inside the inner window, which round 1's condition read as "the
   // entry ramp has finished" — so `stepWave` fired FREPAR and the drones left formation on frame 4.
-  const weaveBank = biplaneBank(sx.vel)
+  const weaveBank = biplaneBank(velX)
   const rem = enemy.entryFrames ?? 0
   let bank: number
   let entryFrames: number
@@ -576,10 +714,10 @@ export function step(enemy: Enemy, level = 0): Enemy {
 
   return {
     ...enemy,
-    x: sx.pos,
-    deltaX: sx.vel,
+    x,
+    deltaX: velX,
     y,
-    deltaY: sy.vel,
+    deltaY: velY,
     bank,
     entryFrames,
     depth,

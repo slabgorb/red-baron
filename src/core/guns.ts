@@ -408,6 +408,13 @@ export function step(
  * and shell-Z. Total: a degenerate depth (NaN/±Infinity) fails the Z bound and returns
  * false rather than throwing.
  *
+ * Z-GATE DISCLOSURE (rb4-16 AC-R3): the third bound, `|dz| <= WINDOW_Z`, is a real gate — a shell
+ * short of or past the plane's depth misses. rb4-16's reachability guard (plonsn.test.ts AC-R3)
+ * deliberately places its probe shell AT the plane's exact depth (`z = depth/256 = depthToShellZ`),
+ * so `dz = 0` and the Z gate passes by construction — the guard then measures pure X/Y reach (does
+ * the eye-aware servo keep the plane inside the picture plate's X/Y window), not the Z gate. The
+ * depth it divides against is the PICTURE Z (`enemy.depth`), NOT the rb4-17 position Z the servo uses.
+ *
  * IN DISPLAY SPACE, AND THAT IS THE WHOLE OF rb4-6 ROUND 2. The offset is measured against the
  * plane's position ON SCREEN — `displayPos(enemy, eye)` — not against its stored world position.
  * The shell is fired at the boresight and pinned there (`{ x: muzzleX(gun), y: 0 }` at :321;
