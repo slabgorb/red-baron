@@ -1,316 +1,222 @@
 // src/core/blimp.ts
 //
-// The Blimp / Zeppelin — story rb2-10. The one enemy the sky owes the player that
-// ISN'T a weaving biplane: it rolls in on a ~25 % chance, DRIFTS steadily across
-// the screen (it does NOT weave/reverse like enemy.ts's window-follower), fires at
-// the player, and is worth a flat 200 pts when gunned down — drawn with the
-// authentic BLIMP/DBLIMP picture-ROM geometry (topology.ts, rb2-2). Grounded in
-// findings §3 (BLMOTN, RBARON.MAC:4170+: "~25 % random spawn, drifts across, also
-// fires at the player, worth 200 pts. There is no separate barrage balloon — the
-// airship is the blimp. [ROM-verified]") and §4 (blimp = 200 pts, flat).
+// The Blimp / Zeppelin — rb2-10, RE-MACHINED by rb4-15. The one enemy the sky owes
+// the player that ISN'T a weaving biplane — and it is an APPROACHING AIRSHIP, not
+// the constant-depth lateral drifter this module used to be (CD-005's "drifts
+// across" certification was CONFIRMED FALSE by the rb4 coverage review: the drift
+// model borrowed the plane's div-by-2 fire and invented the cruise).
 //
-// DRIFTS ACROSS, NOT A WEAVE (findings §3): the biplane (enemy.ts) accelerates ΔX
-// toward the window limits and REVERSES at the bounds — its ΔX takes both signs.
-// The blimp does the opposite: ONE steady drift with a CONSTANT-SIGN velocity that
-// carries it from its entry side across centre to the far side. It flies LEVEL (no
-// bank — a Zeppelin does not roll into a turn) and cruises at a constant depth; the
-// motion is purely lateral.
+// THE MACHINE (RBARON.MAC — the citable ~/Projects/red-baron-source-text copy,
+// md5 497db93e…, .RADIX 16 from :74; all lines read firsthand, rb4-15):
 //
-// ALSO FIRES AT THE PLAYER (findings §3): unlike a plane, whose "@ PLAYER" bit is
-// PLNLVL level-gated (enemy.planeFires: level < 4 → never), the blimp is a threat
-// whenever it is present. `blimpFires` takes no level and fires on the established
-// ÷2 FRAME cadence (findings §3, PLNSHL) — a menace even in the early sky the
-// planes leave quiet.
+//   ENTRY   INITBP :1425-1426  LDA I,10 / STA BLOBJ+5 ;Z MSB  (LSB cleared :1421)
+//           → enters at Z = 0x1000 = 4096, nearly the plane's own spawn depth.
+//   CLOSE   BLMOTN :4259-4265  CLC / LDA BLOBJ+4 / ADC I,-80 / STA BLOBJ+4 /
+//           LDA BLOBJ+5 / ADC I,-1 / STA BLOBJ+5 — a 16-bit add of 0xFF80:
+//           → Z CLOSES by 0x80 = 128 every calc-frame. It flies AT you.
+//   GONE    BLMOTN :4266-4270  CMP I,1 / BPL 55$ … 40$: LDA I,0 ;CLR BLOBJ
+//           → alive while the Z MSB >= 1 (Z >= 0x100); the frame Z drops below
+//             0x100 = 256 the object is CLEARED — it has flown past the player.
+//   SPAWN   :2325-2331  LDA N.PLNZ / CMP I,4 / BCC 25$ / JSR RANDOM / AND I,0C /
+//           BNE 25$ / JSR CINTBP ;RANDOM BLIMP
+//           → TWO gates: no blimp until FOUR planes have appeared in the game
+//             (N.PLNZ :129, INC'd per plane :2398), THEN a 1-in-4 roll.
+//   FIRE    SHLAUN :4027-4030  LDA FRAME / AND I,3 ;1 OUT OF 4 FRAMES — and
+//           SHLAUN :4038-4041  LDX GMLEVL / DEX / DEX / BMI SHLAUX
+//           ;NO GROUND SHELLS @ LOWER LEVELS
+//           → the blimp's shells launch through the SHARED SHLAUN (BLMOTN calls
+//             it at :4229 "LAUNCH SHELL @ PLAYER"): 1 frame in 4, only at
+//             GMLEVL >= 2. The old "÷2, no level gate" was the plane's model.
 //
-// FRAME CADENCE (findings §1 — load-bearing): the drift and the fire cadence tick
-// ONCE per calculation frame (~10.42 Hz / 96 ms), NOT per 62.5 Hz display frame —
-// main.ts steps the blimp inside the SIM_TIMESTEP_S accumulator like every other
-// rb2 motion object.
-//
-// SCALE NOTE: BLMOTN is not byte-transcribed in the quarry, so the ROM pins the
-// DATA that IS documented — the ~25 % spawn (BLIMP_SPAWN_CHANCE), the flat 200-pt
-// value (scoring.ts BLIMP_SCORE), the authentic geometry (topology.ts) — while the
-// cruise depth, the drift speed, the entry offset, the bank (0), and the ÷2 fire
-// phase are chosen HERE within the tested invariants (like enemy.ts's
-// WEAVE_SPEED_CAP), and flagged as inferred in the session's Design Deviations.
+// WHAT IS NOT MODELLED (routed as rb4-15 Delivery Findings, not silently invented):
+// the ROM blimp also carries a lateral X velocity (BLOBJ+0C, :4235-4250, with the
+// UNIV4X world-wrap) and INITBP picks its entry side off PLDELX — a successor story
+// ports the lateral machine. Here the airship holds its lateral station and CLOSES.
 //
 // PURE and deterministic. No DOM, no time, no ambient randomness — the ONLY source
 // of randomness is the seeded Rng handed to `spawn`.
 
 import { type Rng, nextFloat } from '@arcade/shared/rng'
 import { multiply, rotationY, rotationZ, translation, type Mat4 } from '@arcade/shared/math3d'
-import { P_INDP } from './returning-ace'
-import { SIM_HZ } from './timing'
 import { BLCOLL_POINTS, BLIMP_PICTURE, BLIMP_POINTS } from './topology'
 import { renderModel } from './biplane'
-import { frustumHalfWidth, ndcX, worldX, worldY } from './screen'
+import { worldX, worldY } from './screen'
 import type { SceneSegment } from './scene'
 import type { Enemy } from './enemy'
 
-// ─── ROM-exact data (findings §3, BLMOTN) ────────────────────────────────────
+// ─── ROM-exact data (rb4-15 — transcribed, hex-spelled, cited) ────────────────
 
 /**
- * The ~25 % random spawn roll (findings §3, BLMOTN). This is the blimp module's OWN
- * constant — a SEPARATE roll from enemy.ts's LONE_PLANE_CHANCE (which is also 0.25
- * but decides lone-plane-vs-formation); this one decides "a blimp appears at all".
+ * The entry Z depth — INITBP stores Z MSB = 0x10, LSB = 0 (RBARON.MAC:1425-1426,
+ * with the LSB cleared at :1421): the airship ENTERS at 0x1000 = 4096, deep on the
+ * same axis the planes fly down (P.INDP = 0x1080 = 4224). Hex on purpose — this
+ * epic exists because 0x1080 was once read as decimal 1080.
+ */
+export const BLIMP_Z_START = 0x1000
+
+/**
+ * The Z closed per calc-frame — BLMOTN adds 0xFF80 (-0x80) to the 16-bit Z every
+ * calculation frame (RBARON.MAC:4259-4265): 128 units of approach, ~10.42 times a
+ * second. Entry to gone is 31 calc-frames ≈ 3.0 s of closing airship.
+ */
+export const BLIMP_CLOSE_SPEED = 0x80
+
+/**
+ * The spawn gate: no blimp until this many planes have APPEARED in the game —
+ * LDA N.PLNZ / CMP I,4 / BCC skip (RBARON.MAC:2325-2327). N.PLNZ is "NUMBER OF
+ * PLANES COUNT" (:129), incremented once per plane spawned (:2398). The caller
+ * maintains the count; this module judges it.
+ */
+export const BLIMP_PLANE_GATE = 4
+
+/**
+ * The surviving 25 % — the SECOND gate: JSR RANDOM / AND I,0C / BNE skip
+ * (RBARON.MAC:2328-2330). Bits 2-3 of the hardware RANDOM must both be zero:
+ * exactly 1 roll in 4. Still a SEPARATE roll from enemy.ts's LONE_PLANE_CHANCE
+ * (also 0.25, but deciding lone-plane-vs-formation).
  */
 export const BLIMP_SPAWN_CHANCE = 0.25
 
-// ─── tuning within the tested invariants (inferred — BLMOTN not byte-transcribed) ─
-
 /**
- * Cruise depth the airship drifts across at — a visible mid-field distance. Inferred
- * (BLMOTN does not byte-pin it), but DENOMINATED IN THE AXIS rather than typed as a number.
- *
- * rb4-1 REWORK 2. This was a bare `600`, and "mid-field" was true of it only in the world we
- * misread: against the old 1080 spawn, 600 was 56% of the way out. Against the real P.INDP =
- * 4224 it is 14% — the airship was cruising in the player's face, and its own comment was the
- * only thing still claiming otherwise. Half the plane's spawn depth IS the mid-field, at any
- * scale, so the two can never drift apart again.
- *
- * REWORK 3 — AND THIS IS THE LESSON. Moving it was RIGHT and it BROKE THE GAME, because the
- * blimp is a RENDERED object and three of its other constants were positions ON THE SCREEN,
- * denominated in world-window units. What an x means on screen is x / depth. Move the depth
- * and every one of them means something else. Measured through the real sceneProjection(16/9):
- *
- *                            depth 600 (old)      depth 2112 (new, unfixed)
- *     enters at |x| 180..300   ndc 0.292..0.487     ndc 0.083..0.138   (near screen CENTRE)
- *     despawns at |x| = 640    ndc 1.039 (OFF)      ndc 0.295 (IN FRAME!)
- *
- * The airship popped in near the middle of the screen, drifted ~21% of a screen-width, and was
- * DELETED IN PLAIN VIEW — while main.ts's despawn comment still said "has left the frame" and
- * the depth suite stayed green, because the depth suite was looking at the other axis.
- *
- * So none of the three are world numbers any more. They are written in the PROJECTED frame and
- * spent through screen.ts at the depth they are seen at. Change CRUISE_DEPTH to anything you
- * like now — 600, 2112, 40000 — and nothing about what the player sees changes. That property
- * is tested directly (tests/core/screen-scale.test.ts flies the whole crossing at three
- * different cruise depths and asserts the same screen path, frame for frame).
+ * The despawn line — BLMOTN keeps the airship while the Z MSB >= 1 (CMP I,1 /
+ * BPL 55$, RBARON.MAC:4266-4267) and CLEARS the object below it (40$: LDA I,0
+ * ;CLR BLOBJ, :4268-4270). Z = 0x100 exactly is ALIVE; 0xFF is gone.
  */
-const CRUISE_DEPTH = P_INDP / 2 // 2112
+const BLIMP_DESPAWN_Z = 0x100
 
-/**
- * How long the airship takes to sail the FULL WIDTH of the frame. Inferred.
- *
- * The drift used to be `DRIFT_SPEED = 12` world-window units per calc-frame — a number with no
- * meaning until you say how wide the frame is where it is flying, which is exactly the disease.
- * At the old 600 depth those 12 units were 1% of the frame per frame; at 2112 they are 0.28%,
- * so the SAME constant made the airship crawl at a quarter of the pace it was tuned for.
- *
- * Ten seconds of screen is a thing a human can picture, and it is the same ten seconds at any
- * depth and any window shape. It also preserves what the game shipped: 12 units/frame at the
- * old 600 depth crossed the visible width in ~103 calc-frames = 9.9 s.
- */
-const DRIFT_CROSSING_SECONDS = 10
+/** SHLAUN's level gate: LDX GMLEVL / DEX / DEX / BMI = fire only at GMLEVL >= 2
+ *  ("NO GROUND SHELLS @ LOWER LEVELS", RBARON.MAC:4038-4041). */
+const BLIMP_FIRE_LEVEL = 2
 
-/**
- * Entry band, in PROJECTED space: the airship enters at |ndc x| in [MIN, MIN+RANGE) — hard
- * against a screen edge (0.72..0.98 of the way out), but still INSIDE the frame, so it is
- * visible the moment it appears and can never be despawned on its first step. Inferred.
- *
- * The AC (rb2-10) says the blimp DRIFTS ACROSS THE SCREEN. That is a claim about the screen,
- * so it is written in screen units.
- */
-const ENTRY_NDC_MIN = 0.72
-const ENTRY_NDC_RANGE = 0.26
+// ─── placement within the tested invariants (inferred — see Design Deviations) ─
+//
+// The story pins the Z machine; WHERE the airship sits laterally is this module's
+// choice inside the approach's own geometry. The constraint is WATCHABILITY: the
+// airship's x/y are fixed for its whole life (the ROM's lateral velocity is the
+// descoped successor), while the visible window SHRINKS 16x as Z closes 4096 → 256.
+// A position chosen "near the edge at entry" (the old drifter's idiom) is off-frame
+// long before the reap. So the entry offsets are denominated in NDC AT THE DESPAWN
+// LINE and spent through screen.ts there: the airship is placed so that at the
+// moment it fills the screen and flies past you (Z = 0x100) it sits at |ndc x| in
+// [MIN, MIN+RANGE) — framed at the climax, a whisker off the boresight at entry.
 
-/**
- * Vertical spread of the random spawn Y, as a fraction of the frame's HALF-HEIGHT (ndc y).
- * Was a bare `40` window units — 11% of the half-height at the old depth, 3% at the new one,
- * which pinned every airship to the horizon line. Inferred.
- */
+const ENTRY_NDC_MIN = 0.2
+const ENTRY_NDC_RANGE = 0.36
+
+/** Vertical spawn spread, as an NDC y fraction at the SAME despawn-line depth. */
 const SPAWN_NDC_Y_RANGE = 0.35
 
 /**
- * The airship's bounding radius in world units — READ OFF ITS OWN GEOMETRY (max |coordinate|
- * over BLIMP_POINTS = 40, the envelope's nose/tail along local z, which the broadside yaw
- * turns into its screen-X extent). Derived, so the hull the despawn reasons about can never
- * disagree with the hull that is drawn.
- *
- * This is what makes "has it left the frame?" answerable about a SHAPE rather than a point:
- * the airship is gone only when its NEAREST edge is past the frustum edge — not when its
- * centre is.
+ * The airship's bounding radius in world units — READ OFF ITS OWN GEOMETRY (max
+ * |coordinate| over BLIMP_POINTS = 40, the envelope's nose/tail along local z,
+ * which the broadside yaw turns into its screen-X extent). Derived, so any consumer
+ * reasoning about the hull can never disagree with the hull that is drawn. (Its
+ * old despawn role is retired — rb4-15's reap is a depth question.)
  */
 export const BLIMP_HULL_RADIUS = Math.max(...BLIMP_POINTS.flatMap((p) => p.map(Math.abs))) // 40
 
 /** The BLIMP_PICTURE geometry is authored NOSE-ON along local z; a quarter-turn yaw presents
- *  the airship's FLANK (broadside), the way the cabinet frames the drifting Zeppelin. Inferred
+ *  the airship's FLANK (broadside), the way the cabinet frames the Zeppelin. Inferred
  *  — the source pins the geometry, not the presentation pose. (Moved out of main.ts in rb4-1:
  *  the pose is part of what "the blimp is on screen" MEANS, and main.ts is not testable.) */
 const BLIMP_YAW = Math.PI / 2
 
 // ─── state ───────────────────────────────────────────────────────────────────
 
-/** The blimp's state — all ROM screen-window units. */
+/** The blimp's state — screen-window x/y (display-space, rb2-13), ROM-unit depth. */
 export interface Blimp {
-  /** Screen-window X — DRIFTS across centre (0) in ONE direction (never reverses). */
+  /** Screen-window X — holds its lateral station for the whole approach (rb4-15). */
   readonly x: number
   /** Vertical offset — random at spawn. */
   readonly y: number
-  /** Depth in front of the eye (> 0); the airship cruises here and drifts sideways. */
+  /** Depth in front of the eye — ENTERS at BLIMP_Z_START and CLOSES every calc-frame. */
   readonly depth: number
-  /** Drift velocity — CONSTANT SIGN; carries the blimp from its entry side to the far side. */
+  /** Lateral velocity — 0 this story (the ROM's BLOBJ+0C is a routed successor). */
   readonly deltaX: number
   /** Roll (radians): a Zeppelin flies LEVEL — always 0 (inferred; see Design Deviations). */
   readonly bank: number
-  /** The screen side it entered from; it drifts toward the OTHER side. */
+  /** The screen side it sits on (windscreen bullet-hole side, WNDSHD). */
   readonly side: -1 | 1
   /** D7 "active" status. */
   readonly active: boolean
 }
 
-// ─── the ~25 % spawn roll ──────────────────────────────────────────────────────
+// ─── the two-gate spawn decision (rb4-15, :2325-2331) ─────────────────────────
 
 /**
- * The BLMOTN spawn decision: a blimp appears when the caller's roll lands strictly
- * BELOW the ~25 % chance (findings §3). The caller draws `roll` (e.g. nextFloat of the
- * seeded Rng) so the decision is deterministic. Total — a NaN / non-finite roll fails
- * safe to "no blimp" (NaN < 0.25 is false), never conjuring a phantom airship.
+ * The BLMOTN spawn decision, BOTH gates: the sky must have shown BLIMP_PLANE_GATE
+ * planes (LDA N.PLNZ / CMP I,4 / BCC skip), and THEN the caller's roll must land
+ * strictly below the 25 % chance (RANDOM / AND I,0C). The caller draws `roll`
+ * (e.g. nextFloat of the seeded Rng) and maintains `planeCount`, so the decision
+ * is deterministic. Total — a NaN count is not four planes, a NaN/non-finite roll
+ * fails safe to "no blimp"; neither conjures a phantom airship.
  */
-export function shouldSpawnBlimp(roll: number): boolean {
-  return roll < BLIMP_SPAWN_CHANCE
+export function shouldSpawnBlimp(planeCount: number, roll: number): boolean {
+  return planeCount >= BLIMP_PLANE_GATE && roll < BLIMP_SPAWN_CHANCE
 }
 
-// ─── spawn (BLMOTN side entry, drifting across) ────────────────────────────────
+// ─── spawn (INITBP: deep entry at the ROM depth) ──────────────────────────────
 
 /**
- * The airship's lateral drift, in world units per calc-frame, for an airship cruising at
- * `depth` in a frame of `aspect`. Derived from DRIFT_CROSSING_SECONDS: the full visible width
- * is `2 * frustumHalfWidth`, and it is crossed in `DRIFT_CROSSING_SECONDS` seconds at the
- * ~10.42 Hz calc cadence (SIM_HZ, findings §1).
+ * Spawn a blimp entering DEEP — at exactly BLIMP_Z_START — on a random side of the
+ * boresight. Consumes the seeded Rng for its side, lateral offset, and Y — in that
+ * order, unchanged from the drifter era, so a seed still picks the same side and
+ * the same relative placement. Pure per (seed, aspect).
  *
- * Exported so the suite can fly the crossing at depths other than CRUISE_DEPTH and prove the
- * screen path is the same one — the property the whole rework exists for.
- */
-export function blimpDriftPerFrame(depth: number, aspect: number): number {
-  const visibleWidth = 2 * frustumHalfWidth(depth, aspect)
-  return visibleWidth / (DRIFT_CROSSING_SECONDS * SIM_HZ)
-}
-
-/**
- * Spawn a blimp entering from a random screen side and drifting toward the OTHER side, level
- * and at cruise depth. Consumes the seeded Rng for its side, entry position, and Y — in that
- * order, unchanged, so a seed still picks the same side and the same relative placement. Pure
- * per (seed, aspect); the drift velocity points AWAY from the entry edge (sign −side) so the
- * airship crosses the player's view.
- *
- * TAKES THE FRAME'S ASPECT (rb4-1). It has to: "enters near a screen edge" is a question about
- * the screen, and the screen's world extent depends on how wide the window is as well as on
- * how far away the airship is. The alternative — a fixed world x, tuned once against whatever
- * the depth axis happened to be that day — is the bug this story is about. The Rng draw order
- * is untouched, so seeded determinism is preserved; the mapping from those draws to world
- * coordinates is now denominated in the frame.
+ * TAKES THE FRAME'S ASPECT (rb4-1): the lateral offsets are NDC fractions spent
+ * through screen.ts (at the despawn line — see the placement note above), and what
+ * an NDC x means in world units depends on how wide the window is.
  */
 export function spawn(rng: Rng, aspect: number): Blimp {
   const side: -1 | 1 = nextFloat(rng) < 0.5 ? -1 : 1
   const entryNdc = ENTRY_NDC_MIN + nextFloat(rng) * ENTRY_NDC_RANGE
   const spawnNdcY = (nextFloat(rng) * 2 - 1) * SPAWN_NDC_Y_RANGE
   return {
-    x: side * worldX(entryNdc, CRUISE_DEPTH, aspect), // hard against the entry edge, in frame
-    y: worldY(spawnNdcY, CRUISE_DEPTH),
-    depth: CRUISE_DEPTH,
-    deltaX: -side * blimpDriftPerFrame(CRUISE_DEPTH, aspect), // toward the far side
+    x: side * worldX(entryNdc, BLIMP_DESPAWN_Z, aspect), // framed at the fly-past
+    y: worldY(spawnNdcY, BLIMP_DESPAWN_Z),
+    depth: BLIMP_Z_START, // the transcribed entry — see the constant's own citation
+    deltaX: 0, // the lateral machine (BLOBJ+0C) is the routed successor
     bank: 0, // a Zeppelin flies level
     side,
     active: true,
   }
 }
 
-// ─── the despawn: ask the question the comment always claimed to be asking ─────
+// ─── the reap: the ROM's own line, asked of the depth (rb4-15) ────────────────
 
 /**
- * HAS THE AIRSHIP LEFT THE FRAME? — the rb2-13 AC-6 despawn, asked in PROJECTED SPACE.
+ * THE REAP — the despawn as ONE INDIVISIBLE DECISION. Hand it the stepped airship;
+ * take back either the airship or nothing. There is no third thing to do with the
+ * answer, and no boolean for a caller's `||` to poison — that is rb4-1's hard-won
+ * shape, kept on purpose (see the round-3 story in tests/core/screen-scale.test.ts).
  *
- * `step` is unbounded by design (the drift never reverses), so somebody has to say when the
- * blimp is gone. main.ts used to say it with `Math.abs(blimp.x) > BLIMP_DESPAWN_X` where
- * BLIMP_DESPAWN_X = 640, under a comment reading "screen-window |x| past which the drifting
- * blimp has left the frame". That comment was a QUESTION ABOUT THE SCREEN answered with a
- * WORLD NUMBER, and it was true only at the cruise depth it was fitted to. Move the depth and
- * it silently becomes false: at 2112, |x| = 640 is ndc 0.295 — the airship was deleted while
- * it was three-tenths of the way from the centre of the screen, in plain view of the player.
+ * WHAT CHANGED (rb4-15): the question. The drifter asked the SCREEN ("has the hull
+ * cleared the frame?", frustum + aspect). The machine asks the DEPTH: BLMOTN keeps
+ * the object while Z >= 0x100 and CLEARS it below (CMP I,1 / BPL … CLR BLOBJ,
+ * RBARON.MAC:4266-4270) — large, on screen, and gone, because it has flown past
+ * you. A depth question takes no aspect, so the parameter is retired rather than
+ * left as a dead input for someone to poison.
  *
- * Do not multiply 640 by 3.52. That fixes the instance and leaves the class — the next person
- * to touch CRUISE_DEPTH breaks it again, and no test will notice, because nothing here is
- * measuring what the player can see. ASK THE QUESTION DIRECTLY:
- *
- *     the airship is gone when its NEAREST edge is outside the frustum (|ndc| > 1)
- *
- * which is correct at every depth and every aspect, and cannot drift, because there is no
- * longer a number to drift. The two conservative choices in it are deliberate:
- *
- *   * NEAREST EDGE, not centre: `|x| - BLIMP_HULL_RADIUS` — the whole hull must be clear, or
- *     the tail of a 40-unit airship is still being drawn on screen when it is deleted.
- *   * The FAR side of the hull's depth range (`depth + radius`): the hull is 3-D, so its
- *     vertices sit at slightly different depths, and a vertex slightly FARTHER away projects
- *     slightly FARTHER IN. Using the farthest gives the widest frustum, which keeps the
- *     airship alive fractionally longer. The error is always in the safe direction — an
- *     invisible blimp may live one extra frame; a visible one is never deleted.
- *
- * Total: a non-finite pose is not drawable, and reports gone (it must, or a NaN airship drifts
- * forever, firing).
+ * Total: a non-finite pose is not drawable and reports gone (it must, or a NaN
+ * airship closes forever, firing).
  */
-export function blimpOffScreen(blimp: Blimp, aspect: number): boolean {
-  if (!Number.isFinite(blimp.x) || !Number.isFinite(blimp.depth)) return true
-  const nearestEdge = Math.abs(blimp.x) - BLIMP_HULL_RADIUS
-  if (!(nearestEdge > 0)) return false // the hull still straddles the boresight — plainly in view
-  return ndcX(nearestEdge, blimp.depth + BLIMP_HULL_RADIUS, aspect) > 1
-}
-
-/**
- * THE REAP — the despawn as ONE INDIVISIBLE DECISION. Hand it the drifted airship; take back
- * either the airship or nothing. There is no third thing to do with the answer.
- *
- * ─── WHY THIS EXISTS, AND IT IS NOT A CONVENIENCE WRAPPER ────────────────────────────────
- *
- * `blimpOffScreen` above is correct, exhaustively measured, and it was NOT ENOUGH, because it
- * is a PREDICATE — and a predicate is an opinion the caller may overrule. rb4-1 round 3 shipped
- * main.ts:374 as
- *
- *     blimp = blimpOffScreen(drifted, aspect) ? null : drifted
- *
- * which is right, and the Reviewer then walked straight through it in one line:
- *
- *     const gone = blimpOffScreen(drifted, aspect) || Math.abs(drifted.x) > REAP_LIMIT
- *     blimp = gone ? null : drifted                      // 832/832 STILL GREEN
- *
- * The world constant is back — a bare 640 in the file no test could import — and it DOMINATES
- * the `||`, so the correct predicate never gets to decide anything. Every guard the suite had
- * still passed, because every one of them asked whether main.ts *named* `blimpOffScreen`:
- * it imported it (regex), it referenced it (noUnusedLocals), it said the word "despawn" (regex),
- * it assigned `blimp = null` somewhere (regex). All true. All satisfied by a lie. The airship was
- * deleted on its FIRST calc-frame, at 70-84 % of the way to the edge, fully drawn on screen.
- *
- * IMPORTED IS NOT OBEYED. So the caller no longer gets an opinion to argue with: it gets the
- * ANSWER. `reapBlimp` folds the predicate and the deletion into one call, so there is no boolean
- * left lying around in main.ts for an `||` to poison, and nothing for a rival bound to dominate.
- * The cockpit's entire despawn is now `blimp = reapBlimp(drifted, aspect)` — an expression with
- * no operator in it, which is the point: you cannot corrupt a decision you cannot spell.
- *
- * (And the containment is now PROVEN rather than trusted, twice over: tests/cockpit-loop.test.ts
- * BOOTS main.ts under a stub DOM and watches the real airship cross the real frame — so any
- * despawn main.ts invents, by any name, in any shape, is caught by its effect on what is drawn;
- * and tests/core/screen-scale.test.ts's DECISION PATH guard fails any write to `blimp` that is
- * not literally this call.)
- *
- * Total, by inheritance: a non-finite pose is off-screen, so it is reaped rather than left to
- * drift and fire forever.
- */
-export function reapBlimp(blimp: Blimp, aspect: number): Blimp | null {
-  return blimpOffScreen(blimp, aspect) ? null : blimp
+export function reapBlimp(blimp: Blimp): Blimp | null {
+  if (!Number.isFinite(blimp.x) || !Number.isFinite(blimp.depth)) return null
+  return blimp.depth < BLIMP_DESPAWN_Z ? null : blimp
 }
 
 // ─── the picture: the pose the cockpit strokes (moved out of main.ts, rb4-1) ────
 
 /**
- * The airship's tracer-free picture: the authentic 36-vertex BLIMP_PICTURE (topology.ts,
- * rb2-2), posed BROADSIDE by a quarter-turn yaw, at the blimp's drift position, projected
- * through the shared substrate.
+ * The airship's tracer-free picture: the authentic 36-vertex BLIMP_PICTURE
+ * (topology.ts, rb2-2), posed BROADSIDE by a quarter-turn yaw, at the blimp's
+ * position, projected through the shared substrate.
  *
- * Lives HERE, not in main.ts, for the same reason `shellSegments` moved into guns.ts: a
- * function that decides where an object APPEARS cannot be allowed to sit in a module no test
- * can import. "The blimp is not deleted while it is still visible" is only a testable claim if
- * a test can ask the game — not a reconstruction of the game — what the blimp looks like. This
- * is the function the cockpit draws with, so it is the function the suite interrogates.
+ * Lives HERE, not in main.ts, for the same reason `shellSegments` moved into
+ * guns.ts: a function that decides where an object APPEARS cannot sit in a module
+ * no test can import. This is the function the cockpit draws with, so it is the
+ * function the suite interrogates (the approach's GROWTH property is measured
+ * through it).
  */
 export function blimpSegments(blimp: Blimp, viewProj: Mat4): readonly SceneSegment[] {
   const model = multiply(
@@ -356,36 +262,42 @@ export function blimpTarget(blimp: Blimp): Enemy {
     bank: blimp.bank,
     side: blimp.side,
     active: blimp.active,
-    // rb4-13: an airship cruising its course is a settled thing — D4 clear, like a
+    // rb4-13: an airship holding its course is a settled thing — D4 clear, like a
     // settled plane. (Only the wreck path ever reads this; a blimp has no entry turn.)
     facingAway: true,
     window: BLIMP_WINDOW, // rb4-11 AC-4 — the BLCOLL broadside box rides the target
   }
 }
 
-// ─── the calc-frame drift (one step per 96 ms calc frame — findings §1) ────────
+// ─── the calc-frame approach (one step per 96 ms calc frame — findings §1) ─────
 
 /**
- * Advance the blimp one calculation frame: a steady lateral drift by `deltaX`, with
- * the depth, bank, side, and active status carried unchanged. UNLIKE the biplane's
- * weave, `deltaX` never reverses — the drift is monotone across the screen. Pure —
- * returns a fresh state, the input untouched.
+ * Advance the blimp one calculation frame: the depth CLOSES by exactly
+ * BLIMP_CLOSE_SPEED (BLMOTN :4259-4265), with the lateral station, bank, side, and
+ * active status carried unchanged. Pure — returns a fresh state, the input
+ * untouched. Unbounded by design: `reapBlimp` is the only thing that ends the
+ * approach, at the ROM's own line.
  */
 export function step(blimp: Blimp): Blimp {
-  return { ...blimp, x: blimp.x + blimp.deltaX }
+  return { ...blimp, depth: blimp.depth - BLIMP_CLOSE_SPEED }
 }
 
-// ─── firing (BLMOTN "also fires at the player") ────────────────────────────────
+// ─── firing (through the shared SHLAUN — BLMOTN :4229) ─────────────────────────
 
 /**
- * Does the blimp fire THIS calc-frame? It fires on the ÷2 FRAME cadence (findings §3,
- * PLNSHL — at most every OTHER calc-frame, gated by the FRAME LSB), and — unlike a
- * plane — with NO PLNLVL level gate: the blimp is a threat at every GMLEVL. Pure and
- * deterministic in the frame. Total — a non-finite frame fails safe to "hold fire".
- * NOTE: which frame parity fires is inferred (the ROM pins the ÷2, not the phase); we
- * fire on even FRAME.
+ * Does the blimp fire THIS calc-frame? The blimp's shells launch through the
+ * SHARED SHLAUN, so they inherit BOTH of its gates (rb4-15):
+ *
+ *   * the ÷4 cadence — LDA FRAME / AND I,3 ;1 OUT OF 4 FRAMES (:4027-4030):
+ *     fires only when FRAME & 3 === 0, ~2.6 shots/s at the calc rate;
+ *   * the level gate — LDX GMLEVL / DEX / DEX / BMI ;NO GROUND SHELLS @ LOWER
+ *     LEVELS (:4038-4041): fires only at GMLEVL >= 2. The early sky's blimp is
+ *     a TARGET, not a threat — the mid sky is where it opens up.
+ *
+ * Pure and deterministic. Total — a non-finite frame fails safe to "hold fire",
+ * and a NaN level is not >= 2.
  */
-export function blimpFires(frame: number): boolean {
+export function blimpFires(frame: number, level: number): boolean {
   if (!Number.isFinite(frame)) return false
-  return (Math.floor(frame) & 1) === 0 // ÷2 FRAME cadence — fire on even frames
+  return (Math.floor(frame) & 3) === 0 && level >= BLIMP_FIRE_LEVEL
 }

@@ -606,6 +606,17 @@ describe('COMPLETENESS — every depth-denominated constant is enumerated, or th
       // P_INDP, and it is a ROM NAME: renaming it to DRONE_SPAWN_DEPTH to satisfy the sweep would
       // trade the provenance for the spelling. Registered here for the same reason P_INDP is.
       'DRINZ',
+      // rb4-15 — the airship's three axis constants, all transcribed with citations (the story's
+      // named surface, so renaming them to satisfy the sweep would break the RED contract):
+      //   BLIMP_Z_START    a position ON the axis — the entry Z, 0x1000 (INITBP,
+      //                    RBARON.MAC:1425-1426). Registered for the same reason DRINZ is.
+      //   BLIMP_CLOSE_SPEED a VELOCITY ALONG the axis — 0x80 of Z closed per calc-frame
+      //                    (BLMOTN's 16-bit add of -0x80, :4259-4265).
+      //   BLIMP_DESPAWN_Z  a position ON the axis — the 0x100 line below which BLMOTN clears
+      //                    the object (CMP I,1 / BPL … CLR BLOBJ, :4266-4270).
+      'BLIMP_Z_START',
+      'BLIMP_CLOSE_SPEED',
+      'BLIMP_DESPAWN_Z',
       'S_MAXZ',
       'S_DPTH',
       'SPAWN_DEPTH',

@@ -119,12 +119,14 @@ const rec = vi.hoisted(() => ({
   spawned: [] as unknown[],
   spawnedAt: [] as number[], // display frame of each blimp spawn (parallel to `spawned`)
   waves: [] as Array<{ display: number; count: number }>, // every plane wave, as it spawned
+  gateCalls: [] as Array<{ display: number; planeCount: number }>, // every spawn-gate consult
   drawn: [] as Array<{ display: number; blimp: unknown }>,
   display: 0,
   reset(): void {
     this.spawned = []
     this.spawnedAt = []
     this.waves = []
+    this.gateCalls = []
     this.drawn = []
     this.display = 0
   },
@@ -134,6 +136,22 @@ vi.mock('../src/core/blimp', async (importOriginal) => {
   const real = await importOriginal<typeof import('../src/core/blimp')>()
   return {
     ...real,
+    // rb4-15: THE GATE IS HELD OPEN AT THE SEAM — and here is the honest why. The N.PLNZ
+    // gate wants FOUR planes shown before a blimp may roll, and with nobody at the controls
+    // that is unreachable in this cockpit: a pilotless wave takes ~1,000 calc-frames to bore
+    // past P.MNDP, the first fly-past arms the returning ACE, and the ace's 4-calc-frame
+    // 50/50 passes kill an idle pilot (no skill-dodge) into game over — which freezes the
+    // wave schedule — minutes before a fourth plane could ever appear. So the pass-through
+    // RECORDS the planeCount main.ts REALLY passed (asserted against the wave tap's own
+    // running sum below — the wiring truth), then lifts it past the gate so the roll still
+    // decides and the machine flown afterwards is untouched (nothing reads the count after
+    // spawn). The gate's own threshold matrix is pinned in tests/core/blimp-approach.test.ts;
+    // the two-argument call shape in tests/blimp-wiring.test.ts. This is the "force the
+    // starving branch at the sim seam" pattern — the sky starves the gate, not the code.
+    shouldSpawnBlimp(planeCount: number, roll: number) {
+      rec.gateCalls.push({ display: rec.display, planeCount })
+      return real.shouldSpawnBlimp(Math.max(planeCount, real.BLIMP_PLANE_GATE), roll)
+    },
     spawn(rng: Parameters<typeof real.spawn>[0], aspect: number) {
       const b = real.spawn(rng, aspect)
       rec.spawned.push(b)
@@ -288,6 +306,8 @@ function seedThatSpawnsABlimp(): number {
     const rng = createRng((t ^ 0x5e_ed) >>> 0)
     const draws = Array.from({ length: 6 }, () => nextFloat(rng))
     const wins = draws.filter((d) => d < BLIMP_SPAWN_CHANCE).length
+    // draw 0 is the opening-wave decision's roll (the gate is held open at the seam — see
+    // the mock); the density requirement keeps the seed useful for nearby wiring variants.
     if (draws[0] < BLIMP_SPAWN_CHANCE && wins >= 3) return t
   }
   throw new Error('no Date.now seed rolls a dense blimp stream — has BLIMP_SPAWN_CHANCE changed?')
@@ -324,15 +344,22 @@ interface Life {
   readonly spawns: number
   /** Every plane wave the cockpit spawned: when, and how many planes it held (rb4-15). */
   readonly planeWaves: ReadonlyArray<{ readonly display: number; readonly count: number }>
+  /** Every spawn-gate consult: when, and the plane count main.ts REALLY passed (rb4-15). */
+  readonly gateCalls: ReadonlyArray<{ readonly display: number; readonly planeCount: number }>
   /** The display frame each airship rolled in on (parallel to the lives, rb4-15). */
   readonly blimpSpawnDisplays: readonly number[]
   readonly aspect: number
 }
 
 /** Boot the cockpit, fly it for `displayFrames`, and report the airship's whole life.
- *  rb4-15: 3000 display frames ≈ 480 calc-frames — room for the sky to show FOUR planes
- *  (the N.PLNZ gate), the roll to land, and the 31-calc-frame approach to run its course. */
-async function flyTheCockpit(width: number, height: number, displayFrames = 3000): Promise<Life> {
+ *
+ *  rb4-15: with the gate held open at the seam (see the mock), the airship rolls in on
+ *  the OPENING wave decision (~display 7) and its 31-calc-frame approach is done by
+ *  ~display 200 — 2,000 frames is 10x margin, and the run ends long before the first
+ *  fly-past arms the returning ace (~display 5,860), so the sky stays clean around the
+ *  whole life. The 30 s per-test timeouts absorb slow CI runners (the tempest
+ *  first-release lesson). */
+async function flyTheCockpit(width: number, height: number, displayFrames = 2_000): Promise<Life> {
   const cockpit = await bootCockpit(width, height, SEED_MS)
   const painted: Painted[] = []
   for (let i = 0; i < displayFrames; i++) painted.push(cockpit.tick())
@@ -364,6 +391,7 @@ async function flyTheCockpit(width: number, height: number, displayFrames = 3000
     displayFrames,
     spawns,
     planeWaves: [...rec.waves],
+    gateCalls: [...rec.gateCalls],
     blimpSpawnDisplays: [...rec.spawnedAt],
     aspect: width / height,
   }
@@ -388,14 +416,14 @@ describe('THE COCKPIT BOOTS — main.ts is not, and never was, untestable', () =
     expect(first.strokes.some((s) => s.op === 'lineTo')).toBe(true)
   })
 
-  it('the two-gate spawn actually rolls an airship in — this suite is not vacuous', async () => {
+  it('the spawn roll actually rolls an airship in — this suite is not vacuous', async () => {
     // A test that proves nothing about a blimp that never spawned is the fourth way to be green
-    // and wrong. Prove the airship exists before proving anything about it. (rb4-15: the gate
-    // opens only after FOUR planes have appeared, so the airship arrives mid-run, not on the
-    // opening wave — and a second one may legitimately roll in after the first flies past.)
+    // and wrong. Prove the airship exists before proving anything about it. (rb4-15: the
+    // N.PLNZ gate is held open at the seam — see the mock — so the seeded roll lands on the
+    // opening decision; a second airship may legitimately roll in after the first flies past.)
     const { states, spawns } = await flyTheCockpit(1600, 900)
     expect(BLIMP_SPAWN_CHANCE).toBe(0.25)
-    expect(spawns, 'at least one airship must roll in once the sky has shown four planes').toBeGreaterThanOrEqual(1)
+    expect(spawns, 'at least one airship must roll in').toBeGreaterThanOrEqual(1)
     expect(states.length, 'and the cockpit must actually DRAW it').toBeGreaterThan(10)
   }, 30_000)
 })
@@ -409,22 +437,24 @@ describe('THE AIRSHIP, FLOWN IN THE REAL COCKPIT — it approaches, and the reap
     ['21:9', 2100, 900],
   ]
 
-  it('the FIRST airship waits for the sky to show FOUR planes — the N.PLNZ gate, flown (:2325-2331)', async () => {
-    // The core gate matrix is pinned in blimp-approach.test.ts; THIS proves main.ts feeds it
-    // the real count. Sum the planes of every wave the cockpit spawned up to and including
-    // the display frame the first airship rolled in on: the ROM requires at least four. The
-    // shipped wiring rolls on the FIRST wave decision — one plane in the sky — and dies here.
-    const { blimpSpawnDisplays, planeWaves } = await flyTheCockpit(1600, 900)
-    expect(blimpSpawnDisplays.length, 'an airship must roll in during the run').toBeGreaterThanOrEqual(1)
-    const firstBlimpAt = blimpSpawnDisplays[0]
-    const planesShown = planeWaves
-      .filter((wv) => wv.display <= firstBlimpAt)
-      .reduce((sum, wv) => sum + wv.count, 0)
-    expect(
-      planesShown,
-      `the airship rolled in on display frame ${firstBlimpAt} with only ${planesShown} plane(s) ` +
-        `shown — LDA N.PLNZ / CMP I,4 / BCC skips the blimp until FOUR have appeared`,
-    ).toBeGreaterThanOrEqual(4)
+  it('the gate is fed the REAL plane count — the running sum of every wave the sky has spawned', async () => {
+    // The core gate matrix (closed below four, open at four) is pinned in blimp-approach.test.ts;
+    // THIS proves main.ts feeds it the truth. Every spawn-gate consult the tap recorded must
+    // carry EXACTLY the cumulative plane count of the waves spawned so far — the wave tap's own
+    // running sum, two independent recorders agreeing. A wiring that passes simFrame, kills, a
+    // constant, or nothing at all disagrees on the very first decision (opening wave: ONE plane).
+    // (Why the flown-4-planes version of this test cannot exist, see the mock's header note.)
+    const { gateCalls, planeWaves } = await flyTheCockpit(1600, 900)
+    expect(gateCalls.length, 'the cockpit must consult the spawn gate').toBeGreaterThanOrEqual(1)
+    for (const call of gateCalls) {
+      const planesShown = planeWaves
+        .filter((wv) => wv.display <= call.display)
+        .reduce((sum, wv) => sum + wv.count, 0)
+      expect(call.planeCount, `gate consult at display frame ${call.display}`).toBe(planesShown)
+    }
+    // …and the count is genuinely COUNTING, not vacuously zero: the opening wave was shown.
+    expect(gateCalls[0].planeCount).toBe(planeWaves[0].count)
+    expect(gateCalls[0].planeCount).toBeGreaterThanOrEqual(1)
   }, 30_000)
 
   it.each(CABINETS)('(%s) every life ENTERS deep, at the ROM depth, IN FRAME — visible on arrival', async (_n, w, h) => {

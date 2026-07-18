@@ -99,8 +99,9 @@ const ctx = canvas.getContext('2d')
 // The pure geometry stays GONE all the same — in core, where it is denominated, cited and reusable:
 //
 //   guns.shellSegments        the tracer     (beside the depth<->z conversion it must agree with)
-//   blimp.blimpSegments       the airship    (beside the hull its despawn reasons about)
-//   blimp.reapBlimp           the despawn    (the DECISION, not a predicate to argue with)
+//   blimp.blimpSegments       the airship    (beside the machine whose approach it draws)
+//   blimp.reapBlimp           the despawn    (the DECISION, not a predicate to argue with —
+//                                             rb4-15: the ROM's own Z < 0x100 line)
 //   wreck-render.wreckSegments the debris    (burst denominated in the frame it bursts into)
 //
 // DO NOT WRITE A DISTANCE, A DESPAWN BOUND, OR A SPREAD IN THIS FILE. If you need one, it is a
@@ -108,10 +109,11 @@ const ctx = canvas.getContext('2d')
 // canvas, keyboard, audio and the loop.
 
 /**
- * Chance a blimp shot connects on one of its ÷2 fire-frames. `blimpFires` is a deterministic
- * even-frame cadence — costing a life on EVERY fire would kill the pilot in ~1 s — so a per-shot
- * hit roll turns the airship into a real threat that does not insta-kill (the hit model TEA
- * flagged for Dev). Inferred (BLMOTN's hit probability is not byte-transcribed).
+ * Chance a blimp shot connects on one of its SHLAUN fire-frames (÷4, GMLEVL >= 2 — rb4-15).
+ * `blimpFires` is a deterministic cadence — costing a life on EVERY fire would kill the pilot
+ * in seconds — so a per-shot hit roll turns the airship into a real threat that does not
+ * insta-kill (the hit model TEA flagged for Dev). Inferred (the ROM resolves its shells
+ * through the full GRSHLS flight model, which is not in this story's scope).
  */
 const BLIMP_HIT_CHANCE = 0.05
 
@@ -411,6 +413,7 @@ window.addEventListener('resize', resize)
 
 let flight = INITIAL_FLIGHT
 let kills = 0 // OBJKLD — each kill bumps this; gmlevlForKills(kills) drives the GMLEVL ramp
+let planesShown = 0 // N.PLNZ "NUMBER OF PLANES COUNT" (RBARON.MAC:129) — one per plane spawned (:2398); gates the blimp (rb4-15)
 // rb4-4: THE SCORE IS A COUNT-UP, NOT A REGISTER. A kill QUEUES its points
 // (";QUEUE SCORE", RBARON.MAC:3049) and the SCOREM machine (core/score-countup)
 // drains them +10/+100 per tick — the TK/TP tones ride the ticks, the BONUSL
@@ -418,7 +421,7 @@ let kills = 0 // OBJKLD — each kill bumps this; gmlevlForKills(kills) drives t
 // both read `countUp.displayed`, the ROM's own SCORE register.
 let countUp = initialCountUp()
 let enemies: readonly Enemy[] = [] // the live wave (rb2-7); the schedule spawns the opening wave
-let blimp: Blimp | null = null // the drifting airship (rb2-13) — null when none is on screen (BLMOTN ~25% roll)
+let blimp: Blimp | null = null // the approaching airship (rb4-15) — null when none is aloft (N.PLNZ gate + the 25% roll)
 let lives: Lives = initialLives() // the player's planes remaining (rb2-9) — the blimp's fire is the first wired damage
 let mountains: readonly Mountain[] = [] // the scrolling ground-wave landscape (rb3-3); populated only in GRMODE
 let wrecks: Wreck[] = [] // downed planes falling/exploding as UPPLEX wrecks, coexisting with survivors
@@ -443,7 +446,7 @@ let gtimer = 0 // GTIMER — the deploy pacing clock (rb4-11; INITGR arms it, de
 let groundGroups: readonly DeployedGroup[] = [] // rb4-11: deployed target-groups riding their carrier mountains
 let grmode = GRMODE_PLANE // GRMODE ground-wave byte — set to INITGR (0C0) on a ground slot, cleared (STPLNE) on a plane slot (rb3-2)
 let guns: Guns = INITIAL_GUNS
-let simFrame = 0 // calc-frame counter — drives the blimp's ÷2 fire cadence (blimpFires)
+let simFrame = 0 // calc-frame counter — drives the blimp's ÷4 SHLAUN fire cadence (blimpFires, rb4-15)
 let displayFrame = 0 // rb4-9: DISPLAY-frame counter (one per frame()/rAF, 62.5 Hz) — advances the prop
 let windscreen: Windscreen = initialWindscreen() // rb4-9: the ace's accumulating bullet holes (WNDSHD)
 
@@ -706,15 +709,17 @@ function frame(nowMs: number): void {
       enemies = stepWave(enemies, level, toEye(flight))
     }
 
-    // ── the blimp (rb2-13): drift + fire, every calc-frame while present ──
-    // The airship drifts one calc-frame (steady, non-weaving) and — on its ÷2 FRAME cadence —
-    // fires at the player. A connecting shot (per-shot hit roll) costs a life through the REAL
-    // rb2-9 damage channel (loseLife), not a discarded bool.
+    // ── the blimp (rb2-13, re-machined rb4-15): approach + fire, every calc-frame ──
+    // The airship CLOSES one calc-frame (BLMOTN adds -0x80 to Z, RBARON.MAC:4259-4265)
+    // and — through the shared SHLAUN's gates (÷4 FRAME cadence, GMLEVL >= 2) — fires
+    // at the player. A connecting shot (per-shot hit roll) costs a life through the
+    // REAL rb2-9 damage channel (loseLife), not a discarded bool.
     //
-    // Its drift is unbounded by design, so it must be DESPAWNED once it has left the frame. THAT
-    // DECISION IS NOT TAKEN HERE. `reapBlimp` takes it, in core, in projected space, at the depth
-    // and aspect the airship is actually being seen at — and it hands back the airship or nothing.
-    // This line has no operator in it ON PURPOSE, and that is the whole lesson of rb4-1:
+    // Its approach is unbounded by design, so it must be REAPED once it flies past the
+    // player (Z < 0x100 — the ROM clears BLOBJ, :4266-4270). THAT DECISION IS NOT TAKEN
+    // HERE. `reapBlimp` takes it, in core, at the ROM's own line — and it hands back the
+    // airship or nothing. This line has no operator in it ON PURPOSE, and that is the
+    // whole lesson of rb4-1:
     //
     //   round 0  the bound was a world constant here      (|x| > 640 — deleted it mid-screen)
     //   round 3  the bound moved to core, but the cockpit still held the BOOLEAN:
@@ -726,23 +731,25 @@ function frame(nowMs: number): void {
     //   now      the cockpit gets the ANSWER, not an opinion. There is no boolean here to poison.
     //
     // DO NOT re-introduce a condition on this line. tests/cockpit-loop.test.ts boots this file and
-    // watches the real airship cross the real frame; screen-scale.test.ts's DECISION PATH guard
+    // watches the real airship close on the real canvas; screen-scale.test.ts's DECISION PATH guard
     // rejects any write to `blimp` that is not a bare call to a core producer. Both will fail.
     if (blimp !== null) {
+      // (`drifted` is a load-bearing name: screen-scale's DECISION-PATH guard proves its
+      // taint analysis non-vacuous by finding this exact local. The motion is a CLOSE now.)
       const drifted = stepBlimp(blimp)
       // rb4-10 / SN-017: the gun rattles on the SHOT, not the hit — set on every
       // fire-frame (before the hit roll), so a miss is audible too.
-      if (blimpFires(simFrame)) enemyFiring = true
+      if (blimpFires(simFrame, level)) enemyFiring = true
       // rb4-4: a connecting shot opens the SHELLS death channel — the life is
       // taken by ENDLFE when the EOGTMR runs out, not on the impact frame. The
       // hit ROLL is always drawn on a fire-frame (the rng stream must not shift
       // with the pilot's state); only the EFFECT is gated on him being alive.
-      if (blimpFires(simFrame) && nextFloat(blimpRng) < BLIMP_HIT_CHANCE && dying === null && !gameOver) {
+      if (blimpFires(simFrame, level) && nextFloat(blimpRng) < BLIMP_HIT_CHANCE && dying === null && !gameOver) {
         dying = beginEol('shells')
         windscreen = addBulletHole(windscreen, blimp.side) // WNDSHD: a hole on the airship's side
         events.push({ type: 'player-hit' }) // the CRSHSN crash
       }
-      blimp = reapBlimp(drifted, aspect)
+      blimp = reapBlimp(drifted)
     }
 
     // ── ONE shared collision pass (rb2-5): the player's shells vs the planes AND the blimp ──
@@ -753,14 +760,15 @@ function frame(nowMs: number): void {
     // the same `toEye` pair the camera uses (UNIV4X on X, I4YPOS on Y). Without it a plane is shot
     // at in world coordinates the stick cannot move, and the sky goes bulletproof.
     //
-    // The airship is still a DISPLAY-space drifter (rb2-13; the ROM's approaching-Z airship is
-    // rb4-15's story), so it is LIFTED into world space here to ride the one collision pass the
-    // planes now use. That is the ROM's own conversion, not a fudge — every spawn site stores
-    // `offset + UNIV4X` (`ADC UNIV4X / STA PLSTAT`, RBARON.MAC:2291-2297, :2223, :2500) precisely
-    // because positions live in world and only screen READS subtract the pilot back out. Adding the
-    // eye here and subtracting it in `collides` is that round trip, so the airship's behaviour is
-    // bit-identical to what it shipped: it stays pinned to the screen. When rb4-15 gives the blimp
-    // real world coordinates, this lift is what it deletes.
+    // The airship's x/y are still DISPLAY-space stored (rb2-13's convention — rb4-15 re-machined
+    // the DEPTH axis, not the lateral one; the ROM's world-X/pan machine is the routed successor),
+    // so it is LIFTED into world space here to ride the one collision pass the planes now use.
+    // That is the ROM's own conversion, not a fudge — every spawn site stores `offset + UNIV4X`
+    // (`ADC UNIV4X / STA PLSTAT`, RBARON.MAC:2291-2297, :2223, :2500) precisely because positions
+    // live in world and only screen READS subtract the pilot back out. Adding the eye here and
+    // subtracting it in `collides` is that round trip, so the airship stays pinned to the screen
+    // laterally while it CLOSES. When the successor gives the blimp real world-X coordinates,
+    // this lift is what it deletes.
     const eyeNow = toEye(flight)
     const blimpTargetIndex = enemies.length
     const targets: readonly Enemy[] = blimp !== null ? [...enemies, worldBlimpTarget(blimp, eyeNow)] : enemies
@@ -847,12 +855,15 @@ function frame(nowMs: number): void {
       // lands in rb4-11). NWPLNE sizes the wave off SCORE — the DISPLAYED register, not the queue.
       if (spawnPlaneWave && !planeGenDisabled(grmode)) {
         enemies = spawnWave(createRng((seed + kills) >>> 0), countUp.displayed, gmlevlForKills(kills))
+        planesShown += enemies.length // N.PLNZ: COUNT # OF PLANES IN GAME (INC N.PLNZ, RBARON.MAC:2398)
         events.push({ type: 'wave-incoming' }) // the WP descending announce
       }
-      // The BLMOTN ~25% roll: a blimp drifts in during the lull if the sky has none. Rolled once
-      // per wave DECISION (not on the intervening ground-deploy frames), so a multi-frame ground
-      // wave does not over-roll the shared blimpRng stream (rb4-7).
-      if (decided && blimp === null && shouldSpawnBlimp(nextFloat(blimpRng))) {
+      // The rb4-15 two-gate spawn: a blimp rolls in only once the sky has shown FOUR planes
+      // (LDA N.PLNZ / CMP I,4 / BCC skip, RBARON.MAC:2325-2327) AND the 25% roll lands
+      // (RANDOM / AND I,0C, :2328-2330). Still rolled once per wave DECISION (not on the
+      // intervening ground-deploy frames) with the DRAW unconditional on the gate — the
+      // same short-circuit shape as before, so the blimpRng stream does not shift (rb4-7).
+      if (decided && blimp === null && shouldSpawnBlimp(planesShown, nextFloat(blimpRng))) {
         blimp = spawnBlimp(blimpRng, aspect)
       }
     }
