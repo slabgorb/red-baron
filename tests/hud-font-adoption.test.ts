@@ -22,20 +22,19 @@ import { GLYPH_CHARS } from '@arcade/shared/font'
 // the sanctioned way to share state into a mock factory.
 const fontRec = vi.hoisted(() => ({
   layoutTexts: [] as string[], // every string handed to layoutText()
-  glyphChars: [] as string[], // every char handed to charGlyph()
 }))
 
+// main.ts's hud-font renderer calls layoutText for whole HUD lines; it never imports
+// charGlyph. (A charGlyph tap here would be inert anyway: @arcade/shared/font's
+// layoutText calls its OWN module-internal charGlyph, which vi.mock's export rewrite
+// does not intercept — Reviewer F6.) So we tap only layoutText — the seam the HUD uses.
 vi.mock('@arcade/shared/font', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@arcade/shared/font')>()
   return {
     ...actual, // real GLYPH_CHARS / CELL_W / CELL_H / hasGlyph
-    layoutText: (text: string, opts?: unknown) => {
+    layoutText: (text: string, opts?: Parameters<typeof actual.layoutText>[1]) => {
       fontRec.layoutTexts.push(String(text))
-      return actual.layoutText(text, opts as never)
-    },
-    charGlyph: (ch: string) => {
-      fontRec.glyphChars.push(String(ch))
-      return actual.charGlyph(ch)
+      return actual.layoutText(text, opts)
     },
   }
 })
@@ -111,10 +110,9 @@ afterAll(() => { Date.now = realNow })
 
 /** Everything handed to the shared glyph font this run: whole strings + single chars. */
 function routedContent(): string {
-  // ␟ (unit separator) keeps distinct layoutText strings from fusing into
-  // false substring matches; charGlyph chars join contiguously so a per-char
-  // rendering ("G","U","N","S"," ","H"…) still reads as its whole word.
-  return fontRec.layoutTexts.join('␟') + '␟' + fontRec.glyphChars.join('')
+  // ␟ (unit separator) keeps distinct layoutText strings from fusing into false
+  // substring matches across the run.
+  return fontRec.layoutTexts.join('␟')
 }
 
 describe('rb4-19 AC-1 — the live HUD readout routes through @arcade/shared/font', () => {
@@ -132,13 +130,16 @@ describe('rb4-19 AC-1 — the live HUD readout routes through @arcade/shared/fon
     ).toBe(true)
   })
 
-  it('routes the readout NUMBERS too — a real score/plane value, not just the labels', () => {
-    // rb4-9 AC-4 intent, relocated to the shared-font seam: the readout carries a
-    // live numeric value, now observed as digits handed to the glyph font.
-    expect(
-      /[0-9]/.test(routedContent()),
-      'no digit reached the shared glyph font — the score/plane VALUE is not being drawn through it',
-    ).toBe(true)
+  it('routes the readout with a real, non-negative numeric VALUE (not just the labels)', () => {
+    // rb4-9 AC-4 rigor, RESTORED (Reviewer F2): parse the actual routed value and assert
+    // it is finite and >= 0. The prior `/[0-9]/` scan let a garbage `PLANE -301` sail through.
+    const readouts = fontRec.layoutTexts.filter((s) => /^(SCORE|PLANE) /.test(s))
+    expect(readouts.length, 'a SCORE/PLANE readout must have routed through the shared font').toBeGreaterThan(0)
+    for (const s of readouts) {
+      const n = Number(s.replace(/^(SCORE|PLANE) /, ''))
+      expect(Number.isFinite(n), `readout "${s}" must carry a finite numeric value`).toBe(true)
+      expect(n, `readout "${s}" must be non-negative`).toBeGreaterThanOrEqual(0)
+    }
   })
 
   it('draws NO HUD readout text through the canvas font (fillText/strokeText)', () => {
@@ -152,25 +153,14 @@ describe('rb4-19 AC-1 — the live HUD readout routes through @arcade/shared/fon
 
 describe('rb4-19 AC-3 — every routed HUD string lies within the font GLYPH_CHARS', () => {
   it('routed something, and every routed character is a glyph the font can draw', () => {
-    const routed = [...fontRec.layoutTexts, ...fontRec.glyphChars]
     expect(
-      routed.length,
+      fontRec.layoutTexts.length,
       'nothing was routed to @arcade/shared/font — cannot prove glyph coverage (HUD still on the canvas font)',
     ).toBeGreaterThan(0)
-    const allChars = fontRec.layoutTexts.join('') + fontRec.glyphChars.join('')
-    const unsupported = [...allChars].filter((c) => !GLYPH_CHARS.includes(c))
+    const unsupported = [...fontRec.layoutTexts.join('')].filter((c) => !GLYPH_CHARS.includes(c))
     expect(
       unsupported,
       `HUD routed characters the font cannot draw (would silently blank): ${JSON.stringify(unsupported)}`,
     ).toHaveLength(0)
-  })
-})
-
-describe('rb4-19 AC-3 — the fixed HUD labels are all drawable (no silent-drop guard)', () => {
-  it('GUNS HOT / SCORE / PLANE / GAME OVER contain only GLYPH_CHARS characters', () => {
-    for (const label of ['GUNS HOT', 'SCORE', 'PLANE', 'GAME OVER']) {
-      const bad = [...label].filter((c) => !GLYPH_CHARS.includes(c))
-      expect(bad, `HUD label "${label}" has characters outside GLYPH_CHARS: ${JSON.stringify(bad)}`).toHaveLength(0)
-    }
   })
 })

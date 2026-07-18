@@ -37,9 +37,12 @@ export interface Stroke {
 export interface Painted {
   /** Vector strokes, batched per beginPath — batch 0 is the horizon (drawn first in draw()). */
   readonly batches: readonly (readonly Stroke[])[]
-  /** Every HUD text string drawn this frame, in draw order — the score readout, the GAME OVER
-   *  card. rb4-19: sourced from the shared-font renderer (core/hud-font), the cabinet's glyph
-   *  font, since the HUD no longer draws through canvas fillText. */
+  /** Every HUD text string the frame HANDED TO the glyph renderer, in draw order — the score
+   *  readout, the GAME OVER card. rb4-19: since the HUD no longer draws through canvas fillText,
+   *  this is tapped at core/hud-font's INPUT, so it proves the string was COMPUTED for this frame
+   *  (the game decided to draw it), NOT that pixels reached the glass — the "reached the glass"
+   *  guarantee is cockpit-draw-path.test.ts's stroke-count parity. Sufficient for the game-logic
+   *  observations here (score counts up; GAME OVER appears); do not read it as a render assertion. */
   readonly texts: readonly string[]
 }
 
@@ -113,8 +116,9 @@ export async function bootCockpit(width: number, height: number, seedMs: number)
   vi.spyOn(Date, 'now').mockReturnValue(seedMs)
 
   // rb4-19: the HUD readout is no longer canvas fillText — it strokes shared-font glyphs via
-  // core/hud-font. Tap that renderer (runtime doMock, before main is imported) so Painted.texts
-  // keeps reporting the HUD text strings it always has. Passthrough: the real glyphs still draw.
+  // core/hud-font. Tap that renderer's INPUT (runtime doMock, before main is imported) so
+  // Painted.texts keeps reporting the HUD strings. NB this observes what was COMPUTED for the
+  // frame, not what reached the glass (see the Painted.texts doc). Passthrough: real glyphs draw.
   vi.doMock('../../src/core/hud-font', async (importOriginal) => {
     const actual = await importOriginal<typeof import('../../src/core/hud-font')>()
     return {

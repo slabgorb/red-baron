@@ -175,6 +175,7 @@ const rec = vi.hoisted(() => ({
   hudLen: 0, // segments the HUD renderers returned THIS frame
   livesCalled: false, // was livesGlyphs invoked this frame?
   windscreenCalled: false, // was windscreenSegments invoked this frame?
+  hudTextCalled: false, // rb4-19: was hudTextSegments (the SCORE readout) invoked this frame?
 }))
 
 // Sound is not geometry. Stub the engine so no AudioContext is ever needed; the real
@@ -308,14 +309,17 @@ vi.mock('../../src/core/windscreen', async (importOriginal) => {
 
 // rb4-19: the HUD READOUT glyphs (SCORE/PLANE/GUNS HOT/GAME OVER) — a THIRD non-projected HUD
 // renderer, stroked through the shared ROM glyph font (@arcade/shared/font). Accounted into the
-// INVARIANT-4 tail exactly like lives + windscreen, so the readout's strokes are pinned to the
-// renderer's actual output, not smuggled past the guard. Passthrough: real geometry still draws.
+// INVARIANT-4 tail exactly like lives + windscreen: BOTH halves of that guard are extended —
+// (a) its returned strokes feed rec.hudLen (tail count parity), and (b) rec.hudTextCalled records
+// the invocation, folded into `hudDrawn` below, so DELETING the SCORE readout draw from main.ts
+// fails the guard rather than shrinking the tail invisibly. Passthrough: real geometry still draws.
 vi.mock('../../src/core/hud-font', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/core/hud-font')>()
   return {
     ...actual,
     hudTextSegments: (text: string, opts: Parameters<typeof actual.hudTextSegments>[1]): SceneSegment[] => {
       const segs = actual.hudTextSegments(text, opts)
+      rec.hudTextCalled = true
       rec.hudLen += segs.length
       return segs
     },
@@ -501,7 +505,8 @@ interface Frame {
   readonly stepped: boolean
   /** rb4-9: total segments the HUD renderers (lives + windscreen) returned this frame. */
   readonly hudLen: number
-  /** rb4-9: were BOTH HUD renderers invoked this frame? (a deleted HUD draw call → false). */
+  /** rb4-9/rb4-19: were ALL THREE HUD renderers (lives + windscreen + hudText readout) invoked
+   *  this frame? (a deleted HUD draw call → false). */
   readonly hudDrawn: boolean
 }
 
@@ -575,6 +580,7 @@ beforeAll(async () => {
     rec.hudLen = 0
     rec.livesCalled = false
     rec.windscreenCalled = false
+    rec.hudTextCalled = false
     // NB: rec.simWrecks is NOT cleared — a wreck drawn on a frame where no calc-step ran was
     // produced on an EARLIER frame, so the sim's roster of real Wreck objects must accumulate.
 
@@ -595,7 +601,7 @@ beforeAll(async () => {
       live,
       stepped,
       hudLen: rec.hudLen,
-      hudDrawn: rec.livesCalled && rec.windscreenCalled,
+      hudDrawn: rec.livesCalled && rec.windscreenCalled && rec.hudTextCalled,
     })
   }
 })
@@ -868,8 +874,8 @@ describe('INVARIANT 4 — every pixel stroked came out of a core projection, una
       //   (b) the tail's stroke count must equal exactly what they returned.
       expect(
         f.hudDrawn,
-        `frame ${i}: main.ts did not invoke BOTH HUD renderers (livesGlyphs + windscreenSegments) — ` +
-          `a deleted HUD draw call would make the tail vanish and the prefix pass alone.`,
+        `frame ${i}: main.ts did not invoke ALL THREE HUD renderers (livesGlyphs + windscreenSegments ` +
+          `+ hudTextSegments) — a deleted HUD draw call would make the tail vanish and the prefix pass alone.`,
       ).toBe(true)
       expect(
         f.strokes.length - expected.length,
