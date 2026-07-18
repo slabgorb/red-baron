@@ -35,13 +35,11 @@
 //   // wave (§4). isPlaneWave(0) = true — the game opens with planes.
 //   export function isPlaneWave(modect: number): boolean
 //
-//   // MCOUNT inter-wave frame count, cycling the table by wave index (§4).
-//   export function interWaveDelay(modect: number): number
-//
-//   // the calc-frame wave clock: counts a wave's MCOUNT gap down one calc-frame at
-//   // a time, then advances MODECT and signals whether the next wave is a plane wave.
-//   export interface WaveClock { readonly modect: number; readonly countdown: number }
-//   export const INITIAL_WAVE_CLOCK: WaveClock            // { modect: 0, countdown: 0 }
+//   // rb4-7 (AC-2/AC-3): the wave clock counts WAVES. A plane MODE runs MCOUNT[MODECT>>1]
+//   // plane waves; a ground MODE runs one; NEWCT decrements per COMPLETED wave; MODECT wraps
+//   // mod 16. INITIAL is { modect: 0, newct: MCOUNT[0]=4 }. Full contract: mission-clock.test.ts.
+//   export interface WaveClock { readonly modect: number; readonly newct: number }
+//   export const INITIAL_WAVE_CLOCK: WaveClock            // { modect: 0, newct: 4 }
 //   export function stepWaveClock(clock: WaveClock): { clock: WaveClock; spawnPlaneWave: boolean }
 //
 // AND (the BLOCKING seam gap from rb2-6) extend `src/core/enemy.ts`:
@@ -77,9 +75,14 @@ import { scoreKill, DRONE_SCORE } from '../../src/core/scoring'
 
 // ─── the GREEN contract surface (all optional so RED fails loud, not undefined-explodes) ──
 
+// rb4-7 (AC-2/AC-3): the wave clock counts WAVES, not calc frames. WaveClock's second
+// field is NEWCT — waves remaining in the current MODECT's run — not a per-frame countdown.
+// The full scheduler contract is pinned in tests/core/mission-clock.test.ts.
 interface WaveClock {
   readonly modect: number
-  readonly countdown: number
+  // Optional so the module cast bridges the current source's WaveClock (still `countdown`)
+  // during RED — the mission-clock.test.ts assertions catch the missing NEWCT at runtime.
+  readonly newct?: number
 }
 
 interface WavesModule {
@@ -91,7 +94,6 @@ interface WavesModule {
   spawnWave?: (rng: Rng, score: number, level?: number) => readonly Enemy[]
   promoteLead?: (survivors: readonly Enemy[]) => readonly Enemy[]
   isPlaneWave?: (modect: number) => boolean
-  interWaveDelay?: (modect: number) => number
   INITIAL_WAVE_CLOCK?: WaveClock
   stepWaveClock?: (clock: WaveClock) => { clock: WaveClock; spawnPlaneWave: boolean }
 }
@@ -100,6 +102,9 @@ let m: WavesModule = {}
 
 beforeAll(async () => {
   try {
+    // rb4-7: the source's WaveClock `{modect, newct}` structurally satisfies this file's
+    // `{modect, newct?}` contract, so a single cast type-checks and keeps the drift protection
+    // between the surviving rb2-7 tests and src/core/waves.ts.
     m = (await import('../../src/core/waves')) as WavesModule
   } catch {
     m = {}
@@ -343,120 +348,41 @@ describe('waves — isPlaneWave / MODECT alternation (findings §4, R2BRON.MAC:2
 })
 
 // ───────────────────────────────────────────────────────────────────────────
-// AC-5 — MCOUNT inter-wave counts (findings §4, R2BRON.MAC:1296-1297)
+// MCOUNT — the wave-run table (RBARON.MAC:1298)
+//
+// rb4-7 RE-BASELINE (AC-2/AC-3): MCOUNT is NOT a per-frame inter-wave delay — it is the
+// per-MODE plane-RUN length, indexed by MODECT>>1, and NEWCT counts WAVES. The obsolete
+// `interWaveDelay(modect) = MCOUNT[modect % 8]` frame-gap and the frame-countdown
+// `stepWaveClock` scheduler are retired here and re-pinned, corrected, in
+// tests/core/mission-clock.test.ts (a plane MODE runs MCOUNT[MODECT>>1] waves; a ground MODE
+// runs one; MODECT wraps mod 16). The table VALUES themselves are unchanged.
 // ───────────────────────────────────────────────────────────────────────────
-describe('waves — MCOUNT / interWaveDelay (findings §4)', () => {
+describe('waves — MCOUNT run-length table (RBARON.MAC:1298)', () => {
   const TABLE = [4, 2, 3, 2, 1, 3, 4, 2]
 
-  it('MCOUNT is the byte-exact 8-entry inter-wave table', () => {
+  it('MCOUNT is the byte-exact 8-entry table', () => {
     const t = need(m.MCOUNT, 'MCOUNT')
     expect([...t]).toEqual(TABLE)
     expect(t.length).toBe(8)
   })
 
-  it('every inter-wave count is a positive integer — a wave always has a real gap', () => {
+  it('every run length is a positive integer — a plane MODE always fields at least one wave', () => {
     for (const v of need(m.MCOUNT, 'MCOUNT')) {
       expect(Number.isInteger(v)).toBe(true)
       expect(v).toBeGreaterThan(0)
     }
   })
-
-  it('interWaveDelay cycles the table by wave index', () => {
-    const delay = need(m.interWaveDelay, 'interWaveDelay')
-    for (let i = 0; i < 18; i++) {
-      expect(delay(i)).toBe(TABLE[i % TABLE.length])
-    }
-  })
-
-  it('is total on a negative wave index — still a positive count from the table (never NaN)', () => {
-    const delay = need(m.interWaveDelay, 'interWaveDelay')
-    const v = delay(-1)
-    expect(Number.isInteger(v)).toBe(true)
-    expect(v).toBeGreaterThan(0)
-  })
 })
 
 // ───────────────────────────────────────────────────────────────────────────
-// AC-6 — the calc-frame wave clock (findings §1 cadence + §4 MODECT/MCOUNT)
+// The wave clock — RETIRED HERE, re-pinned in tests/core/mission-clock.test.ts
+//
+// rb4-7 RE-BASELINE (AC-3): the shipped scheduler ran a per-CALC-FRAME `countdown` that
+// expired after MCOUNT[modect % 8] frames (a 96-384 ms gap) and stepped MODECT on EVERY
+// wave — a 1:1 plane/ground alternation. The ROM's NEWCT counts WAVES: a plane MODE fields
+// a RUN of MCOUNT[MODECT>>1] plane waves, each ground MODE fields one, and NEWCT decrements
+// once per COMPLETED wave (RBARON.MAC:2258-2273). `INITIAL_WAVE_CLOCK` is now
+// { modect: 0, newct: 4 } and `stepWaveClock` is called per wave-completion. The full,
+// corrected scheduler contract lives in tests/core/mission-clock.test.ts — this frame-clock
+// block is removed so both suites can go green on the same fix.
 // ───────────────────────────────────────────────────────────────────────────
-describe('waves — stepWaveClock scheduler (findings §1 calc-frame + §4)', () => {
-  interface Frame {
-    step: number
-    modectBefore: number
-    countdownBefore: number
-    spawn: boolean
-    countdownAfter: number
-  }
-  /**
-   * Step the clock `n` calc-frames from the initial clock, recording the PRE-step
-   * state each frame. A wave DECISION is exactly a frame whose pre-step countdown was
-   * 0 (the gap has elapsed) — the reliable signal, since the decision itself advances
-   * MODECT (so a MODECT-change is visible only on the FOLLOWING frame).
-   */
-  function run(n: number): Frame[] {
-    const step = need(m.stepWaveClock, 'stepWaveClock')
-    let clock = need(m.INITIAL_WAVE_CLOCK, 'INITIAL_WAVE_CLOCK')
-    const trace: Frame[] = []
-    for (let i = 0; i < n; i++) {
-      const r = step(clock)
-      trace.push({
-        step: i,
-        modectBefore: clock.modect,
-        countdownBefore: clock.countdown,
-        spawn: r.spawnPlaneWave,
-        countdownAfter: r.clock.countdown,
-      })
-      clock = r.clock
-    }
-    return trace
-  }
-  /** The frames on which a wave decision fires — the gap has elapsed (pre-step countdown 0). */
-  const decisionsOf = (trace: Frame[]): Frame[] => trace.filter((t) => t.countdownBefore === 0)
-
-  it('INITIAL_WAVE_CLOCK is { modect: 0, countdown: 0 } — the opening wave is due immediately', () => {
-    const init = need(m.INITIAL_WAVE_CLOCK, 'INITIAL_WAVE_CLOCK')
-    expect(init.modect).toBe(0)
-    expect(init.countdown).toBe(0)
-  })
-
-  it('the very first calc-frame spawns the opening plane wave', () => {
-    const first = run(1)[0]
-    expect(first.spawn).toBe(true) // isPlaneWave(0) === true
-  })
-
-  it('spawns ONLY when the countdown has elapsed — no wave fires mid-gap', () => {
-    const delay = need(m.interWaveDelay, 'interWaveDelay')
-    const decisions = decisionsOf(run(40))
-    // MODECT advances by exactly 1 at each decision — one wave slot per decision.
-    for (let k = 1; k < decisions.length; k++) {
-      expect(decisions[k].modectBefore).toBe(decisions[k - 1].modectBefore + 1)
-    }
-    // between two decisions there are exactly `interWaveDelay(nextModect)` non-decision frames.
-    for (let k = 0; k < decisions.length - 1; k++) {
-      const gapFrames = decisions[k + 1].step - decisions[k].step - 1
-      expect(gapFrames).toBe(delay(decisions[k].modectBefore + 1))
-    }
-  })
-
-  it('each decision spawns iff its MODECT is a plane wave — ground slots are silent no-op waits', () => {
-    const isPlane = need(m.isPlaneWave, 'isPlaneWave')
-    const decisions = decisionsOf(run(40))
-    for (const d of decisions) {
-      expect(d.spawn).toBe(isPlane(d.modectBefore))
-    }
-    // and over 40 frames we saw BOTH a plane spawn and a silent ground slot (real alternation).
-    expect(decisions.some((d) => d.spawn)).toBe(true)
-    expect(decisions.some((d) => !d.spawn)).toBe(true)
-  })
-
-  it('non-decision frames just tick the countdown down by exactly one, spawning nothing', () => {
-    const trace = run(12)
-    for (let i = 1; i < trace.length; i++) {
-      if (trace[i].countdownBefore !== 0) {
-        // a mid-gap tick — never spawns, and the countdown drops by exactly one.
-        expect(trace[i].spawn).toBe(false)
-        expect(trace[i].countdownAfter).toBe(trace[i - 1].countdownAfter - 1)
-      }
-    }
-  })
-})

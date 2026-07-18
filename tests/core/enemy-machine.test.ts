@@ -74,6 +74,8 @@ interface Enemy {
   readonly x: number
   readonly y: number
   readonly depth: number
+  /** rb4-16 — POSITION Z (the depth the servo's perspective divide reads); `?? depth` when absent. */
+  readonly positionZ?: number
   readonly deltaX: number
   /** rb4-6 — the vertical weave velocity (round 3: the mirror gains it for the ΔY convergence pins). */
   readonly deltaY?: number
@@ -97,6 +99,15 @@ interface EnemyModule {
   P_ILIM?: readonly number[]
   P_INDP?: number
   P_MNDP?: number
+  /**
+   * rb4-16 — the perspective-divide fixed-point the SERVO reads its zone in: `screen =
+   * (world − eye) × POSITH_SCALE / positionZ`. rb4-16 moved the servo from stored world into this
+   * POST-DIVIDE SCREEN space (plonsn.test.ts AC-1). These rb4-6 zone tests hand-build a WORLD
+   * position and judge the zone, so they seat the plane at `positionZ = POSITH_SCALE` — the depth
+   * where the divide is IDENTITY (`screen == world`) — to isolate the zone logic from the divide
+   * itself (which AC-1's ratio-invariance pins separately). New surface in rb4-16.
+   */
+  POSITH_SCALE?: number
   /** HORIZN — the Y-axis window bias (RBARON.MAC:456, `.RADIX 16`). New in rb4-6. */
   HORIZN?: number
   /** DRINZ — the drone's initial (deeper) spawn depth (RBARON.MAC:466). New in rb4-6. */
@@ -110,7 +121,8 @@ interface EnemyModule {
   /** P.IIDL — INNER per-level target deltas, `.3WORD` scaled (RBARON.MAC:2955-2956). Round 2. */
   P_IIDL?: readonly number[]
   spawn?: (rng: Rng, level?: number) => Enemy
-  step?: (enemy: Enemy, level?: number) => Enemy
+  /** rb4-16: `step` now threads the pilot's eye — the servo reads the plane's screen against it. */
+  step?: (enemy: Enemy, level?: number, eye?: readonly [number, number, number]) => Enemy
 }
 
 interface WavesModule {
@@ -125,7 +137,7 @@ interface WavesModule {
    * formation logic that a single-enemy step() cannot see. Returns the advanced
    * wave with destroyed planes removed.
    */
-  stepWave?: (enemies: readonly Enemy[], level?: number) => readonly Enemy[]
+  stepWave?: (enemies: readonly Enemy[], level?: number, eye?: readonly [number, number, number]) => readonly Enemy[]
 }
 
 let m: EnemyModule = {}
@@ -156,6 +168,17 @@ const withEnemy = (overrides: Partial<Enemy>, seed = 1, level = 0): Enemy => ({
   ...spawnAt(seed, level),
   ...overrides,
 })
+
+/**
+ * rb4-16 re-seat: the depth where the servo's perspective divide is IDENTITY (`screen == world`).
+ * rb4-16 moved the window servo from reading the stored WORLD position to reading the POST-DIVIDE
+ * SCREEN position `(world − eye) × POSITH_SCALE / positionZ` (plonsn.test.ts AC-1). These rb4-6 tests
+ * pin the servo's ZONE LOGIC using hand-built WORLD positions; seating the plane at `positionZ =
+ * POSITH_SCALE` makes screen == world so those world-space zone assertions read exactly as before,
+ * with the divide factored out (AC-1's ratio-invariance pins the divide on its own). Every zone
+ * fixture below adds `positionZ: identityZ()` for this reason.
+ */
+const identityZ = (): number => need(m.POSITH_SCALE, 'POSITH_SCALE')
 
 /** Advance one plane `n` frames (or until it deactivates), tracing every axis. */
 function trace(seed: number, level: number, n: number): { xs: number[]; ys: number[]; depths: number[]; deltas: number[] } {
@@ -189,7 +212,7 @@ describe('rb4-6 AC-1 — inner-window reversal (P.INER, RBARON.MAC:2794-2796)', 
     const step = need(m.step, 'step')
     for (const lvl of [1, 2, 3]) {
       const ilim = need(m.P_ILIM, 'P_ILIM')[lvl]
-      const e0 = withEnemy({ x: -(ilim >> 1), y: 0, deltaX: 0, kind: 'lead', parallel: false }, 1, lvl)
+      const e0 = withEnemy({ x: -(ilim >> 1), y: 0, deltaX: 0, kind: 'lead', parallel: false, positionZ: identityZ() }, 1, lvl)
       const e1 = step(e0, lvl)
       expect(e1.x, `level ${lvl}: inside the inner window the plane must head AWAY from centre`).toBeLessThan(
         e0.x,
@@ -205,7 +228,12 @@ describe('rb4-6 AC-1 — inner-window reversal (P.INER, RBARON.MAC:2794-2796)', 
     const lvl = 2
     const ilim = need(m.P_ILIM, 'P_ILIM')[lvl]
     const olim = need(m.P_OLIM, 'P_OLIM')[lvl]
-    let e = withEnemy({ x: ilim - 1, y: 0, deltaX: -8, kind: 'lead', parallel: false }, 1, lvl)
+    // rb4-16 re-seat (Reviewer HIGH): seat at the identity depth so `x = ilim-1` is genuinely INSIDE
+    // the inner window in SCREEN space. Without this the servo (which reads screen = world × scale /
+    // positionZ) sees x=ilim-1 at positionZ=P_INDP as OUTER, and the inner-reversal this test names
+    // is never exercised — the test was mutation-proven vacuous (its two siblings above were re-seated,
+    // this one was missed).
+    let e = withEnemy({ x: ilim - 1, y: 0, deltaX: -8, kind: 'lead', parallel: false, positionZ: identityZ() }, 1, lvl)
     let minX = e.x
     for (let f = 0; f < 60 && e.active; f++) {
       e = step(e, lvl)
@@ -225,7 +253,7 @@ describe('rb4-6 AC-1 — inner-window reversal (P.INER, RBARON.MAC:2794-2796)', 
     const step = need(m.step, 'step')
     const lvl = 3
     const ilim = need(m.P_ILIM, 'P_ILIM')[lvl]
-    let e = withEnemy({ x: -(ilim >> 2), y: 0, deltaX: 0, kind: 'lead', parallel: false }, 1, lvl)
+    let e = withEnemy({ x: -(ilim >> 2), y: 0, deltaX: 0, kind: 'lead', parallel: false, positionZ: identityZ() }, 1, lvl)
     const xs: number[] = [e.x]
     for (let f = 0; f < 40 && e.active; f++) {
       e = step(e, lvl)
@@ -289,10 +317,25 @@ describe('rb4-6 AC-2 — the Y axis runs the same machine (PLNDEL LDX I,2 → P.
 
   it('the Y weave is the SAME WINDOW machine — bounded and reversing, not a runaway drift', () => {
     // If Dev bolted on a linear climb the plane would fly off the top. It must weave:
-    // stay inside the window and take both up and down runs.
-    const { ys } = trace(7, 2, 300)
+    // stay inside the altitude band and take both up and down runs.
+    //
+    // rb4-16 re-seat: the servo now weaves the plane about the PILOT'S SCREEN CENTRE, not the world
+    // origin — screenY = (world.y − eye.y) × POSITH_SCALE / positionZ. So the eye must sit inside the
+    // plane's altitude band for the plane to run BOTH up and down around it; the old test's implicit
+    // boresight (eye.y = 0, below the [128, 320] band) leaves every plane above the eye → a monotone
+    // dive to the floor, which is correct servo behaviour, not a dead axis. Seat the eye at the band
+    // centre (224) and keep the natural spawn depth (P.INDP), so the screen window sits INSIDE the
+    // band and the plane reverses within it — both up and down runs.
+    const step = need(m.step, 'step')
+    const eyeY = 224 // mid the [PLANE_ALT_MIN, PLANE_ALT_MAX] = [128, 320] band
+    let e = withEnemy({ x: 0, y: eyeY, deltaX: 0, deltaY: 0, kind: 'lead', parallel: false }, 7, 2)
+    const ys: number[] = [e.y]
+    for (let f = 0; f < 80 && e.active; f++) {
+      e = step(e, 2, [0, eyeY, 0])
+      ys.push(e.y)
+    }
     const olimMax = Math.max(...need(m.P_OLIM, 'P_OLIM'))
-    for (const y of ys) expect(Math.abs(y)).toBeLessThanOrEqual(olimMax + 1) // bounded by the window
+    for (const y of ys) expect(Math.abs(y - eyeY)).toBeLessThanOrEqual(olimMax + 1) // bounded by the window
     const up = ys.slice(1).some((y, i) => y > ys[i])
     const down = ys.slice(1).some((y, i) => y < ys[i])
     expect(up && down, 'y only moved one way — that is a drift, not the window weave').toBe(true)
@@ -399,7 +442,7 @@ describe('rb4-6 R2 AC-1 — P.ODLX / P.IDLX / P.IIDL are transcribed, not invent
     const ilim = need(m.P_ILIM, 'P_ILIM')[lvl]
     const target = need(m.P_IDLX, 'P_IDLX')[lvl]
     // start mid-band, already moving outward so the zone stays 'middle' for a while
-    let e = withEnemy({ x: (ilim + olim) / 2, y: 0, deltaX: 1, kind: 'lead', parallel: false }, 1, lvl)
+    let e = withEnemy({ x: (ilim + olim) / 2, y: 0, deltaX: 1, kind: 'lead', parallel: false, positionZ: identityZ() }, 1, lvl)
     let settled = Number.NaN
     for (let f = 0; f < 12 && e.active; f++) {
       e = step(e, lvl)
@@ -818,5 +861,21 @@ describe('rb4-6 R3 — totality: a NaN coordinate cannot poison the per-frame st
     expect(Number.isFinite(badY.y), 'a NaN altitude survived step() — clamp() propagates NaN').toBe(true)
     const badX = step(withEnemy({ x: Number.NaN, entryFrames: 0 }, 1, 2), 2)
     expect(Number.isFinite(badX.x), 'a NaN x survived step() — clamp() propagates NaN').toBe(true)
+  })
+
+  it('step() returns finite x/y for a degenerate positionZ (the servo divide + PLONSN limit stay total)', () => {
+    // rb4-16 (Reviewer [SEC]): the servo divides by positionZ (`screenPos`) and PLONSN scales its
+    // limit by it (`plonsnLimit`). A degenerate positionZ (0/negative/±Infinity/NaN) must not poison
+    // enemy.x/y — a negative depth once shoved the plane to the WRONG side of the pilot, and a
+    // -Infinity depth once returned a non-finite x that persisted every later frame. The `Math.max(0,
+    // positionZ)` domain guard + the `> limit` window test now sink all of them. Unreachable from
+    // spawn today, but the AC-4 successor reads the raw PLSTAT+19 LSB into positionZ — this pins the
+    // boundary so it STAYS total. RED before the guard; green after.
+    const step = need(m.step, 'step')
+    for (const pz of [0, -1, Number.NEGATIVE_INFINITY, Number.POSITIVE_INFINITY, Number.NaN]) {
+      const r = step(withEnemy({ x: 100, positionZ: pz, entryFrames: 0 }, 1, 4), 4, [0, 224, 0])
+      expect(Number.isFinite(r.x), `positionZ=${pz}: x came out ${r.x} — the servo/PLONSN divide leaked a non-finite`).toBe(true)
+      expect(Number.isFinite(r.y), `positionZ=${pz}: y came out ${r.y} — the servo/PLONSN divide leaked a non-finite`).toBe(true)
+    }
   })
 })

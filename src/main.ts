@@ -20,18 +20,19 @@
 // the plane to its UPPLEX wreck — it falls, spins, bursts into the PIECE0-3 debris.
 //
 // THE WAVE (rb2-7): score-scaled counts (300 → 2 planes, 1000 → 3), drones in the
-// PLANE1/PLANE2 formation, PLNXCG lead promotion, and the MODECT/MCOUNT schedule
-// (stepWaveClock) that brings the next wave in after its inter-wave gap (waves.ts).
+// PLANE1/PLANE2 formation, PLNXCG lead promotion, and the MODECT/NEWCT schedule
+// (stepWaveClock) that brings each wave in as the last one clears — NEWCT counts WAVES, so a
+// plane MODE fields a RUN of MCOUNT[MODECT>>1] waves before a single ground wave (rb4-7, waves.ts).
 
 import { flightView } from './core/camera'
 import { horizonSegments } from './core/horizon'
 import { INITIAL_FLIGHT, step, toAttitude, toEye, controlBand, type FlightInput, type FlightState } from './core/flight'
 import { proximityBand, displayPos, WO_RTN, type Enemy } from './core/enemy'
 import {
-  spawnWave, stepWave, promoteLead, INITIAL_WAVE_CLOCK, stepWaveClock,
-  grmodeForWave, planeGenDisabled, isGroundMode, GRMODE_PLANE,
+  spawnWave, stepWave, promoteLead, INITIAL_WAVE_CLOCK, stepWaveClock, isPlaneWave,
+  grmodeForWave, planeGenDisabled, isGroundMode, GRMODE_PLANE, groundModeEnds, GRNDCT_INITIAL,
 } from './core/waves'
-import { biplaneLOD, renderModel } from './core/biplane'
+import { biplaneLOD, planeModel, renderModel } from './core/biplane'
 import {
   shouldSpawnBlimp, spawn as spawnBlimp, step as stepBlimp, blimpFires,
   reapBlimp, blimpSegments, blimpTarget, type Blimp,
@@ -51,7 +52,7 @@ import { groundCollision } from './core/ground-collision'
 import type { GameEvent } from './core/events'
 import { createAudioEngine } from './shell/audio'
 import { playEventSounds, updateContinuousSounds } from './shell/audio-dispatch'
-import { multiply, translation, rotationZ, type Mat4, type Vec3 } from '@arcade/shared/math3d'
+import { multiply, type Mat4, type Vec3 } from '@arcade/shared/math3d'
 import { createRng, nextFloat } from '@arcade/shared/rng'
 import { INITIAL_PAUSED, isPauseKey, togglePaused } from '@arcade/shared/pause'
 import { drawEscOverlay } from '@arcade/shared/esc-overlay'
@@ -191,12 +192,13 @@ function draw(
   // stated the correct model ("objects are drawn at (their X − UNIV4X)", camera-shape.test.ts:10-11);
   // motion objects were simply wrongly excused from it.
   //
-  // The eye enters through `displayPos` rather than through `flightView` so the plane is DRAWN
-  // through the identical function the gun KILLS it with — one seam, no second copy of the pan to
-  // rot (the lesson guns.ts's own `shellDepth` comment records). `view` therefore stays at the
-  // origin: it is the display-space camera the tracers, wrecks and airship already live in.
-  // MVP = projection · view · model; the model is picked by the PLSTAT+6 D4 orientation bit
-  // (biplaneLOD(enemy.facingAway), rb4-13 — never by depth).
+  // The eye enters through `planeModel` → `displayPos` rather than through `flightView` so the
+  // plane is DRAWN through the identical function the gun KILLS it with — one seam, no second
+  // copy of the pan to rot (the lesson guns.ts's own `shellDepth` comment records). `view`
+  // therefore stays at the origin: it is the display-space camera the tracers, wrecks and
+  // airship already live in. MVP = projection · view · model; the model matrix is core's
+  // `planeModel` (rb4-17 — the ×4 picture scale + dual-Z), and the vertex set is picked by the
+  // PLSTAT+6 D4 orientation bit (biplaneLOD(enemy.facingAway), rb4-13 — never by depth).
   const view = flightView(attitude, [0, 0, 0])
   const projView: Mat4 = multiply(sceneProjection(aspect), view)
 
@@ -206,9 +208,10 @@ function draw(
     strokeSegments(wreckSegments(wreck, projView), width, height)
   }
   for (const enemy of enemies) {
-    const screen = displayPos(enemy, eye)
-    const model = multiply(translation(screen.x, screen.y, -enemy.depth), rotationZ(enemy.bank))
-    strokeSegments(renderModel(biplaneLOD(enemy.facingAway), multiply(projView, model)), width, height)
+    // The model matrix is core's `planeModel` (rb4-17): the eye still enters through
+    // `displayPos` — inside planeModel — so the plane is DRAWN through the identical pan the
+    // gun KILLS it with, and the ROM's ×4 picture scale + dual-Z live where a test can reach.
+    strokeSegments(renderModel(biplaneLOD(enemy.facingAway), multiply(projView, planeModel(enemy, eye))), width, height)
   }
 
   // the drifting blimp (rb2-13) — the authentic BLIMP_PICTURE yawed BROADSIDE, posed and
@@ -356,7 +359,9 @@ function worldBlimpTarget(b: Blimp, eye: Vec3): Enemy {
   const t = blimpTarget(b)
   return { ...t, x: t.x + eye[0], y: t.y + eye[1] }
 }
-let waveClock = INITIAL_WAVE_CLOCK // MODECT/MCOUNT schedule — spaces waves at the calc-frame cadence
+let waveClock = INITIAL_WAVE_CLOCK // MODECT/NEWCT schedule — NEWCT counts WAVES (rb4-7); runs of plane waves
+let waveOpened = false // has the opening wave been fielded? the first wave comes off the initial clock, no step
+let grndct = 0 // GRNDCT — ground target-groups left to deploy while a ground wave runs (rb4-7 AC-4)
 let grmode = GRMODE_PLANE // GRMODE ground-wave byte — set to INITGR (0C0) on a ground slot, cleared (STPLNE) on a plane slot (rb3-2)
 let guns: Guns = INITIAL_GUNS
 let simFrame = 0 // calc-frame counter — drives the blimp's ÷2 fire cadence (blimpFires)
@@ -571,8 +576,14 @@ function frame(nowMs: number): void {
     // objects, not floored) so the wave empties instead of hovering in the pilot's face. Downed
     // planes still score BY KIND, bump OBJKLD, wreck, and PLNXCG-promote below — the shells fire
     // + collide in ONE pass against the planes AND the blimp, so a shot connects with what it meets.
+    //
+    // rb4-16: thread the pilot's EYE (`toEye(flight)`) into the servo — it now decides each plane's
+    // zone from its POST-DIVIDE SCREEN position (world − pilot, ÷ depth), so the stick finally moves
+    // the boresight the plane weaves about. Without this the servo reads the boresight and the game
+    // re-creates the five-kill soft-lock this story exists to kill. Same eye guns.collides is judged
+    // against (rb4-6) — the producer and the consumer read the plane in one space.
     if (enemies.length > 0) {
-      enemies = stepWave(enemies, level)
+      enemies = stepWave(enemies, level, toEye(flight))
     }
 
     // ── the blimp (rb2-13): drift + fire, every calc-frame while present ──
@@ -665,32 +676,56 @@ function frame(nowMs: number): void {
     }
 
     // ── the wave schedule + the BLMOTN blimp roll, only as the sky clears ──
-    // Once the planes are down and their wrecks finished, the MODECT/MCOUNT schedule brings the
-    // next plane wave in after its gap — and, on a wave decision, the blimp rolls in on its
-    // ~25% BLMOTN chance (if none is already drifting), a menace even in the quiet between waves.
+    // rb4-7: NEWCT counts WAVES, not calc frames. The opening plane wave comes off the initial
+    // clock (no step); thereafter, each time the planes are down and their wrecks finished, that
+    // is one COMPLETED wave — step the schedule to the next slot. A plane MODE runs several plane
+    // waves back-to-back (the RUN); a ground MODE is one slot whose CONTENT lands in rb4-11, so
+    // for now it fields no planes and the run resumes on the following frame.
     // rb4-4: no new waves while the pilot is dying (the ROM gates plane
     // generation through the EOL flags, :787-788) or after the game is over.
     if (enemies.length === 0 && wrecks.length === 0 && dying === null && !gameOver) {
-      // A wave DECISION fires when the countdown has elapsed (pre-step countdown 0); it
-      // advances MODECT, so capture the firing slot's modect BEFORE stepping.
-      const decisionModect = waveClock.modect
-      const wasDecision = waveClock.countdown === 0
-      const sched = stepWaveClock(waveClock)
-      waveClock = sched.clock
-      // On a decision the slot enters its GRMODE: a plane slot clears ground mode (STPLNE),
-      // a ground slot sets INITGR (0C0) so plane-gen is skipped + control slows. GRMODE holds
-      // between decisions — only a decision transitions it (rb3-2, findings §4).
-      if (wasDecision) grmode = grmodeForWave(decisionModect)
-      // Plane waves spawn only when new-plane generation is enabled (D6 clear); a ground
-      // slot's INITGR disables it, so the ground interval is an empty-sky, slow-control wait
-      // until the next plane slot (ground-wave CONTENT lands in rb3-3..rb3-6).
-      if (sched.spawnPlaneWave && !planeGenDisabled(grmode)) {
-        // NWPLNE sizes the wave off SCORE — the DISPLAYED register, not the queue.
+      let spawnPlaneWave = false
+      let decided = true // a wave SLOT was serviced this frame (opening / completion / ground-end)
+      if (isGroundMode(grmode)) {
+        // A ground wave is UP — it ends on the CONDITION (GRNDCT spent AND no ground object
+        // visible, RBARON.MAC:3269-3293), never on a timer (rb4-7 AC-4). Ground OBJECTS and the
+        // GTIMER that paces GRNDCT land in rb4-11; until then no object is visible and GRNDCT
+        // counts down its two INITGR target-group slots so the mode still ends and the run resumes.
+        if (groundModeEnds(grndct, 0)) {
+          const sched = stepWaveClock(waveClock)
+          waveClock = sched.clock
+          grmode = grmodeForWave(waveClock.modect)
+          spawnPlaneWave = sched.spawnPlaneWave
+        } else {
+          grndct = Math.max(0, grndct - 1) // a ground target-group deploys — not a new wave slot
+          decided = false
+        }
+      } else if (!waveOpened) {
+        // The opening wave: MODECT 0, fielded from the initial clock without a completion step.
+        waveOpened = true
+        grmode = grmodeForWave(waveClock.modect)
+        spawnPlaneWave = isPlaneWave(waveClock.modect)
+      } else {
+        // A plane wave completed — advance NEWCT/MODECT to the next slot (steps the MODE on a
+        // run's end). A plane slot spawns; stepping INTO a ground slot arms GRNDCT and enters
+        // ground mode, held above until it ends.
+        const sched = stepWaveClock(waveClock)
+        waveClock = sched.clock
+        grmode = grmodeForWave(waveClock.modect)
+        spawnPlaneWave = sched.spawnPlaneWave
+        if (!spawnPlaneWave && isGroundMode(grmode)) grndct = GRNDCT_INITIAL // INITGR: 2 groups
+      }
+      // Plane waves spawn only when new-plane generation is enabled (D6 clear); a ground slot's
+      // INITGR disables it, so the ground wave is a slow-control, empty-sky wait (its CONTENT
+      // lands in rb4-11). NWPLNE sizes the wave off SCORE — the DISPLAYED register, not the queue.
+      if (spawnPlaneWave && !planeGenDisabled(grmode)) {
         enemies = spawnWave(createRng((seed + kills) >>> 0), countUp.displayed, gmlevlForKills(kills))
         events.push({ type: 'wave-incoming' }) // the WP descending announce
       }
-      // The BLMOTN ~25% roll: a blimp drifts in during the lull if the sky has none.
-      if (wasDecision && blimp === null && shouldSpawnBlimp(nextFloat(blimpRng))) {
+      // The BLMOTN ~25% roll: a blimp drifts in during the lull if the sky has none. Rolled once
+      // per wave DECISION (not on the intervening ground-deploy frames), so a multi-frame ground
+      // wave does not over-roll the shared blimpRng stream (rb4-7).
+      if (decided && blimp === null && shouldSpawnBlimp(nextFloat(blimpRng))) {
         blimp = spawnBlimp(blimpRng, aspect)
       }
     }

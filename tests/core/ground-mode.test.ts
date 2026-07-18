@@ -87,8 +87,12 @@ interface WavesModule {
   grmodeForWave?: (modect: number) => number
   // rb2-7 carry-forward the branch must stay consistent with
   isPlaneWave?: (modect: number) => boolean
-  stepWaveClock?: (clock: { modect: number; countdown: number }) => {
-    clock: { modect: number; countdown: number }
+  // rb4-7 (AC-2/AC-3): the clock counts WAVES — the second field is NEWCT, not a frame
+  // countdown. `readonly` mirrors the domain type (waves.ts WaveClock); newct is optional so the
+  // re-seated scheduler test types loosely, the assertions catch a missing field at runtime.
+  INITIAL_WAVE_CLOCK?: { readonly modect: number; readonly newct?: number }
+  stepWaveClock?: (clock: { readonly modect: number; readonly newct?: number }) => {
+    clock: { readonly modect: number; readonly newct?: number }
     spawnPlaneWave: boolean
   }
 }
@@ -108,6 +112,8 @@ let f: FlightModule = {}
 
 beforeAll(async () => {
   try {
+    // rb4-7: the source's WaveClock `{modect, newct}` structurally satisfies the re-seated
+    // scheduler test's `{modect, newct?}` contract, so a single cast type-checks.
     w = (await import('../../src/core/waves')) as WavesModule
   } catch {
     w = {}
@@ -232,15 +238,19 @@ describe('rb3-2 grmodeForWave — the INITGR/STPLNE branch (findings §4)', () =
     const grmodeForWave = need(w.grmodeForWave, 'grmodeForWave')
     const planeGenDisabled = need(w.planeGenDisabled, 'planeGenDisabled')
     const step = need(w.stepWaveClock, 'stepWaveClock')
-    // On a decision frame (countdown 0), the wave that fires belongs to `clock.modect`
-    // (pre-increment); the main loop must enter grmodeForWave(that same modect).
-    for (let m = 0; m < 16; m++) {
-      const decision = step({ modect: m, countdown: 0 })
-      expect(decision.spawnPlaneWave).toBe(!planeGenDisabled(grmodeForWave(m)))
+    // rb4-7 RE-SEAT (AC-2/AC-3): stepWaveClock is now called per COMPLETED wave and returns
+    // the type of the wave being fielded in the (post-step) MODECT it returns. The main loop
+    // must enter grmodeForWave(that same MODECT) — so spawnPlaneWave must agree with the
+    // GRMODE branch on every real scheduler state. (Full scheduler pins: mission-clock.test.ts.)
+    let clock = need(w.INITIAL_WAVE_CLOCK, 'INITIAL_WAVE_CLOCK')
+    for (let i = 0; i < 40; i++) {
+      const decision = step(clock)
+      clock = decision.clock
+      expect(decision.spawnPlaneWave).toBe(!planeGenDisabled(grmodeForWave(clock.modect)))
     }
   })
 
-  it('is total on a negative MODECT (mirrors interWaveDelay) — a valid mode byte, never NaN', () => {
+  it('is total on a negative MODECT — a valid mode byte, never NaN', () => {
     const grmodeForWave = need(w.grmodeForWave, 'grmodeForWave')
     const plane = need(w.GRMODE_PLANE, 'GRMODE_PLANE')
     const initgr = need(w.GRMODE_INITGR, 'GRMODE_INITGR')

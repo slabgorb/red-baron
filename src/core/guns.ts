@@ -29,13 +29,16 @@
 // reach of 800; that made the plane untouchable for its first 41 seconds and put the
 // ROM's own far/dim 300-point kill out of reach entirely.
 //
-// Still genuinely inferred: the overheat THRESHOLD, the shell SPEED, and the collision
-// WINDOW size — flagged for ROM/MAME ratification.
+// Still genuinely inferred: the overheat THRESHOLD and the shell SPEED — flagged for ROM/MAME
+// ratification. (The collision WINDOW was on that list until rb4-17 derived it firsthand:
+// COLLD, 037007.XXX:602-605 — see WINDOW_X below.)
 //
 // PURE and deterministic. No DOM, no time, no randomness.
 
 import { displayPos, type Enemy } from './enemy'
 import { projectSegment, type SceneSegment } from './scene'
+import { COLLD_POINTS } from './topology'
+import { PICTURE_SCALE } from './biplane'
 import type { Mat4, Vec3 } from '@arcade/shared/math3d'
 
 /**
@@ -130,29 +133,38 @@ const GUN_OVERHEAT_LIMIT = 30
 const SHELL_SPEED = 1
 
 /**
- * CDSSET collision half-window in X — you must roughly aim. Inferred/playtest.
+ * CDSSET / COLSTP collision window — THE WINDOW IS THE PICTURE (rb4-17; was an inferred ±32).
  *
- * rb4-1 REWORK 3, and the Reviewer put this in the second bug class (the SCREEN-SPACE class),
- * so it gets an explicit ruling rather than a shrug: IT IS NOT A SCREEN CONSTANT, and it must
- * NOT be rescaled with the depth axis.
+ * Derived firsthand from the quarry, byte for byte:
  *
- * The test is "what is this number a fraction OF?" A screen constant is a fraction of the
- * FRAME, and the frame's world extent grows with depth (screen.ts) — so it has to be
- * denominated in the projection or it silently changes meaning. This is a fraction of the
- * TARGET: `collides` bounds `shell.x - enemy.x`, an offset between two objects in the world,
- * and the object it is sized against is the plane's own hull — PLANE_POINTS spans x ±40,
- * y ±20 (biplane.ts). A ±32 box around the plane is roughly the plane. Model and hitbox are
- * carried through the SAME perspective divide, so they shrink together: the hitbox tracks the
- * plane's apparent size at every depth, automatically, forever. That is the definition of a
- * number that already knows its unit.
+ *   • Its GEOMETRY is `COLLD` — "PLANE COLLISION WINDOW(POINTP FORMAT)" (RBARON.MAC:409) —
+ *     four points in the picture source (037007.XXX:602-605, decimal under `.RADIX 10` :80):
+ *         POINTP  12, 20, -40    ;FRONT FACE
+ *         POINTP  12,-16, -40
+ *         POINTP -12, 20, -40
+ *         POINTP -12,-16, -40
+ *     A flat plate at the model's front face: the FUSELAGE band (x ±12), belly to top wing
+ *     (y −16..+20). NOT the wingspan — the arcade does not pay for a wingtip graze.
+ *   • It RIDES THE PICTURE SCALE: CDSSET loads O.DPTH for the collision frame from
+ *     PLSTAT+4/+5 — the PICTURE Z (RBARON.MAC:5529-5533) — then rotates/projects COLLD
+ *     through the plane's own draw path (`LDX I,2 / JSR PLTEST ;COLLISION FRAME /
+ *     JSR MINMAX`, :5535-5537; PPNTS[2] = .COLLD, :6283). POINTP format means the same
+ *     ×2→×4 storage lift as the drawn vertices (biplane.ts PICTURE_SCALE) — the plate the
+ *     gun tests is the plate the pilot sees, ×4 and all.
+ *   • COLSTP (:5774-5815) then bounds each (SHELL − PLANE) display offset inside the
+ *     projected plate's min/max (`CMP AY,DB.TRP+2` … `LDA AY,DB.TRP+8`, :5805-5815).
  *
- * Multiplying it by 3.91 with the depth axis would have made the gun hit planes it visibly
- * missed — the exact mirror-image of the bug this story is about. Pinned behaviourally in
- * tests/core/screen-scale.test.ts (NOT_A_SCREEN_CONSTANT).
+ * Our `collides` makes the same statement one divide earlier: offsets bounded in world units
+ * at the plane's depth, both sides riding the SAME perspective divide — which is why the
+ * rb4-1 ruling stands: NOT a screen constant, a fraction of the TARGET, never rescaled with
+ * the depth axis (proved by the near/far aim-tolerance pin in tests/core/screen-scale.test.ts).
+ * Sizing the picture (PICTURE_SCALE) resizes the gun with it, by construction: the values are
+ * derived from the COLLD transcription (topology.ts), not re-typed.
  */
-const WINDOW_X = 32
-/** …and in Y. Also object-space: the plane's hull is y ±20, so ±32 wraps it. Inferred. */
-const WINDOW_Y = 32
+const WINDOW_X = Math.max(...COLLD_POINTS.map((p) => Math.abs(p[0]))) * PICTURE_SCALE // ±48
+/** COLLD's Y band is ASYMMETRIC — belly −16 up to top wing +20, ×4 (037007.XXX:602-605). */
+const WINDOW_Y_MIN = Math.min(...COLLD_POINTS.map((p) => p[1])) * PICTURE_SCALE // −64
+const WINDOW_Y_MAX = Math.max(...COLLD_POINTS.map((p) => p[1])) * PICTURE_SCALE // +80
 /**
  * …and in shell-Z. Must be ≥ SHELL_SPEED / 2 so successive sub-step windows overlap and
  * a target between two sub-steps can never be tunnelled (2·WINDOW_Z ≥ SHELL_SPEED). Inferred.
@@ -396,6 +408,13 @@ export function step(
  * and shell-Z. Total: a degenerate depth (NaN/±Infinity) fails the Z bound and returns
  * false rather than throwing.
  *
+ * Z-GATE DISCLOSURE (rb4-16 AC-R3): the third bound, `|dz| <= WINDOW_Z`, is a real gate — a shell
+ * short of or past the plane's depth misses. rb4-16's reachability guard (plonsn.test.ts AC-R3)
+ * deliberately places its probe shell AT the plane's exact depth (`z = depth/256 = depthToShellZ`),
+ * so `dz = 0` and the Z gate passes by construction — the guard then measures pure X/Y reach (does
+ * the eye-aware servo keep the plane inside the picture plate's X/Y window), not the Z gate. The
+ * depth it divides against is the PICTURE Z (`enemy.depth`), NOT the rb4-17 position Z the servo uses.
+ *
  * IN DISPLAY SPACE, AND THAT IS THE WHOLE OF rb4-6 ROUND 2. The offset is measured against the
  * plane's position ON SCREEN — `displayPos(enemy, eye)` — not against its stored world position.
  * The shell is fired at the boresight and pinned there (`{ x: muzzleX(gun), y: 0 }` at :321;
@@ -409,6 +428,14 @@ export function step(
  * This is the ROM's own arrangement: a motion object's stored position is WORLD and its screen
  * position is that minus the pilot (`LDA ZX,PLSTAT ;PLANE POSITION` / `SBC ZX,UNIV4X ;- UNIVERSE
  * CENTER`, RBARON.MAC:2909-2910), and the window/collision work happens on the screen side.
+ *
+ * THE BOUNDS ARE COLLD's PLATE (rb4-17 — see WINDOW_X above): ±48 in x, −64..+80 in y, the
+ * fuselage band at the drawn ×4 picture scale. Note the enemy's PICTURE Z (`depth`) stays the
+ * Z the gate divides against — exactly CDSSET's O.DPTH load (:5529-5533) — not the rb4-17
+ * position Z. One deliberate simplification, logged: the ROM rotates the plate and then
+ * min/maxes it into an axis-aligned box (MINMAX:5718); we rotate the OFFSET into the banked
+ * frame and test the unrotated plate — the true rotated-plate test, identical at bank 0 and
+ * strictly tighter mid-bank than the ROM's bounding box.
  */
 export function collides(shell: Shell, enemy: Enemy, eye: Vec3 = EYE_ORIGIN): boolean {
   const screen = displayPos(enemy, eye)
@@ -419,5 +446,5 @@ export function collides(shell: Shell, enemy: Enemy, eye: Vec3 = EYE_ORIGIN): bo
   const rx = dx * c + dy * s // rotate the offset into the enemy's banked frame
   const ry = -dx * s + dy * c
   const dz = shell.z - depthToShellZ(enemy.depth)
-  return Math.abs(rx) <= WINDOW_X && Math.abs(ry) <= WINDOW_Y && Math.abs(dz) <= WINDOW_Z
+  return Math.abs(rx) <= WINDOW_X && ry >= WINDOW_Y_MIN && ry <= WINDOW_Y_MAX && Math.abs(dz) <= WINDOW_Z
 }

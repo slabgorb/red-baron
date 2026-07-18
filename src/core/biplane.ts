@@ -33,7 +33,14 @@
 import { type Point3, type ConnectOp, DB_MAP, DB_MAR, DB_LNS } from './topology'
 import { type SceneSegment, projectSegment } from './scene'
 import { toAttitude } from './flight'
-import type { Mat4 } from '@arcade/shared/math3d'
+import { multiply, rotationZ, scaling, translation, type Mat4, type Vec3 } from '@arcade/shared/math3d'
+// DELIBERATE FUNCTION-ONLY CYCLE (rb4-17): enemy.ts imports `biplaneBank` from this module, and
+// this module imports `displayPos` back — both are hoisted function declarations called only
+// after init, which ESM resolves cleanly. It exists so the plane is DRAWN through the identical
+// pan the gun KILLS it with (one seam, no second copy to rot — the guns.ts shellDepth lesson).
+// Do NOT initialize a module-level `const` in either file from the other's exports: a top-level
+// cross-call hits the TDZ and throws at load (the returning-ace.ts P_INDP precedent).
+import { displayPos, type Enemy } from './enemy'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PLANE POINTS DB — the 42 biplane vertices (RBARON.MAC:6212-6256).
@@ -94,6 +101,27 @@ export const PLANE_POINTS: readonly Point3[] = [
  * `P.BACK-DB.PLN`): the first 29 of {@link PLANE_POINTS}, front faces only.
  */
 export const DRONE_POINTS: readonly Point3[] = PLANE_POINTS.slice(0, 29)
+
+/**
+ * PICTURE_SCALE — the ROM's composite vertex lift, relative to the LOGICAL `POINTP .X,.Y,.Z`
+ * arguments transcribed above: X×4, Y×4, Z×1. Derived, not invented (rb4-17 AC-1):
+ *
+ *   • STORAGE — the POINTP macro assembles `.BYTE .Z,.X*2,.Y*4` (RBARON.MAC's macro; the
+ *     picture source 037007.XXX:6-8 defines the identical one): X held ×2, Y held ×4, Z ×1.
+ *   • ROTATE — ZAXIS (the full-plane 3-D path, PLTEST:4984 → PLNABZ, RBGRND.MAC:469-495)
+ *     loads X `;X (*2)`, gives it ONE more ASL, and stores it `;X LSB (*4)`; Y is loaded
+ *     `;Y (*4)` and stored with NO shift; Z enters unshifted (:474-478).
+ *
+ * So the wingspan enters the Math Box ISOTROPICALLY ×4 while fore/aft stays ×1 — a uniform
+ * scale(4, 4, 1), never scale(4, 4, 4). Injecting the logical bytes at ×1 is the rb4-17 bug:
+ * a quarter-size plane, the ~15px speck at spawn. (PROJECT's ×16/×4 pre-shifts are the GROUND
+ * path, RBGRND.MAC:374-381, composing with the ground tables' own PFPNTS `.X/2,.Y*2` storage,
+ * 037007.XXX:10-12 — a different routine over different tables; AC-5's reconciliation.)
+ *
+ * Classified in tests/core/depth-scale.test.ts's registry: a DIMENSIONLESS vertex scale that
+ * legitimately appears beside a depth in planeModel's arithmetic — not a position on the axis.
+ */
+export const PICTURE_SCALE = 4
 
 // ─────────────────────────────────────────────────────────────────────────────
 // THE MODEL SWITCH — an ORIENTATION bit, not a distance (rb4-13)
@@ -180,4 +208,35 @@ export function renderModel(model: BiplaneModel, mvp: Mat4): readonly SceneSegme
     current = vertex
   }
   return segments
+}
+
+/**
+ * The plane's MODEL matrix — the testable core seam rb4-17 extracts from main.ts's inline
+ * `translation(...)·rotationZ(...)` (which lived in the one file no test can import). main.ts
+ * composes `renderModel(biplaneLOD(enemy.facingAway), multiply(projView, planeModel(enemy, eye)))`,
+ * exactly as guns.ts put `shellSegments` beside `shellDepth`. Two ROM mechanisms live here:
+ *
+ *  • THE VERTEX PRE-SCALE — {@link PICTURE_SCALE}: the wingspan is lifted isotropically ×4
+ *    (POINTP storage + ZAXIS's one ASL) while Z stays ×1 (ZAXIS reads it unshifted,
+ *    RBGRND.MAC:474-478). scale(4, 4, 1), never scale(4, 4, 4).
+ *
+ *  • DUAL-Z — PLNLBS places the CENTRE by POSITION Z (RBARON.MAC:4817-4822 → POSITP), then
+ *    reloads O.DPTH from PICTURE Z for the vertex divide (:4848-4850). In matrix form: the
+ *    translation sits at −positionZ (so the perspective divide places the centre there), and
+ *    the vertex scale takes an extra ×(positionZ / depth) so that same divide renders the
+ *    picture at PICTURE-Z size. When the two Zs agree (every spawned plane — both step at
+ *    PLPOSZ today) this is exactly translation(·, ·, −depth)·rotationZ·scale(4, 4, 1).
+ *    One honest seam: the picture's INTERNAL foreshortening (a vertex's own z against the
+ *    divide) rides positionZ here where the ROM's rides O.DPTH — indistinguishable while the
+ *    Zs agree, and a ±40 model-z detail against a ≥320 depth when they don't.
+ *
+ * The display position enters through the SAME `displayPos` the gun kills with (rb4-6: one
+ * pan, no second copy to rot). `?? depth`, never `||` — a hand-set small position Z is drawn
+ * there, not defaulted away (the P_IIDL[0] lesson).
+ */
+export function planeModel(enemy: Enemy, eye: Vec3): Mat4 {
+  const screen = displayPos(enemy, eye)
+  const positionZ = enemy.positionZ ?? enemy.depth
+  const s = PICTURE_SCALE * (positionZ / enemy.depth)
+  return multiply(translation(screen.x, screen.y, -positionZ), multiply(rotationZ(enemy.bank), scaling(s, s, 1)))
 }

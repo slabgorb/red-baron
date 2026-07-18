@@ -22,8 +22,9 @@
 // seeds the PLSTAT+7 counter (`STA PLSTAT+7`, :2736-2737) that the evade check
 // resolves at 0x0C (:1078-1080), so the WO.RTN − ACE_ATTACK_FRAMES = 4-frame
 // re-entry delay is wired behaviour and is pinned below. The round-2 guard for it
-// was an import-binding regex — provably green with the wiring reverted (review
-// round 2) — so the delay is now asserted from the recorded frame numbers.
+// was a binding-shape regex (`/aceCountdown\s*=\s*\w+/` over main.ts — the assignment,
+// not its value) — provably green with the wiring reverted (review round 2) — so the
+// delay is now asserted from the recorded frame numbers. See the AC-5 note at its pin.
 
 import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest'
 import { bootCockpit } from './helpers/boot-cockpit'
@@ -167,10 +168,12 @@ describe('AC-1: the returning ace is DRIVEN from the booted sim (EOLSEQ every ca
     // ("DISABLE PLANE FOR WO.RTN FRAMES", :2736-2737) and the evade check resolves on the
     // frame the same counter reads 0x0C (`LDA PLSTAT+7 / CMP I,0C / BNE 25$`, :1078-1080).
     // The delay between arming and the first attack is therefore WO_RTN − ACE_ATTACK_FRAMES
-    // = 4 calc frames — a BEHAVIOUR, not an import. (Round 2 guarded this with an import-
-    // binding regex; the review proved it green with every `aceCountdown = WO_RTN` site
-    // reverted to ACE_ATTACK_FRAMES, which collapses the delay to 1 frame. This pins the
-    // recorded frame numbers instead — the regex could not tell 4 from 1; this can.)
+    // = 4 calc frames — a BEHAVIOUR, not an import. (rb4-16 names the round-2 guard AC-5 indicts:
+    // it was a `?raw` binding-SHAPE regex over main.ts — `/aceCountdown\s*=\s*\w+/`, matching the
+    // assignment but not its RHS VALUE. That is why the review proved it green with every
+    // `aceCountdown = WO_RTN` site reverted to `aceCountdown = ACE_ATTACK_FRAMES`, which collapses
+    // the delay to 1 frame: the regex sees `aceCountdown = <identifier>` either way and cannot tell
+    // 4 from 1. This pins the recorded frame numbers instead — the behaviour a regex can't read.)
     const delay = WO_RTN - ACE_ATTACK_FRAMES
     expect(delay, 'the two constants no longer differ by the ROM gap — re-derive :2736 vs :1078').toBe(4)
     expect(rec.beginPass.length).toBeGreaterThan(0)

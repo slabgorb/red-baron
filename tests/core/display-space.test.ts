@@ -174,14 +174,17 @@ function need<T>(value: T | undefined, name: string): T {
 }
 
 /**
- * The rotated 32x32 box's circumscribed radius — AC-R2's "definitely outside" offset ONLY.
+ * The rotated collision plate's circumscribed radius — AC-R2's "definitely outside" offset ONLY.
+ * rb4-17 re-baselined the window from the inferred ±32 square to the ROM's own COLLD plate —
+ * x ±48, y −64..+80 (037007.XXX:602-605 ×PICTURE_SCALE; see guns.ts WINDOW_X) — so "definitely
+ * outside at any bank" is beyond the plate's farthest corner, hypot(48, 80).
  * ROUND 3: AC-R3 no longer judges reach with this. The review proved a hypot-vs-MAX_REACH
  * check is a parallel REIMPLEMENTATION of the gun: it stayed green with `collides` reverted
  * to ignore its eye (round 1's exact defect), and the circle CIRCUMSCRIBES the real box, so
  * it inflated GMLEVL 4's margin (11.6 by the circle; 10.8 through the real gun). Reach is
  * now judged by `guns.collides` itself — the guard exercises the thing it guards.
  */
-const MAX_REACH = 32 * Math.SQRT2
+const MAX_REACH = Math.hypot(48, 80)
 
 const LEVELS = [0, 1, 2, 3, 4] as const
 
@@ -337,8 +340,11 @@ describe('rb4-6 R2 AC-R3 — a plane is reachable at EVERY GMLEVL (the soft-lock
     const avg = reachableFrames / lives
     // > 1.0 is the exact bar round 1 failed: at GMLEVL 2/3/4 it scored exactly 1.0 — the spawn
     // frame and nothing else. A pilot who can fly must do better than a pilot who cannot move.
-    // Through the real gun the shipped machine measures 597.3/112.5/24.1/20.2/10.8 — GMLEVL 4's
-    // margin is REAL but thin. Do not re-tune this bar to manufacture slack; read the level.
+    // rb4-16 CORRECTION (TEA Gap finding): the old figures cited here (597.3/112.5/24.1/20.2/10.8)
+    // were measured through the ±32 world-tube gun rb4-17 DELETED — stale. This is now a coarse
+    // smoke test (2-arg stepWave, boresight); the AUTHORITATIVE per-level reachability guard is
+    // rb4-16 AC-R3 (plonsn.test.ts), which threads a chasing eye through the growing COLLD gun and
+    // pins the honest captured baseline. Do not re-tune this bar to manufacture slack; read the level.
     expect(
       avg,
       `GMLEVL ${lvl}: a chasing pilot averaged ${avg.toFixed(1)} frames in gun-reach per plane — the plane ` +
