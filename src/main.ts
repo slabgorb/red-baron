@@ -54,6 +54,7 @@ import { groundCollision } from './core/ground-collision'
 import type { GameEvent } from './core/events'
 import { createAudioEngine } from './shell/audio'
 import { playEventSounds, updateContinuousSounds } from './shell/audio-dispatch'
+import { hudTextSegments } from './core/hud-font'
 import { multiply, type Mat4, type Vec3 } from '@arcade/shared/math3d'
 import { createRng, nextFloat } from '@arcade/shared/rng'
 import { INITIAL_PAUSED, isPauseKey, togglePaused } from '@arcade/shared/pause'
@@ -282,34 +283,33 @@ function draw(
   // clears as they cool, so the cue doubles as the cooldown signal. rb4-9: the invented red
   // second-colour banner is retired — the ROM's message is MONOCHROME cabinet green like the world.
   if (overheated) {
-    ctx.save()
-    ctx.fillStyle = '#33ff66'
-    ctx.shadowColor = '#33ff66'
-    ctx.shadowBlur = 12
-    ctx.font = 'bold 24px monospace'
-    ctx.textAlign = 'center'
-    ctx.textBaseline = 'middle'
-    ctx.fillText('GUNS HOT', width / 2, height * 0.16)
-    ctx.restore()
+    // rb4-19: the ROM HUD glyph font — the warning strokes through @arcade/shared/font
+    // (the same green glow the world already set), not the browser system font.
+    strokeSegments(
+      hudTextSegments('GUNS HOT', { x: width / 2, y: height * 0.16 + 12, size: 24, align: 'center', width, height }),
+      width,
+      height,
+    )
   }
 
   // the running score (rb2-6) — PLVALU accrues per kill (the lead counts DOWN as it
-  // closes; only a far/dim plane pays the full flat DRNPNT — rb4-1/CB-003). A minimal
-  // readout until the ROM HUD glyph font (findings §7) arrives in a later story.
-  ctx.save()
-  ctx.fillStyle = '#33ff66'
-  ctx.shadowColor = '#33ff66'
-  ctx.shadowBlur = 8
-  ctx.font = 'bold 20px monospace'
-  ctx.textAlign = 'left'
-  ctx.textBaseline = 'top'
-  ctx.fillText(`SCORE ${score}`, 16, 12)
+  // closes; only a far/dim plane pays the full flat DRNPNT — rb4-1/CB-003). rb4-19:
+  // the ROM HUD glyph font has arrived — the readout strokes through @arcade/shared/font
+  // as green vector glyphs, no longer the browser system font.
+  strokeSegments(
+    hudTextSegments(`SCORE ${score}`, { x: 16, y: 32, size: 20, align: 'left', width, height }),
+    width,
+    height,
+  )
   // rb4-9 / AC-4: the PLVALU readout — the live worth of the plane in your sights, beside the
   // score. It counts DOWN as the lead closes (RBARON.MAC:5290). Shown only while a wave is up.
   if (enemies.length > 0) {
-    ctx.fillText(`PLANE ${planeValue(nearestDepth(enemies))}`, 16, 40)
+    strokeSegments(
+      hudTextSegments(`PLANE ${planeValue(nearestDepth(enemies))}`, { x: 16, y: 60, size: 20, align: 'left', width, height }),
+      width,
+      height,
+    )
   }
-  ctx.restore()
 }
 
 // ─── the yoke: keyboard → FlightInput ─────────────────────────────────────────
@@ -828,15 +828,24 @@ function frame(nowMs: number): void {
   // high-score check (RBARON.MAC:1210-1212); the clone's minimal seat for that
   // story is the card itself, over an emptied sky the yoke still flies.
   if (gameOver && ctx) {
-    ctx.save()
-    ctx.fillStyle = '#33ff66'
+    // rb4-19: the end-state card strokes through @arcade/shared/font — the draw()
+    // pass already returned, so re-establish the green glow before the glyph stroke.
+    ctx.strokeStyle = '#33ff66'
+    ctx.lineWidth = 2
     ctx.shadowColor = '#33ff66'
     ctx.shadowBlur = 12
-    ctx.font = 'bold 48px monospace'
-    ctx.textAlign = 'center'
-    ctx.textBaseline = 'middle'
-    ctx.fillText('GAME OVER', canvas.width / 2, canvas.height * 0.4)
-    ctx.restore()
+    strokeSegments(
+      hudTextSegments('GAME OVER', {
+        x: canvas.width / 2,
+        y: canvas.height * 0.4 + 24,
+        size: 48,
+        align: 'center',
+        width: canvas.width,
+        height: canvas.height,
+      }),
+      canvas.width,
+      canvas.height,
+    )
   }
   // SH2-14: the pause overlay dims the frozen scene and draws the keybind card over
   // it — drawn last (over the whole world) and only while paused. red-baron draws in
