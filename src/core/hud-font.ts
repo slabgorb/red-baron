@@ -20,7 +20,9 @@ import { V_BRIT_MAX, type SceneSegment } from './scene'
 export interface HudTextOptions {
   /** Pixel anchor x: the text's LEFT edge (align 'left') or its CENTRE (align 'center'). */
   readonly x: number
-  /** Pixel BASELINE y — the glyphs rise above it (cell-local y-up, no descenders in this set). */
+  /** Pixel BASELINE y — the glyphs rise above it (cell-local y-up; the HUD charset — caps, digits,
+   *  space — has no descenders, so ink stays above the baseline; the font's `,` glyph does descend
+   *  but is never in a HUD string). */
   readonly y: number
   /** Pixel cell height — CELL_H maps to this (≈ the old fillText px size). */
   readonly size: number
