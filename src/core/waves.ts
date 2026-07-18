@@ -15,14 +15,12 @@
 // PLNXCG (UPPLEX, RBARON.MAC:2961/3139): killing the lead hands the fight
 // to a wingman — a surviving drone is promoted to the next lead.
 //
-// MODECT / MCOUNT (findings §4): a NEWCT countdown steps MODECT, whose LSB alternates
-// PLANE waves vs GROUND waves, spaced by the MCOUNT frame counts. GROUND waves are rb3
-// (out of scope here) — the alternation MECHANISM is pinned, but a ground slot is a
-// silent no-op wait; only plane waves field planes in rb2.
-//
-// FRAME CADENCE (findings §1 — load-bearing): the wave clock ticks ONCE per calculation
-// frame (~10.42 Hz / 96 ms), NOT per 62.5 Hz display frame. `stepWaveClock` is the
-// per-calc-frame reducer.
+// MODECT / MCOUNT / NEWCT (rb4-7 AC-2/AC-3, RBARON.MAC:2258-2273): NEWCT counts WAVES, not
+// frames. A plane MODE (even MODECT) fields a RUN of MCOUNT[MODECT>>1] plane waves; a ground
+// MODE (odd) fields one. NEWCT decrements once per COMPLETED wave; when it reaches 0, MODECT
+// steps (mod 16) and NEWCT reloads for the new MODE. `stepWaveClock` is the per-COMPLETION
+// reducer — the earlier per-calc-frame `countdown` (a 96-384 ms gap) and 1:1 alternation were
+// the bug this story fixes. GROUND-wave content lands in rb4-11.
 //
 // PURE and deterministic — the ONLY randomness is the seeded Rng handed to `spawnWave`.
 
@@ -59,7 +57,11 @@ export const DRONE_OFFSETS: readonly (readonly [number, number])[] = Object.free
   Object.freeze([-DRONE_OFFSET, -DRONE_OFFSET]) as readonly [number, number],
 ])
 
-/** MCOUNT — inter-wave frame counts, cycled by wave index (MCOUNT, RBARON.MAC:1298). */
+/**
+ * MCOUNT — the per-MODE plane-RUN length, indexed by MODECT>>1 (MCOUNT, RBARON.MAC:1298).
+ * NOT a per-frame inter-wave delay: a plane MODE fields MCOUNT[MODECT>>1] plane waves in a
+ * RUN, each ground MODE fields one (rb4-7 AC-2/AC-3).
+ */
 export const MCOUNT: readonly number[] = Object.freeze([4, 2, 3, 2, 1, 3, 4, 2])
 
 // ─── score-scaled wave size ───────────────────────────────────────────────────
@@ -165,43 +167,43 @@ export function promoteLead(survivors: readonly Enemy[]): readonly Enemy[] {
 // ─── MODECT / MCOUNT schedule (findings §4) ───────────────────────────────────
 
 /**
- * MODECT LSB alternation: a plane wave vs a (deferred, rb3) ground wave (findings §4).
- * Even MODECT is a plane wave — isPlaneWave(0) is true, so the game opens with planes.
- * (Which parity is the plane is inferred; the ROM pins that the LSB selects.)
+ * MODECT LSB selects the MODE: even = plane wave, odd = ground wave (RBARON.MAC:2270-2273
+ * `LDA MODECT / LSR / BCC STPLNE`). isPlaneWave(0) is true, so the game opens with planes.
+ * (Ground-wave content lands in rb4-11; the LSB parity is what the ROM pins.)
  */
 export function isPlaneWave(modect: number): boolean {
   return modect % 2 === 0
 }
 
-/** MCOUNT inter-wave frame count for a wave index, cycling the table (findings §4). */
-export function interWaveDelay(modect: number): number {
-  const len = MCOUNT.length
-  return MCOUNT[((Math.floor(modect) % len) + len) % len]
-}
-
-/** The calc-frame wave clock: the current MODECT and the frames left until the next wave. */
+/**
+ * The wave clock — MODECT and NEWCT, the WAVES REMAINING in the current MODE's run
+ * (rb4-7 AC-2/AC-3). NEWCT counts WAVES, not calc frames: it decrements once per COMPLETED
+ * wave (RBARON.MAC:2258 `DEC NEWCT`, behind three gates), never per 96 ms frame.
+ */
 export interface WaveClock {
   readonly modect: number
-  readonly countdown: number
+  readonly newct: number
 }
 
-/** The opening clock — MODECT 0 with a spent countdown, so the first plane wave is due now. */
-export const INITIAL_WAVE_CLOCK: WaveClock = Object.freeze({ modect: 0, countdown: 0 })
+/** The opening clock — MODECT 0 with the full plane run loaded (GMINIT, RBARON.MAC:1220-1222). */
+export const INITIAL_WAVE_CLOCK: WaveClock = Object.freeze({ modect: 0, newct: MCOUNT[0] })
 
 /**
- * Advance the wave clock one calculation frame (findings §1 cadence). While the
- * countdown is running it just ticks down (no wave). When it reaches 0 the current
- * MODECT's wave fires — `spawnPlaneWave` is true for a plane slot, false for a silent
- * (rb3-deferred) ground slot — then MODECT advances and the countdown reloads from
- * MCOUNT for the next wave. Pure — returns a fresh clock.
+ * Advance the wave clock by one COMPLETED wave (RBARON.MAC:2258-2273). NEWCT decrements; while
+ * it is still positive the current plane MODE keeps its run going. When it reaches 0, MODECT
+ * steps (mod 16, `AND I,0F`) and NEWCT reloads for the new MODE: a plane MODE (even) reloads
+ * MCOUNT[MODECT>>1] — a RUN of that many plane waves; a ground MODE (odd) reloads 1 — a single
+ * ground wave. `spawnPlaneWave` is the type of the wave now being fielded in the (post-step)
+ * MODECT. Pure — returns a fresh clock.
  */
 export function stepWaveClock(clock: WaveClock): { clock: WaveClock; spawnPlaneWave: boolean } {
-  if (clock.countdown > 0) {
-    return { clock: { modect: clock.modect, countdown: clock.countdown - 1 }, spawnPlaneWave: false }
+  let modect = clock.modect
+  let newct = clock.newct - 1
+  if (newct <= 0) {
+    modect = (modect + 1) & 0x0f // MODECT wraps modulo 16
+    newct = isPlaneWave(modect) ? MCOUNT[modect >> 1] : 1 // plane MODE: a RUN; ground MODE: one
   }
-  const spawnPlaneWave = isPlaneWave(clock.modect)
-  const nextModect = clock.modect + 1
-  return { clock: { modect: nextModect, countdown: interWaveDelay(nextModect) }, spawnPlaneWave }
+  return { clock: { modect, newct }, spawnPlaneWave: isPlaneWave(modect) }
 }
 
 // ─── GRMODE — the ground-wave mode byte (rb3-2, findings §4) ───────────────────
@@ -244,4 +246,24 @@ export function isGroundMode(grmode: number): boolean {
  */
 export function grmodeForWave(modect: number): number {
   return isPlaneWave(modect) ? GRMODE_PLANE : GRMODE_INITGR
+}
+
+// ─── GRNDCT — the ground-wave END condition (rb4-7 AC-4, PFOBMN/INITGR) ─────────
+//
+// A ground wave ends on a CONDITION, not a timer: GRNDCT (the count of ground target-groups
+// still to deploy) must be spent AND no ground object may still be visible. PFOBMN continues
+// the ground mode while `GRNDCT != 0` (RBARON.MAC:3271) OR any PFOBJ status byte is still
+// visible (`AND I,0C0`, :3284) — it ends only when BOTH are exhausted.
+
+/** GRNDCT — a ground wave deploys 2 target-groups (INITGR: LDA I,2, RBARON.MAC:1403-1404). */
+export const GRNDCT_INITIAL = 2
+
+/**
+ * Does the ground mode END this frame? Only when GRNDCT is spent AND no ground object is
+ * still visible (PFOBMN, RBARON.MAC:3269-3293) — never on a countdown. `visibleGroundObjects`
+ * is the count of on-screen PFOBJ ground objects; those objects land in rb4-11, so until then
+ * the count is 0 and the mode ends as soon as GRNDCT reaches 0.
+ */
+export function groundModeEnds(grndct: number, visibleGroundObjects: number): boolean {
+  return grndct === 0 && visibleGroundObjects === 0
 }

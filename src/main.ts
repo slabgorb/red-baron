@@ -28,8 +28,8 @@ import { horizonSegments } from './core/horizon'
 import { INITIAL_FLIGHT, step, toAttitude, toEye, controlBand, type FlightInput, type FlightState } from './core/flight'
 import { proximityBand, displayPos, WO_RTN, type Enemy } from './core/enemy'
 import {
-  spawnWave, stepWave, promoteLead, INITIAL_WAVE_CLOCK, stepWaveClock,
-  grmodeForWave, planeGenDisabled, isGroundMode, GRMODE_PLANE,
+  spawnWave, stepWave, promoteLead, INITIAL_WAVE_CLOCK, stepWaveClock, isPlaneWave,
+  grmodeForWave, planeGenDisabled, isGroundMode, GRMODE_PLANE, groundModeEnds, GRNDCT_INITIAL,
 } from './core/waves'
 import { biplaneLOD, planeModel, renderModel } from './core/biplane'
 import {
@@ -358,7 +358,9 @@ function worldBlimpTarget(b: Blimp, eye: Vec3): Enemy {
   const t = blimpTarget(b)
   return { ...t, x: t.x + eye[0], y: t.y + eye[1] }
 }
-let waveClock = INITIAL_WAVE_CLOCK // MODECT/MCOUNT schedule — spaces waves at the calc-frame cadence
+let waveClock = INITIAL_WAVE_CLOCK // MODECT/NEWCT schedule — NEWCT counts WAVES (rb4-7); runs of plane waves
+let waveOpened = false // has the opening wave been fielded? the first wave comes off the initial clock, no step
+let grndct = 0 // GRNDCT — ground target-groups left to deploy while a ground wave runs (rb4-7 AC-4)
 let grmode = GRMODE_PLANE // GRMODE ground-wave byte — set to INITGR (0C0) on a ground slot, cleared (STPLNE) on a plane slot (rb3-2)
 let guns: Guns = INITIAL_GUNS
 let simFrame = 0 // calc-frame counter — drives the blimp's ÷2 fire cadence (blimpFires)
@@ -673,32 +675,52 @@ function frame(nowMs: number): void {
     }
 
     // ── the wave schedule + the BLMOTN blimp roll, only as the sky clears ──
-    // Once the planes are down and their wrecks finished, the MODECT/MCOUNT schedule brings the
-    // next plane wave in after its gap — and, on a wave decision, the blimp rolls in on its
-    // ~25% BLMOTN chance (if none is already drifting), a menace even in the quiet between waves.
+    // rb4-7: NEWCT counts WAVES, not calc frames. The opening plane wave comes off the initial
+    // clock (no step); thereafter, each time the planes are down and their wrecks finished, that
+    // is one COMPLETED wave — step the schedule to the next slot. A plane MODE runs several plane
+    // waves back-to-back (the RUN); a ground MODE is one slot whose CONTENT lands in rb4-11, so
+    // for now it fields no planes and the run resumes on the following frame.
     // rb4-4: no new waves while the pilot is dying (the ROM gates plane
     // generation through the EOL flags, :787-788) or after the game is over.
     if (enemies.length === 0 && wrecks.length === 0 && dying === null && !gameOver) {
-      // A wave DECISION fires when the countdown has elapsed (pre-step countdown 0); it
-      // advances MODECT, so capture the firing slot's modect BEFORE stepping.
-      const decisionModect = waveClock.modect
-      const wasDecision = waveClock.countdown === 0
-      const sched = stepWaveClock(waveClock)
-      waveClock = sched.clock
-      // On a decision the slot enters its GRMODE: a plane slot clears ground mode (STPLNE),
-      // a ground slot sets INITGR (0C0) so plane-gen is skipped + control slows. GRMODE holds
-      // between decisions — only a decision transitions it (rb3-2, findings §4).
-      if (wasDecision) grmode = grmodeForWave(decisionModect)
-      // Plane waves spawn only when new-plane generation is enabled (D6 clear); a ground
-      // slot's INITGR disables it, so the ground interval is an empty-sky, slow-control wait
-      // until the next plane slot (ground-wave CONTENT lands in rb3-3..rb3-6).
-      if (sched.spawnPlaneWave && !planeGenDisabled(grmode)) {
-        // NWPLNE sizes the wave off SCORE — the DISPLAYED register, not the queue.
+      let spawnPlaneWave = false
+      if (isGroundMode(grmode)) {
+        // A ground wave is UP — it ends on the CONDITION (GRNDCT spent AND no ground object
+        // visible, RBARON.MAC:3269-3293), never on a timer (rb4-7 AC-4). Ground OBJECTS and the
+        // GTIMER that paces GRNDCT land in rb4-11; until then no object is visible and GRNDCT
+        // counts down its two INITGR target-group slots so the mode still ends and the run resumes.
+        if (groundModeEnds(grndct, 0)) {
+          const sched = stepWaveClock(waveClock)
+          waveClock = sched.clock
+          grmode = grmodeForWave(waveClock.modect)
+          spawnPlaneWave = sched.spawnPlaneWave
+        } else {
+          grndct = Math.max(0, grndct - 1) // a ground target-group deploys
+        }
+      } else if (!waveOpened) {
+        // The opening wave: MODECT 0, fielded from the initial clock without a completion step.
+        waveOpened = true
+        grmode = grmodeForWave(waveClock.modect)
+        spawnPlaneWave = isPlaneWave(waveClock.modect)
+      } else {
+        // A plane wave completed — advance NEWCT/MODECT to the next slot (steps the MODE on a
+        // run's end). A plane slot spawns; stepping INTO a ground slot arms GRNDCT and enters
+        // ground mode, held above until it ends.
+        const sched = stepWaveClock(waveClock)
+        waveClock = sched.clock
+        grmode = grmodeForWave(waveClock.modect)
+        spawnPlaneWave = sched.spawnPlaneWave
+        if (!spawnPlaneWave && isGroundMode(grmode)) grndct = GRNDCT_INITIAL // INITGR: 2 groups
+      }
+      // Plane waves spawn only when new-plane generation is enabled (D6 clear); a ground slot's
+      // INITGR disables it, so the ground wave is a slow-control, empty-sky wait (its CONTENT
+      // lands in rb4-11). NWPLNE sizes the wave off SCORE — the DISPLAYED register, not the queue.
+      if (spawnPlaneWave && !planeGenDisabled(grmode)) {
         enemies = spawnWave(createRng((seed + kills) >>> 0), countUp.displayed, gmlevlForKills(kills))
         events.push({ type: 'wave-incoming' }) // the WP descending announce
       }
       // The BLMOTN ~25% roll: a blimp drifts in during the lull if the sky has none.
-      if (wasDecision && blimp === null && shouldSpawnBlimp(nextFloat(blimpRng))) {
+      if (blimp === null && shouldSpawnBlimp(nextFloat(blimpRng))) {
         blimp = spawnBlimp(blimpRng, aspect)
       }
     }

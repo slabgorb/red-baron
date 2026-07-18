@@ -119,11 +119,15 @@ export function scoreKill(kind: KillKind, depth: number): number {
 }
 
 /**
- * OBJKLD → GMLEVL: index PLNLVL by the kill count, clamped to a valid rung, saturating at
- * MAX_GMLEVL. Total — a negative or non-finite count reads as level 0, never off the table.
+ * OBJKLD → GMLEVL = PLNLVL[min(OBJKLD >> 1, 0x10)]. The ROM HALVES the kill count before
+ * the table lookup — `LSR` then `CMP I,10` (0x10 = 16) clamps the index (RBARON.MAC:2403-2405).
+ * Indexing PLNLVL by OBJKLD directly ramped the difficulty exactly TWICE as fast as the
+ * arcade's (rb4-7 AC-1). Total — a negative or non-finite count reads as level 0, never off
+ * the table; the clamp saturates at MAX_GMLEVL.
  */
 export function gmlevlForKills(objkld: number): number {
   if (!Number.isFinite(objkld)) return 0
-  const index = Math.max(0, Math.min(Math.floor(objkld), PLNLVL.length - 1))
+  const halved = Math.max(0, Math.floor(objkld)) >> 1 // the ROM's LSR — halve, then clamp
+  const index = Math.min(halved, PLNLVL.length - 1)
   return PLNLVL[index]
 }

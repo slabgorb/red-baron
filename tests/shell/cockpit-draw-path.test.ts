@@ -490,9 +490,14 @@ const FRAMES = 24
  * shell that kills sooner is consumed sooner — one fewer frame of it alive in the pool. The kill
  * still lands (the wreck guards below stay green); the sky is the same seeded sky.
  *
+ * Re-measured for rb4-7 (52 → 51): the MODECT/NEWCT wave clock now counts WAVES, so the opening is
+ * a RUN of plane waves instead of the old 1:1 plane/ground alternation — a genuinely different (but
+ * still seeded, still deterministic) sequence of planes. One shell fewer is alive across the run.
+ * This is the "re-read the numbers on purpose" the guard is built to force.
+ *
  * A drift toward zero would still fail, which is the point.
  */
-const TOTAL_LIVE_SHELLS = 52
+const TOTAL_LIVE_SHELLS = 51
 
 beforeAll(async () => {
   await import('../../src/main') // the module body runs: resize(), the listeners, the first rAF
