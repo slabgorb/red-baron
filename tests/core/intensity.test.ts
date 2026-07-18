@@ -106,8 +106,10 @@ describe('rb4-9 AC-3 — depthIntensity: nearer is brighter (INTENSITY SET TO DE
 
   it('a degenerate depth folds to the floor, never NaN', () => {
     const f = needFn(depthIntensity, 'depthIntensity')
-    expect(Number.isFinite(f(Number.NaN)) ? f(Number.NaN) : 0).toBeGreaterThanOrEqual(0)
+    expect(Number.isFinite(f(Number.NaN)), 'depthIntensity(NaN) must be finite, never NaN').toBe(true)
+    expect(f(Number.NaN)).toBeGreaterThanOrEqual(0)
     expect(Number.isFinite(f(-1))).toBe(true)
+    expect(f(-1)).toBeGreaterThanOrEqual(0)
   })
 })
 

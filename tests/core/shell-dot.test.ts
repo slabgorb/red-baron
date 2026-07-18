@@ -23,8 +23,9 @@ import { multiply, translation, type Mat4, type Vec3 } from '@arcade/shared/math
 const PROJ = sceneProjection(1)
 /** A view that keeps a shell fired near the boresight in front of the eye. */
 const mvp: Mat4 = multiply(PROJ, translation(0, 0, 0))
-/** Only x/y/z are read by shellSegments; gun/active are irrelevant to its geometry. */
-const shellAt = (x: number, y: number, z: number): Shell => ({ x, y, z } as unknown as Shell)
+/** Only x/y/z are read by shellSegments; gun/active are supplied to build a full Shell literal
+ * (the convention in tracer-seam.test.ts), so no `as unknown as` bypass is needed. */
+const shellAt = (x: number, y: number, z: number): Shell => ({ x, y, z, gun: 'left', active: true } as Shell)
 
 describe('rb4-9 AC-5 — a shell is a DOT (VGDOT), not a streak', () => {
   it('projects to exactly one segment', () => {

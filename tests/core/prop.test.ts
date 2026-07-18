@@ -108,11 +108,17 @@ describe('rb4-9 AC-1 (pure) — propFrame cycles the three blade pictures on the
 
   it('never selects outside the three-picture table (an out-of-range index would crash propSegments)', () => {
     const f = need(prop.propFrame, 'propFrame')
-    for (let n = 0; n < 40; n++) {
+    for (let n = -20; n < 40; n++) {
       const i = f(n)
       expect(i, `propFrame(${n}) = ${i}`).toBeGreaterThanOrEqual(0)
       expect(i).toBeLessThan(3)
     }
+  })
+
+  it('wraps NEGATIVE counters into the table too (the display counter never goes negative, but the guard must hold)', () => {
+    const f = need(prop.propFrame, 'propFrame')
+    // The double-modulo `((n % 3) + 3) % 3` must map negatives into {0,1,2}, not to a negative index.
+    expect([-1, -2, -3, -4].map(f)).toEqual([2, 1, 0, 2])
   })
 })
 
@@ -153,9 +159,10 @@ describe('rb4-9 AC-1/AC-2 — propSegments strokes the transcribed DBPROP blade 
     // the transcribed data must actually be indexable (a guard on the topology it depends on).
     const maxIdx = Math.max(...PROPS.flat().map((op) => op.point))
     expect(maxIdx).toBeLessThan(DBPROP_POINTS.length)
-    // and every DBPROP vertex is a finite 3-tuple the projector can consume.
+    // and every DBPROP vertex is a finite 3-tuple the projector can consume. Point3 and Vec3 are
+    // structurally identical readonly 3-tuples, so no cast is needed.
     for (const p of DBPROP_POINTS) {
-      const v: Vec3 = p as unknown as Vec3
+      const v: Vec3 = p
       expect(v).toHaveLength(3)
       for (const c of v) expect(Number.isFinite(c)).toBe(true)
     }

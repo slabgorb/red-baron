@@ -169,6 +169,12 @@ const rec = vi.hoisted(() => ({
   wreckDraws: [] as WreckDraw[],
   /** EVERY wreck object the SIM ever produced (explode / stepWreck), across the whole run. */
   simWrecks: [] as Wreck[],
+  // rb4-9: the non-projected HUD overlay (lives + windscreen). Its renderers are recorded so
+  // INVARIANT 4's tail can be pinned to their ACTUAL output — not merely bounds-checked — which
+  // is what keeps "delete both HUD draws" from passing green.
+  hudLen: 0, // segments the HUD renderers returned THIS frame
+  livesCalled: false, // was livesGlyphs invoked this frame?
+  windscreenCalled: false, // was windscreenSegments invoked this frame?
 }))
 
 // Sound is not geometry. Stub the engine so no AudioContext is ever needed; the real
@@ -264,6 +270,37 @@ vi.mock('../../src/core/wreck-render', async (importOriginal) => {
       const from = rec.proj.length
       const segs = actual.wreckSegments(wreck, mvp)
       rec.wreckDraws.push({ wreck, mvp: [...mvp], from, to: rec.proj.length })
+      return segs
+    },
+  }
+})
+
+// rb4-9: THE HUD OVERLAY RENDERERS, recorded. The lives glyphs (DSPLIF) and windscreen bullet holes
+// (WNDSHD) are the ONLY non-projected strokes on the glass. INVARIANT 4 pins the tail to exactly
+// what these return — and asserts they were CALLED — so deleting either draw call from main.ts (the
+// tail would silently vanish) is caught, not passed. Passthrough: the real geometry still reaches
+// the canvas, so the pixel record stays honest.
+vi.mock('../../src/core/lives', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/core/lives')>()
+  return {
+    ...actual,
+    livesGlyphs: (count: number): readonly (readonly SceneSegment[])[] => {
+      const glyphs = actual.livesGlyphs(count)
+      rec.livesCalled = true
+      rec.hudLen += glyphs.reduce((n, g) => n + g.length, 0) // main.ts strokes livesGlyphs(...).flat()
+      return glyphs
+    },
+  }
+})
+
+vi.mock('../../src/core/windscreen', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/core/windscreen')>()
+  return {
+    ...actual,
+    windscreenSegments: (ws: Parameters<typeof actual.windscreenSegments>[0]): readonly SceneSegment[] => {
+      const segs = actual.windscreenSegments(ws)
+      rec.windscreenCalled = true
+      rec.hudLen += segs.length
       return segs
     },
   }
@@ -446,6 +483,10 @@ interface Frame {
   readonly live: GunStep
   /** Did a calc-frame actually run inside this rAF? */
   readonly stepped: boolean
+  /** rb4-9: total segments the HUD renderers (lives + windscreen) returned this frame. */
+  readonly hudLen: number
+  /** rb4-9: were BOTH HUD renderers invoked this frame? (a deleted HUD draw call → false). */
+  readonly hudDrawn: boolean
 }
 
 const frames: Frame[] = []
@@ -515,6 +556,9 @@ beforeAll(async () => {
     rec.gunSteps.length = 0
     rec.wreckDraws.length = 0
     strokes.length = 0
+    rec.hudLen = 0
+    rec.livesCalled = false
+    rec.windscreenCalled = false
     // NB: rec.simWrecks is NOT cleared — a wreck drawn on a frame where no calc-step ran was
     // produced on an EARLIER frame, so the sim's roster of real Wreck objects must accumulate.
 
@@ -534,6 +578,8 @@ beforeAll(async () => {
       strokes: [...strokes],
       live,
       stepped,
+      hudLen: rec.hudLen,
+      hudDrawn: rec.livesCalled && rec.windscreenCalled,
     })
   }
 })
@@ -799,8 +845,23 @@ describe('INVARIANT 4 — every pixel stroked came out of a core projection, una
           `geometry — which is a renderer with no name and no test.`,
       ).toEqual(expected)
 
-      // The tail is the HUD overlay (lives + windscreen). It must be finite, in-frame pixels —
-      // never a smuggled WORLD stroke escaping the projection guard by being authored in NDC.
+      // The tail is the HUD overlay (lives + windscreen). It is pinned to the HUD renderers'
+      // ACTUAL output, not merely bounds-checked — so DELETING either draw call from main.ts (which
+      // would silently shrink the tail to zero and let the world prefix pass alone) fails here:
+      //   (a) both HUD renderers must have been invoked this frame, and
+      //   (b) the tail's stroke count must equal exactly what they returned.
+      expect(
+        f.hudDrawn,
+        `frame ${i}: main.ts did not invoke BOTH HUD renderers (livesGlyphs + windscreenSegments) — ` +
+          `a deleted HUD draw call would make the tail vanish and the prefix pass alone.`,
+      ).toBe(true)
+      expect(
+        f.strokes.length - expected.length,
+        `frame ${i}: the HUD tail stroked ${f.strokes.length - expected.length} vectors but the HUD ` +
+          `renderers returned ${f.hudLen} — the overlay was altered between core and glass.`,
+      ).toBe(f.hudLen)
+
+      // And every tail stroke is finite, in-frame pixels — never a smuggled WORLD stroke.
       for (const s of f.strokes.slice(expected.length)) {
         for (const v of [s.x1, s.x2]) expect(v, `frame ${i}: HUD x out of frame`).toBeGreaterThanOrEqual(0)
         for (const v of [s.x1, s.x2]) expect(v).toBeLessThanOrEqual(WIDTH)
@@ -808,6 +869,8 @@ describe('INVARIANT 4 — every pixel stroked came out of a core projection, una
         for (const v of [s.y1, s.y2]) expect(v).toBeLessThanOrEqual(HEIGHT)
       }
     }
+    // The HUD tail was actually exercised (lives are always drawn until game over) — not vacuous.
+    expect(frames.some((f) => f.hudLen > 0), 'no HUD overlay was ever drawn — the tail guard is vacuous').toBe(true)
     expect(frames.some((f) => f.strokes.length > 0)).toBe(true)
   })
 })

@@ -97,9 +97,13 @@ vi.mock('../src/core/biplane', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/core/biplane')>()
   return {
     ...actual,
-    renderModel: (model: Parameters<typeof actual.renderModel>[0], mvp: Mat4): readonly SceneSegment[] => {
+    renderModel: (
+      model: Parameters<typeof actual.renderModel>[0],
+      mvp: Mat4,
+      brightness?: number,
+    ): readonly SceneSegment[] => {
       rec.enemyDraws += 1
-      return actual.renderModel(model, mvp)
+      return actual.renderModel(model, mvp, brightness) // forward brightness — a passthrough that drops it lies
     },
   }
 })

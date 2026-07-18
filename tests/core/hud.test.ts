@@ -63,6 +63,12 @@ describe('rb4-9 AC-4 — LIVES are DRAWN (DSPLIF): one plane glyph per remaining
       for (const s of glyph) for (const v of [s.x1, s.y1, s.x2, s.y2]) expect(Number.isFinite(v)).toBe(true)
     }
   })
+
+  it('folds a negative or fractional count to a whole, non-negative number of glyphs', () => {
+    const f = need(livesGlyphs, 'lives.ts livesGlyphs')
+    expect(f(-1), 'negative lives draws nothing, never a negative-length array').toHaveLength(0)
+    expect(f(2.7), 'a fractional count truncates to whole glyphs').toHaveLength(2)
+  })
 })
 
 describe('rb4-9 AC-4 — the windscreen BULLET HOLES accumulate as the ace shoots you', () => {
@@ -130,6 +136,7 @@ describe('rb4-9 AC-4 — the PLVALU readout: the live worth of the plane in your
     expect(far).toBeGreaterThanOrEqual(mid)
     expect(mid).toBeGreaterThanOrEqual(near)
     expect(far, 'the value must actually vary with depth').toBeGreaterThan(near)
-    expect(Number.isFinite(f(Number.NaN)) ? f(Number.NaN) : 0).toBeGreaterThanOrEqual(0)
+    expect(Number.isFinite(f(Number.NaN)), 'planeValue(NaN) must be finite, never NaN').toBe(true)
+    expect(f(Number.NaN)).toBeGreaterThanOrEqual(0)
   })
 })
