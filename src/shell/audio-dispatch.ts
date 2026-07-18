@@ -29,8 +29,12 @@ type SoundSurface = Pick<
 export interface WorldSound {
   /** In a live run — not paused, not stopped. Outside one, everything falls silent. */
   readonly playing: boolean
-  /** Trigger held and the guns not locked out (GUN.ST) — the rat-a-tat runs. */
+  /** PLAYER trigger held and the guns not locked out (GUN.ST) — the rat-a-tat runs. */
   readonly gunFiring: boolean
+  /** An ENEMY shell was fired this frame (rb4-10 / SN-017): the ROM's S.VAL gun
+   *  counter is bumped for BOTH sides (RBARON.MAC:2182-84, :1479), so enemy fire is
+   *  audible in the cabinet. Rattles the same gun cue as the player's own. */
+  readonly enemyFiring: boolean
   /** Depth of the closest live plane; `+Infinity` when the sky is clear. */
   readonly nearestDepth: number
 }
@@ -76,12 +80,13 @@ export function playEventSounds(audio: SoundSurface, events: readonly GameEvent[
  * Drive the continuous sounds from live state, once per frame.
  *
  * The hum runs through a live run and is silenced outside one. The gun rattles
- * only while the trigger is actually down. The whine tracks the nearest plane —
- * and with the sky clear (`+Infinity`) the curve puts it at silence on its own.
+ * while EITHER side is firing — the player's trigger OR an enemy's shell (SN-017),
+ * mirroring the ROM's single S.VAL counter. The whine tracks the nearest plane —
+ * and with the sky clear (`+Infinity`) the curve idles at the hum pitch on its own.
  */
 export function updateContinuousSounds(audio: SoundSurface, world: WorldSound): void {
   const { playing } = world
   audio.setEngine(playing)
-  audio.setGun(playing && world.gunFiring)
+  audio.setGun(playing && (world.gunFiring || world.enemyFiring))
   audio.setApproach(playing ? world.nearestDepth : Number.POSITIVE_INFINITY)
 }

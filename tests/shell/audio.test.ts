@@ -36,7 +36,6 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { EXPL2_FRAMES } from '../../src/core/explosion'
 import type { OneShot } from '../../src/shell/audio'
 
 // --- recording fake Web Audio surface (battlezone bz1-11 harness) -----------

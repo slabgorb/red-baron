@@ -595,6 +595,11 @@ function frame(nowMs: number): void {
   // single stepGame, so the loop ASSEMBLES the event list from the signals it
   // already computes, then hands it to the shell's dispatch below.
   const events: GameEvent[] = []
+  // rb4-10 / SN-017: the ROM's S.VAL gun counter is bumped for EVERY shell, the
+  // enemy's included, so enemy fire rattles the same gun cue. Latched across this
+  // render frame's calc-steps. The blimp is the modelled enemy shooter; plane fire
+  // (planeFires) is not yet wired into the shell loop, so it stays silent for now.
+  let enemyFiring = false
   // SH2-14: the frozen-frame gate. While paused, run NO calc-frames (the sim —
   // flight, guns, waves, wrecks, blimp, mountains, score — is held) and discard the
   // banked time down to the sub-step remainder, so resume never burst-replays the
@@ -677,6 +682,9 @@ function frame(nowMs: number): void {
     // rejects any write to `blimp` that is not a bare call to a core producer. Both will fail.
     if (blimp !== null) {
       const drifted = stepBlimp(blimp)
+      // rb4-10 / SN-017: the gun rattles on the SHOT, not the hit — set on every
+      // fire-frame (before the hit roll), so a miss is audible too.
+      if (blimpFires(simFrame)) enemyFiring = true
       // rb4-4: a connecting shot opens the SHELLS death channel — the life is
       // taken by ENDLFE when the EOGTMR runs out, not on the impact frame. The
       // hit ROLL is always drawn on a fire-frame (the rng stream must not shift
@@ -809,6 +817,7 @@ function frame(nowMs: number): void {
   updateContinuousSounds(audio, {
     playing: !paused,
     gunFiring: fireHeld && !guns.overheated,
+    enemyFiring, // rb4-10 / SN-017: an enemy shell fired this frame rattles the gun
     nearestDepth: nearestDepth(enemies),
   })
 
