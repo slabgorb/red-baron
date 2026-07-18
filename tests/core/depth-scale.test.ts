@@ -254,33 +254,42 @@ describe('REGISTRY 4/7 — audio.WHINE_HALF_DEPTH: the approach whine can reach 
   })
 })
 
-describe('REGISTRY 5/7 — blimp.CRUISE_DEPTH: the airship cruises mid-field, as its own comment says', () => {
-  // FOUND BY THE SWEEP. Nobody had looked at this one.
-  //
-  // main.ts:303 adapts the blimp to the same Enemy-shaped target guns.collides consumes, so
-  // blimp.depth is the SAME axis the plane flies down. Its doc comment claims "a visible
-  // mid-field distance" — true at 600/1080 (56%), false at 600/4224 (14%).
-  it('spawns in the mid-field of the axis, not in the player\'s face', () => {
-    // "Mid-field" is a range, not a number — Dev picks the number; the property is that it
-    // is genuinely mid-field on the CORRECTED axis, and derived from it.
+describe('REGISTRY 5/7 — blimp entry depth: RE-SEATED by rb4-15 (CRUISE_DEPTH is retired)', () => {
+  // THE ENTRY'S HISTORY: the sweep found CRUISE_DEPTH = 600 as a bare decimal that had
+  // forgotten its unit; rb4-1 re-derived it as P_INDP / 2 ("mid-field"). rb4-15 then found
+  // the whole CRUISE was the wrong machine — the ROM blimp does not cruise at ALL. It
+  // ENTERS at Z = 0x1000 = 4096 (INITBP, RBARON.MAC:1425-1426) and CLOSES 0x80 per
+  // calc-frame (BLMOTN :4259-4265). The mid-field property below is therefore INVERTED:
+  // the airship enters DEEP — above 3/4 of the plane's own spawn depth — and earns its
+  // close-ups by flying at you.
+  it('enters at the ROM depth — transcribed, not tuned, and DEEP on the axis', () => {
     const blimp = spawnBlimp(createRng(3), ASPECT)
+    expect(blimp.depth, 'INITBP: Z MSB = 0x10, LSB = 0 → 0x1000').toBe(0x1000)
     expect(
       blimp.depth,
-      `the airship's own comment calls its cruise depth "a visible mid-field distance". On the ` +
-        `corrected axis (spawn ${P_INDP}), 600 is 14% — that is not mid-field, that is nose-on.`,
-    ).toBeGreaterThanOrEqual(P_INDP / 4)
-    expect(blimp.depth).toBeLessThanOrEqual((P_INDP * 3) / 4)
+      `the drifter's "mid-field" band [P_INDP/4, 3·P_INDP/4] is the OLD machine's premise — ` +
+        `the ROM enters the airship at 4096/${P_INDP} = 97% of the plane's spawn depth.`,
+    ).toBeGreaterThan((P_INDP * 3) / 4)
   })
 
-  it('stays inside the gun\'s reach — a blimp you cannot shoot is not a target', () => {
+  it('every frame of the approach stays inside the gun\'s reach — it only ever gets EASIER to hit', () => {
+    // 0x1000 = 4096 < SHELL_RANGE_DEPTH = 6400 at entry, and the depth only DECREASES from
+    // there — the whole life is shootable. (The drifter needed this pinned at its one cruise
+    // depth; the approach makes it a monotone consequence of the entry.)
     const blimp = spawnBlimp(createRng(3), ASPECT)
     expect(blimp.depth).toBeLessThan(SHELL_RANGE_DEPTH)
   })
 
-  it('is not a bare decimal — it is denominated in the axis', () => {
+  it('is not a bare decimal — the ROM constants carry the ROM\'s own hex spelling', () => {
     const blimp = readFileSync(join(srcRoot, 'core', 'blimp.ts'), 'utf8')
-    expect(blimp, 'CRUISE_DEPTH = 600 predates the corrected axis').not.toMatch(
-      /CRUISE_DEPTH\s*=\s*\d+\s*$/m,
+    expect(blimp, 'CRUISE_DEPTH is retired with the drifter (rb4-15)').not.toMatch(
+      /CRUISE_DEPTH\s*=/,
+    )
+    expect(blimp, 'the entry depth is the ROM\'s 0x1000, spelled in hex').toMatch(
+      /BLIMP_Z_START\s*=\s*0x1000\b/,
+    )
+    expect(blimp, 'and a bare decimal 4096 invites the next radix accident').not.toMatch(
+      /BLIMP_Z_START\s*=\s*\d+\s*$/m,
     )
   })
 })
@@ -509,6 +518,10 @@ const REGISTERED: ReadonlySet<string> = new Set([
   // reintroducing the NAME re-arms the bare-decimal guard on it instantly.
   'SHELL_DRAW_FAR',
   'WHINE_HALF_DEPTH',
+  // CRUISE_DEPTH — a TOMBSTONE (rb4-15, like SHELL_DRAW_FAR above). The cruise was the wrong
+  // MACHINE: the ROM blimp enters at BLIMP_Z_START = 0x1000 and closes 0x80/calc-frame
+  // (INITBP :1425-1426, BLMOTN :4259-4265) — there is no constant depth to denominate. Kept
+  // in the set so that reintroducing the NAME re-arms the bare-decimal guard on it instantly.
   'CRUISE_DEPTH',
   // LOD_DISTANCE — a TOMBSTONE (rb4-13, like SHELL_DRAW_FAR above). The switch it fed is
   // ORIENTATION-keyed (PLSTAT+6 D4 — DRNPIC, RBARON.MAC:4961); no depth constant may replace

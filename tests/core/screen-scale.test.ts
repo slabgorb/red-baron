@@ -39,11 +39,13 @@
 //
 //   1. Proves screen.ts against the REAL projection (it must not grow its own copy of the FOV
 //      — a private copy of a projection constant is exactly how the tracer seam opened).
-//   2. Flies the blimp's whole crossing through the REAL renderer and asserts the three things
-//      the Reviewer asked for: it ENTERS near an edge, it CROSSES the frame, and it is NEVER
-//      DELETED WHILE STILL VISIBLE.
-//   3. Proves the class is dead, not the instance: the same crossing is flown at THREE cruise
-//      depths and the screen path is the same one. Move the depth axis; nothing moves.
+//   2. Flies the airship's whole life through the REAL renderer (re-seated by rb4-15: the
+//      machine APPROACHES — enters at Z 0x1000, closes 0x80/frame, cleared below 0x100):
+//      it enters IN FRAME, the player SEES it grow, and the reap is the ROM's Z line —
+//      never a frame early.
+//   3. (rb4-1's "same screen path at any cruise depth" property is RETIRED — rb4-15 pins
+//      the depth axis to the ROM, so the free variable it swept no longer exists. See the
+//      tombstone below.)
 //   4. ENUMERATES the class — same three-bucket shape as depth-scale.test.ts (REGISTERED /
 //      NOT-A-SCREEN-CONSTANT / NOT-THIS-STORY), with a completeness guard, so the next one is
 //      caught without a Reviewer.
@@ -56,7 +58,7 @@
 // this buys is that a constant which ANNOUNCES itself as a screen X/Y cannot be merely
 // unexamined — it must land in a bucket, with a reason, or the suite goes red.
 
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeAll } from 'vitest'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, dirname, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -67,10 +69,12 @@ import {
   frustumHalfWidth, frustumHalfHeight, ndcX, ndcY, worldX, inFrame,
 } from '../../src/core/screen'
 import { sceneProjection, projectSegment } from '../../src/core/scene'
-import {
-  spawn as spawnBlimp, step as stepBlimp, blimpOffScreen, blimpSegments, blimpDriftPerFrame,
-  BLIMP_HULL_RADIUS, type Blimp,
-} from '../../src/core/blimp'
+// rb4-15 re-seat: blimpOffScreen and blimpDriftPerFrame are the DRIFTER's apparatus
+// (a screen-edge despawn and a crossing pace) and are retired with it — importing them
+// here would crash this whole file's collection (including the debris/LOD suites that
+// have nothing to do with the airship) the moment Dev deletes them. reapBlimp's TARGET
+// signature drops the aspect, so it is loaded through the dynamic mirror below.
+import { spawn as spawnBlimp, step as stepBlimp, blimpSegments, type Blimp } from '../../src/core/blimp'
 import { collides, shellDepth, type Shell } from '../../src/core/guns'
 import { PLANE_POINTS, PICTURE_SCALE, biplaneLOD } from '../../src/core/biplane'
 import { COLLD_POINTS } from '../../src/core/topology'
@@ -159,173 +163,136 @@ function blimpIsVisible(blimp: Blimp, aspect: number): boolean {
   return segs.some((s) => inFrame(s.x1) || inFrame(s.x2))
 }
 
-/** The NDC x of the airship's centre. */
-const blimpNdc = (b: Blimp, aspect: number): number => ndcX(b.x, b.depth, aspect)
-
-/** Fly a blimp until it despawns (or `maxFrames`), recording what happened each frame. */
-function flyCrossing(blimp: Blimp, aspect: number, maxFrames = 2000) {
-  const ndcPath: number[] = [blimpNdc(blimp, aspect)]
-  const deletedWhileVisible: string[] = []
-  let b = blimp
-  let frames = 0
-  let despawned = false
-  for (let f = 0; f < maxFrames; f++) {
-    b = stepBlimp(b)
-    frames += 1
-    const gone = blimpOffScreen(b, aspect)
-    // THE ASSERTION THIS WHOLE FILE EXISTS FOR: deleted => not visible. Asked of the REAL
-    // renderer, not of a reconstruction of it.
-    if (gone && blimpIsVisible(b, aspect)) {
-      deletedWhileVisible.push(`frame ${f}: ndc ${blimpNdc(b, aspect).toFixed(3)} — still drawn`)
-    }
-    if (gone) {
-      despawned = true
-      break
-    }
-    ndcPath.push(blimpNdc(b, aspect))
+// ── rb4-15: the reap, through the house dynamic mirror ──────────────────────────
+//
+// reapBlimp's TARGET signature is (blimp) => Blimp | null — the ROM despawn asks ONE
+// question, Z < 0x100 (BLMOTN :4266-4270), and a depth question does not take an
+// aspect. The source still carries the drifter's (blimp, aspect) shape, so a static
+// call would either pin the dying signature or break tsc mid-migration (the rb4-7
+// contravariance lesson). `as unknown as` is the honest bridge; needReap() does the
+// real RED verification at runtime.
+interface ApproachMirror {
+  reapBlimp?: (b: Blimp) => Blimp | null
+}
+let approach: ApproachMirror = {}
+beforeAll(async () => {
+  try {
+    approach = (await import('../../src/core/blimp')) as unknown as ApproachMirror
+  } catch {
+    approach = {}
   }
-  return { ndcPath, deletedWhileVisible, frames, despawned, final: b }
+})
+
+/** Fail loud-and-clear when the rb4-15 reap is missing (RED-friendly). */
+function needReap(): (b: Blimp) => Blimp | null {
+  if (approach.reapBlimp === undefined) {
+    throw new Error('src/core/blimp.ts must export reapBlimp(blimp) (rb4-15 RED contract)')
+  }
+  return approach.reapBlimp
 }
 
-describe('the blimp ENTERS from an edge, CROSSES the frame, and is not deleted while visible', () => {
-  it('(a) ENTERS near a screen EDGE — not near the centre, at any aspect', () => {
-    // The shipped bug: at the corrected cruise depth the airship entered at ndc 0.083..0.138 —
-    // 8% of the way from the centre of the screen. It did not "drift across the screen"; it
-    // materialised in the middle of it. rb2-10's AC says it enters from a side and drifts across.
+/** The width of the airship's REAL drawn geometry in NDC — the extent the player sees. */
+function drawnWidth(b: Blimp, aspect: number): number {
+  const xs = blimpSegments(b, projFor(aspect)).flatMap((s) => [s.x1, s.x2])
+  return Math.max(...xs) - Math.min(...xs)
+}
+
+/** Fly a blimp through step + reap until the reap takes it (or `maxFrames`). */
+function flyApproach(blimp: Blimp, maxFrames = 100) {
+  const reap = needReap()
+  const alive: Blimp[] = [blimp]
+  let reaped: Blimp | null = null
+  let b: Blimp = blimp
+  for (let f = 0; f < maxFrames; f++) {
+    const stepped = stepBlimp(b)
+    const kept = reap(stepped)
+    if (kept === null) {
+      reaped = stepped // the exact state the machine binned
+      break
+    }
+    b = kept
+    alive.push(b)
+  }
+  return { alive, reaped, despawned: reaped !== null }
+}
+
+describe('the airship ENTERS deep, its APPROACH is SEEN, and the reap is the ROM line (rb4-15)', () => {
+  it('(a) enters at the ROM depth, IN FRAME — a distant machine arriving, not a prop at the glass', () => {
+    // The drifter materialised at a hand-tuned cruise depth. The machine enters at
+    // Z = 0x1000 = 4096 (INITBP, RBARON.MAC:1425-1426) — visible on arrival, and ALIVE:
+    // the reap must not touch a freshly-entered airship (4096 is 30 ROM steps above the line).
     for (const aspect of [4 / 3, 16 / 9, 21 / 9]) {
       for (const seed of [1, 2, 7, 42, 100, 2024]) {
         const b = spawnBlimp(createRng(seed), aspect)
-        const ndc = blimpNdc(b, aspect)
-        expect(Math.abs(ndc), `seed ${seed} @ aspect ${aspect} entered at ndc ${ndc}`)
-          .toBeGreaterThanOrEqual(0.7) // hard against the edge…
-        expect(Math.abs(ndc)).toBeLessThanOrEqual(1) // …but IN FRAME, so it is visible on arrival
-        expect(Math.sign(ndc)).toBe(b.side) // and on the side it says it entered from
-        expect(blimpIsVisible(b, aspect), 'a freshly-spawned airship must be on screen').toBe(true)
-        expect(blimpOffScreen(b, aspect), 'and must not be instantly despawned').toBe(false)
+        expect(b.depth, `seed ${seed} @ aspect ${aspect}`).toBe(0x1000)
+        expect(blimpIsVisible(b, aspect), 'a freshly-entered airship must be on screen').toBe(true)
+        expect(needReap()(b), 'and must not be instantly reaped').not.toBeNull()
       }
     }
   })
 
-  it('(b) CROSSES the frame — entry edge, through the centre, out the FAR side', () => {
+  it('(b) THE APPROACH IS SEEN — the airship the player watches GROWS every calc-frame', () => {
+    // The one thing a constant-depth drifter can never do. Perspective is 1/depth: as the
+    // Z closes 4096 → 256, the drawn hull widens ~16x. Asked of the REAL blimpSegments —
+    // the same function main.ts strokes — so a model that "closes" a number no renderer
+    // reads cannot pass, and neither can the shipped cruise (its widths are all EQUAL).
     for (const seed of [1, 7, 42]) {
       const b0 = spawnBlimp(createRng(seed), ASPECT)
-      const { ndcPath, despawned, final } = flyCrossing(b0, ASPECT)
-
-      expect(despawned, 'the drift is unbounded — it must eventually leave and be reaped').toBe(true)
-      expect(Math.min(...ndcPath.map(Math.abs)), 'it must pass through the middle of the screen')
-        .toBeLessThan(0.1)
-      expect(Math.sign(final.x), 'it must exit on the OPPOSITE side from the one it entered')
-        .toBe(-b0.side)
-      // …and it must actually sail ACROSS: the far side of the frame, not just past centre.
-      expect(Math.max(...ndcPath.map((n) => (Math.sign(n) === -b0.side ? Math.abs(n) : 0))))
-        .toBeGreaterThan(0.9)
-    }
-  })
-
-  it('(c) is NEVER DELETED WHILE STILL VISIBLE — the whole hull must clear the frame first', () => {
-    // THE REGRESSION, stated as the property it violated. Ground truth for "visible" is the REAL
-    // blimpSegments — the same function main.ts strokes — so this cannot pass by the test and the
-    // game agreeing on a shared mistake. Against the shipped code (despawn at |x| > 640, cruise
-    // depth 2112) the airship is deleted at ndc 0.295 and this test lists every frame it happened.
-    for (const aspect of [4 / 3, 16 / 9, 21 / 9]) {
-      for (const seed of [1, 2, 7, 42]) {
-        const b0 = spawnBlimp(createRng(seed), aspect)
-        const { deletedWhileVisible } = flyCrossing(b0, aspect)
-        expect(
-          deletedWhileVisible,
-          `seed ${seed} @ aspect ${aspect}: the airship was despawned while its geometry was ` +
-            `still being drawn inside the frame. A despawn bound is a claim about the SCREEN — ` +
-            `ask it in projected space (screen.ts), not with a world constant fitted to one depth.`,
-        ).toEqual([])
+      const { alive, despawned } = flyApproach(b0)
+      expect(despawned, 'the approach must end — the reap takes it past the player').toBe(true)
+      const widths = alive.map((b) => drawnWidth(b, ASPECT))
+      for (let i = 1; i < widths.length; i++) {
+        expect(widths[i], `calc-frame ${i}: the airship must be LARGER than the frame before`)
+          .toBeGreaterThan(widths[i - 1])
       }
+      expect(
+        widths[widths.length - 1] / widths[0],
+        'entry to last-drawn must swell an order of magnitude — 4096 down to 256 is 16x',
+      ).toBeGreaterThan(8)
     }
   })
 
-  it('the despawn waits for the TAIL, not just the centre — the hull has a size', () => {
-    // A 40-unit airship whose CENTRE is exactly on the frame edge still has half of itself on
-    // screen. The despawn reasons about BLIMP_HULL_RADIUS, read off the airship's own vertices.
-    const depth = 2112
-    const onTheEdge: Blimp = {
-      x: frustumHalfWidth(depth, ASPECT), // centre exactly at ndc 1.0
-      y: 0, depth, deltaX: 1, bank: 0, side: 1, active: true,
+  it('(c) the reap is the ROM Z-line — never a frame early, and IN PLAIN VIEW when it comes', () => {
+    // INVERTS the drifter-era "never deleted while visible" FOR THE AIRSHIP — deliberately.
+    // That was the CROSSING's contract (a drifter leaves by the frame's edge). The machine
+    // is cleared by BLMOTN the frame Z drops below 0x100 (:4266-4270) — large, on screen,
+    // and gone, because it has flown past you. What must never happen is an EARLY reap.
+    for (const seed of [1, 2, 7, 42]) {
+      const { alive, reaped, despawned } = flyApproach(spawnBlimp(createRng(seed), ASPECT))
+      expect(despawned).toBe(true)
+      for (const b of alive) {
+        expect(b.depth, 'no state at or above the 0x100 line may be reaped').toBeGreaterThanOrEqual(0x100)
+      }
+      if (reaped === null) throw new Error('flyApproach reported despawned without the binned state')
+      expect(reaped.depth, 'the binned state sits below the ROM line').toBeLessThan(0x100)
+      expect(blimpIsVisible(reaped, ASPECT), 'the ROM clears it in plain view — it flew past').toBe(true)
     }
-    expect(blimpOffScreen(onTheEdge, ASPECT), 'half the hull is still in frame').toBe(false)
-    expect(blimpIsVisible(onTheEdge, ASPECT)).toBe(true)
-    expect(BLIMP_HULL_RADIUS).toBe(40) // the envelope's nose/tail, from BLIMP_POINTS
   })
 
-  it('is TOTAL — a NaN airship is reaped, not left drifting and firing forever', () => {
+  it('is TOTAL — a NaN airship is reaped, not left closing and firing forever', () => {
+    const reap = needReap()
     const base = spawnBlimp(createRng(1), ASPECT)
-    expect(blimpOffScreen({ ...base, x: Number.NaN }, ASPECT)).toBe(true)
-    expect(blimpOffScreen({ ...base, depth: Number.NaN }, ASPECT)).toBe(true)
-    expect(blimpOffScreen({ ...base, x: 0 }, ASPECT)).toBe(false) // 0 is a POSITION, not a sentinel
+    expect(reap({ ...base, x: Number.NaN })).toBeNull()
+    expect(reap({ ...base, depth: Number.NaN })).toBeNull()
+    expect(reap({ ...base, depth: 0x100 })).not.toBeNull() // the boundary state is ALIVE (CMP I,1 / BPL)
+    expect(reap({ ...base, x: 0 })).not.toBeNull() // 0 is a POSITION, not a sentinel
   })
 })
 
 // ─────────────────────────────────────────────────────────────────────────────────
-// THE CLASS IS DEAD, NOT THE INSTANCE — move the depth axis and NOTHING on screen moves
+// TOMBSTONE (rb4-15) — "the SAME SCREEN PATH whatever depth it cruises at" is RETIRED
 // ─────────────────────────────────────────────────────────────────────────────────
-
-describe('the airship flies the SAME SCREEN PATH whatever depth it cruises at', () => {
-  /**
-   * The same airship (same seed, same frame), re-based to cruise at an arbitrary depth. The
-   * entry NDC and the drift are re-derived through screen.ts at that depth — which is exactly
-   * what `spawn` does — so this is the airship you would get if CRUISE_DEPTH were `depth`.
-   */
-  function atCruiseDepth(seed: number, depth: number, aspect: number): Blimp {
-    const b = spawnBlimp(createRng(seed), aspect)
-    const entryNdc = ndcX(b.x, b.depth, aspect) // the entry the spawn actually chose
-    return {
-      ...b,
-      depth,
-      x: worldX(entryNdc, depth, aspect),
-      deltaX: -b.side * blimpDriftPerFrame(depth, aspect),
-    }
-  }
-
-  it('THE PROPERTY: entry, drift and crossing are identical at 600, 2112 and 4224', () => {
-    // This is the test that ends the class. Round 2 moved CRUISE_DEPTH 600 -> 2112 and broke the
-    // game. Under the old code this fails instantly: at 600 the airship entered at ndc 0.292 and
-    // at 2112 at ndc 0.083, and the crossing took four times as long. Now the depth is a free
-    // variable that the player cannot see, which is what "denominated in the screen" MEANS.
-    for (const seed of [1, 7, 42]) {
-      const runs = [600, 2112, P_INDP].map((depth) => {
-        const b = atCruiseDepth(seed, depth, ASPECT)
-        return { depth, ...flyCrossing(b, ASPECT) }
-      })
-
-      const [a, b, c] = runs
-      // the entry is the same PLACE ON THE SCREEN
-      expect(b.ndcPath[0]).toBeCloseTo(a.ndcPath[0], 9)
-      expect(c.ndcPath[0]).toBeCloseTo(a.ndcPath[0], 9)
-      // …and so is every frame of the crossing WHILE IT IS ON SCREEN
-      const onScreen = (path: number[]): number[] => path.filter((n) => Math.abs(n) <= 1)
-      expect(onScreen(b.ndcPath).length).toBe(onScreen(a.ndcPath).length)
-      expect(onScreen(c.ndcPath).length).toBe(onScreen(a.ndcPath).length)
-      onScreen(a.ndcPath).forEach((n, i) => {
-        expect(onScreen(b.ndcPath)[i]).toBeCloseTo(n, 9)
-        expect(onScreen(c.ndcPath)[i]).toBeCloseTo(n, 9)
-      })
-      // …and at every depth it leaves, and never in view
-      for (const r of runs) {
-        expect(r.despawned, `depth ${r.depth} never despawned`).toBe(true)
-        expect(r.deletedWhileVisible, `depth ${r.depth}`).toEqual([])
-      }
-    }
-  })
-
-  it('the airship takes ~10 s of screen to cross, at any depth — not 40 s at one and 10 at another', () => {
-    // The drift was `12 world units per calc-frame`: 1% of the frame per frame at the old depth,
-    // 0.28% at the new one. The SAME constant, a 3.5x difference in pace, decided by a number in
-    // a different file. It is denominated in SECONDS OF SCREEN now (DRIFT_CROSSING_SECONDS).
-    const SIM_HZ = 250 / 24 // timing.ts — the ~10.42 Hz calc-frame cadence
-    for (const depth of [600, 2112, P_INDP]) {
-      const drift = blimpDriftPerFrame(depth, ASPECT)
-      const framesToCrossFullWidth = (2 * frustumHalfWidth(depth, ASPECT)) / drift
-      expect(framesToCrossFullWidth / SIM_HZ, `depth ${depth}`).toBeCloseTo(10, 6)
-    }
-  })
-})
+//
+// rb4-1's class-killer property made CRUISE_DEPTH a free variable the player cannot
+// see, and proved it by flying the crossing at 600 / 2112 / 4224. rb4-15 DELETES the
+// variable: the ROM pins the airship's depth axis outright — enters at 0x1000, closes
+// 0x80 per calc-frame, cleared below 0x100 (INITBP :1425-1426, BLMOTN :4259-4270).
+// A property sweeping the cruise depth would now sweep states the machine cannot
+// occupy. What replaces it is the transcription itself (blimp-approach.test.ts) plus
+// the GROWTH property above — the screen-visible consequence of the depth actually
+// moving. DRIFT_CROSSING_SECONDS and blimpDriftPerFrame, the crossing's pace
+// apparatus, retire with the drifter; the REGISTERED entry below is kept as a
+// tombstone so a reintroduced name lands back in this sweep instantly.
 
 // ─────────────────────────────────────────────────────────────────────────────────
 // THE BURST + THE LOD — the other two members of the class, measured
@@ -478,8 +445,10 @@ const REGISTERED: ReadonlyMap<string, string> = new Map([
   ['SPAWN_NDC_Y_RANGE', "blimp.ts — the vertical spawn spread, as a fraction of the frame's half-height."],
   [
     'DRIFT_CROSSING_SECONDS',
-    'blimp.ts — the drift, denominated in SECONDS OF SCREEN. Was `DRIFT_SPEED = 12 world units ' +
-      'per frame`, which is 1% of the frame per frame at one depth and 0.28% at another.',
+    'blimp.ts — a TOMBSTONE (rb4-15). Was the drifter\'s crossing pace in seconds of screen; ' +
+      'the ROM machine APPROACHES on a transcribed Z rate (BLIMP_CLOSE_SPEED, BLMOTN ' +
+      ':4259-4265) and never crosses, so the apparatus is retired. Kept so a reintroduced ' +
+      'NAME lands back in this sweep instantly.',
   ],
   [
     'DEBRIS_SPREAD_NDC',
@@ -540,9 +509,10 @@ const NOT_A_SCREEN_CONSTANT: ReadonlyMap<string, string> = new Map([
   ],
   [
     'BLIMP_HULL_RADIUS',
-    "blimp.ts — the airship's bounding radius (40), read off BLIMP_POINTS. Also an object " +
-      'dimension: it is what lets the despawn wait for the TAIL to clear the frame rather than ' +
-      'the centre. It is in WORLD units on purpose — the hull does not resize when the window does.',
+    "blimp.ts — the airship's bounding radius (40), read off BLIMP_POINTS. An object " +
+      'dimension in WORLD units on purpose — the hull does not resize when the window does. ' +
+      '(Its despawn role is RETIRED by rb4-15 — the reap is a depth question now; the ' +
+      'constant may outlive it or go, and either is fine by this sweep.)',
   ],
   [
     'ALT_TO_Y',
@@ -740,7 +710,7 @@ describe('COMPLETENESS — every screen-denominated constant is enumerated, or t
       'mountainSegments', // core/landscape  — tests/core/landscape.test.ts, mountain-render-data
       'groundTargetSegments', // core/ground-targets — tests/core/ground-targets.test.ts (stroke laws) + ground-target-wiring (rb4-11)
       'wreckSegments', //    core/wreck-render — screen-scale (the debris burst)
-      'blimpSegments', //    core/blimp      — screen-scale (the crossing, the despawn)
+      'blimpSegments', //    core/blimp      — screen-scale (the approach, the reap)
       'shellSegments', //    core/guns       — tracer-seam (the drawn depth IS the kill depth)
       'renderModel', //      core/biplane    — tests/core/biplane.test.ts
       'propSegments', //     core/prop       — tests/core/prop.test.ts (the enemy prop, rb4-9)

@@ -1,53 +1,58 @@
 // tests/core/blimp.test.ts
 //
-// Story rb2-10 — RED phase (Han Solo / TEA). The Blimp / Zeppelin: the ONE enemy
-// the sky owes the player that ISN'T a weaving biplane. It rolls in on a ~25 %
-// chance, DRIFTS steadily across the screen (it does NOT weave/reverse like the
-// biplane window-follower), fires at the player, and is worth a flat 200 pts when
-// gunned down — drawn with the authentic BLIMP/DBLIMP picture-ROM geometry.
-// Grounded in findings §3 ("Blimp/Zeppelin — BLMOTN, R2BRON.MAC:4165+: ~25 % random
-// spawn, drifts across, also fires at the player, worth 200 pts. There is no
-// separate barrage balloon — the airship is the blimp. [ROM-verified]") and §4
-// (blimp = 200 pts, flat).
+// Story rb2-10 (RED, Han Solo / TEA) — RE-SEATED by rb4-15 (Imperator Furiosa / TEA).
+// The Blimp / Zeppelin: the ONE enemy the sky owes the player that ISN'T a weaving
+// biplane. rb2-10 built it as a constant-depth lateral drifter from findings §3;
+// rb4-15's coverage review CONFIRMED that model FALSE (CD-005 — it borrowed the
+// plane's div-by-2 fire and invented the cruise). The machine is an APPROACHING
+// airship: Z-closing, N.PLNZ-gated, ÷4 fire, GMLEVL >= 2. Still worth a flat 200 pts,
+// still the authentic BLIMP/DBLIMP picture-ROM geometry — there is no separate
+// barrage balloon; the airship is the blimp.
 //
-// CONTRACT for the GREEN phase (Yoda / DEV): create `src/core/blimp.ts`, the pure
-// blimp sim, exporting:
+// CONTRACT (re-seated by rb4-15 RED — THE BLIMP IS THE WRONG MACHINE): `src/core/blimp.ts`
+// models an APPROACHING airship, not a constant-depth lateral drifter. Exports:
 //
-//   // --- ROM-exact data (findings §3, BLMOTN) ---
-//   export const BLIMP_SPAWN_CHANCE: number   // ~25 % random spawn = 0.25 (findings §3).
-//                                              // A SEPARATE roll from enemy.ts's 25 %
-//                                              // LONE_PLANE_CHANCE (lone-vs-formation) —
-//                                              // this one decides "a blimp appears at all".
+//   // --- ROM-exact data (RBARON.MAC, the citable ~/Projects/red-baron-source-text copy) ---
+//   export const BLIMP_Z_START = 0x1000     // entry Z (INITBP :1425-1426)
+//   export const BLIMP_CLOSE_SPEED = 0x80   // Z closed per calc-frame (BLMOTN :4259-4265)
+//   export const BLIMP_PLANE_GATE = 4       // the N.PLNZ spawn gate (:2325-2327)
+//   export const BLIMP_SPAWN_CHANCE = 0.25  // SURVIVES — the AND 0C roll (:2328-2330).
+//                                            // Still a SEPARATE roll from enemy.ts's 25 %
+//                                            // LONE_PLANE_CHANCE (lone-vs-formation).
 //
 //   export interface Blimp {
-//     readonly x: number        // screen-window X — DRIFTS across centre (0), one direction
+//     readonly x: number        // screen-window X
 //     readonly y: number        // vertical offset — random at spawn
-//     readonly depth: number    // Z in front of the eye (> 0); the airship cruises, drifts sideways
-//     readonly deltaX: number   // drift velocity — CONSTANT SIGN (never reverses; not a weave)
+//     readonly depth: number    // Z in front of the eye — ENTERS at 0x1000 and CLOSES
+//     readonly deltaX: number   // lateral velocity (the ROM's BLOBJ+0C — unpinned here)
 //     readonly bank: number     // roll (radians): a Zeppelin flies LEVEL — 0 (inferred; see deviations)
-//     readonly side: -1 | 1     // the screen side it entered from; it drifts toward the OTHER side
+//     readonly side: -1 | 1     // the screen side it entered from
 //     readonly active: boolean  // D7 "active" status bit
 //   }
 //
-//   export function shouldSpawnBlimp(roll: number): boolean  // the ~25 % roll: roll < BLIMP_SPAWN_CHANCE
-//   export function spawn(rng: Rng, aspect: number): Blimp    // side entry, drifting across; consumes the Rng
-//                                                             // (rb4-1 added `aspect` — see ASPECT below)
-//   export function step(blimp: Blimp): Blimp                 // one calc-frame of steady drift
-//   export function blimpFires(frame: number): boolean        // ÷2 FRAME cadence; ALWAYS a threat (no level gate)
+//   export function shouldSpawnBlimp(planeCount: number, roll: number): boolean
+//                       // TWO gates: planeCount >= BLIMP_PLANE_GATE, then roll < 0.25
+//   export function blimpFires(frame: number, level: number): boolean
+//                       // SHLAUN: FRAME & 3 === 0 (:4027-4030) AND GMLEVL >= 2 (:4038-4041)
+//   export function spawn(rng: Rng, aspect: number): Blimp    // depth = BLIMP_Z_START
+//   export function step(blimp: Blimp): Blimp                 // depth -= BLIMP_CLOSE_SPEED
+//   export function reapBlimp(blimp: Blimp): Blimp | null     // null once depth < 0x100 (:4266-4270)
 //
-// WHY THIS SHAPE (cited — findings §3/§4, R2BRON.MAC):
-//   * SPAWN ~25 % (BLMOTN): the blimp appears on a random roll, distinct from the score-
-//     scaled plane waves. This is a SEPARATE 25 % from enemy.LONE_PLANE_CHANCE — the test
-//     pins BLIMP_SPAWN_CHANCE in the blimp module and the strict `< 0.25` boundary.
-//   * DRIFTS ACROSS, NOT A WEAVE: the biplane (enemy.ts) accelerates ΔX toward the window
-//     limits and REVERSES at the bounds (ΔX takes both signs). The blimp does the OPPOSITE —
-//     one steady drift with a CONSTANT-SIGN velocity, carrying it from its entry side across
-//     centre to the far side. This is the load-bearing behavioural contrast, tested directly.
-//   * ALSO FIRES AT THE PLAYER: unlike the early-game sky where a plane's "@ PLAYER" bit is
-//     level-gated (planeFires level < 4 → never), the blimp is a threat whenever it is present.
-//     `blimpFires(frame)` takes NO level and fires on the established ÷2 FRAME cadence (findings
-//     §3, PLNSHL). The ÷2 phase and the no-level-gate reading are inferred (BLMOTN's fire detail
-//     is not byte-transcribed) — tested behaviourally + logged as deviations/findings.
+// The full ROM derivation + the machine's boundary matrix live in
+// tests/core/blimp-approach.test.ts. This file keeps the ENTITY's integration seams
+// (geometry, scoring, collision, explosion, purity) and re-seats what the drifter
+// premise poisoned.
+//
+// WHY THIS SHAPE (re-derived firsthand from RBARON.MAC this session):
+//   * TWO-GATE SPAWN (:2325-2331): LDA N.PLNZ / CMP I,4 / BCC skip — no blimp until four
+//     planes have appeared in the game — THEN RANDOM / AND I,0C / BNE skip, the 1-in-4
+//     roll. The shipped single-roll reading dropped the first gate entirely.
+//   * APPROACHES, NOT A DRIFTER (INITBP + BLMOTN): enters at Z = 0x1000 = 4096 and closes
+//     0x80 = 128 per calc-frame; below Z = 0x100 the ROM CLEARS BLOBJ — it flew past you.
+//     The "steady constant-depth crossing" we shipped is CD-005's false certification.
+//   * FIRES THROUGH THE SHARED SHLAUN (BLMOTN :4229 calls it): 1 frame in 4 (AND I,3),
+//     and ONLY at GMLEVL >= 2 ("NO GROUND SHELLS @ LOWER LEVELS") — the shipped ÷2
+//     no-level-gate blimp is the plane's fire model wearing an envelope.
 //   * 200 PTS, FLAT: the kill scores the flat BLIMP_SCORE=200 at ANY depth (findings §4). The
 //     score half already shipped in scoring.ts (rb2-6 stub); this suite drives the blimp ENTITY
 //     through the REAL scoreKill('blimp', …) so the kill payoff is wired, not just the constant.
@@ -90,10 +95,11 @@ interface Blimp {
 
 interface BlimpModule {
   BLIMP_SPAWN_CHANCE?: number
-  shouldSpawnBlimp?: (roll: number) => boolean
+  BLIMP_PLANE_GATE?: number
+  shouldSpawnBlimp?: (planeCount: number, roll: number) => boolean
   spawn?: (rng: Rng, aspect: number) => Blimp
   step?: (blimp: Blimp) => Blimp
-  blimpFires?: (frame: number) => boolean
+  blimpFires?: (frame: number, level: number) => boolean
 }
 
 let m: BlimpModule = {}
@@ -117,7 +123,12 @@ const ASPECT = 16 / 9
 
 beforeAll(async () => {
   try {
-    m = (await import('../../src/core/blimp')) as BlimpModule
+    // as unknown as: the source is mid-migration from the drifter's one-argument
+    // shouldSpawnBlimp/blimpFires — a function-typed member is contravariant in its
+    // parameters, so the old and TARGET signatures reconcile in neither direction
+    // (TS2352, the rb4-7 lesson). The mirror still types every member; the runtime
+    // need() + assertions do the real RED verification.
+    m = (await import('../../src/core/blimp')) as unknown as BlimpModule
   } catch {
     m = {}
   }
@@ -137,7 +148,7 @@ const spawnAt = (seed = 1): Blimp => need(m.spawn, 'spawn')(createRng(seed), ASP
 /** Override Blimp fields while carrying whatever extra fields Dev adds (robust hand-build). */
 const withBlimp = (overrides: Partial<Blimp>, seed = 1): Blimp => ({ ...spawnAt(seed), ...overrides })
 
-/** Advance a blimp `n` calc frames, returning the per-frame trace of the drift. */
+/** Advance a blimp `n` calc frames, returning the per-frame trace of its motion. */
 function trace(seed: number, n: number): { xs: number[]; deltas: number[]; depths: number[]; banks: number[] } {
   const step = need(m.step, 'step')
   let b = spawnAt(seed)
@@ -173,9 +184,12 @@ const asTarget = (b: Blimp): Enemy => ({
 })
 
 // ───────────────────────────────────────────────────────────────────────────
-// AC-1 — the ~25 % random spawn roll (findings §3, BLMOTN)
+// AC-1 — the two-gate spawn: N.PLNZ >= 4, THEN the ~25 % roll (rb4-15, :2325-2331)
+// (The full gate matrix — below-gate, at-gate, arg-order discriminators — lives in
+// blimp-approach.test.ts; here the 25 % roll's SURVIVING contract is re-seated to
+// the two-argument call with the plane gate held open.)
 // ───────────────────────────────────────────────────────────────────────────
-describe('blimp — ~25 % random spawn roll (findings §3, BLMOTN)', () => {
+describe('blimp — the surviving ~25 % roll, behind the N.PLNZ gate (rb4-15)', () => {
   it('BLIMP_SPAWN_CHANCE is the 25 % ROM roll', () => {
     expect(need(m.BLIMP_SPAWN_CHANCE, 'BLIMP_SPAWN_CHANCE')).toBeCloseTo(0.25, 12)
   })
@@ -189,22 +203,24 @@ describe('blimp — ~25 % random spawn roll (findings §3, BLMOTN)', () => {
     expect(need(m.BLIMP_SPAWN_CHANCE, 'BLIMP_SPAWN_CHANCE')).toBeLessThan(1)
   })
 
-  it('shouldSpawnBlimp fires strictly BELOW the chance — the boundary is < 0.25, not ≤', () => {
-    const roll = need(m.shouldSpawnBlimp, 'shouldSpawnBlimp')
+  it('with the plane gate OPEN, the roll fires strictly BELOW the chance — < 0.25, not ≤', () => {
+    const gate = need(m.shouldSpawnBlimp, 'shouldSpawnBlimp')
     const chance = need(m.BLIMP_SPAWN_CHANCE, 'BLIMP_SPAWN_CHANCE')
-    expect(roll(0)).toBe(true) // a roll of 0 always spawns
-    expect(roll(chance - 0.01)).toBe(true) // just inside the 25 % band
-    expect(roll(chance)).toBe(false) // strict boundary — exactly at the chance does NOT spawn
-    expect(roll(chance + 0.01)).toBe(false) // just outside
-    expect(roll(0.99)).toBe(false) // the common case: no blimp
+    const OPEN = need(m.BLIMP_PLANE_GATE, 'BLIMP_PLANE_GATE') // four planes have appeared
+    expect(gate(OPEN, 0)).toBe(true) // a roll of 0 spawns, once the sky has earned it
+    expect(gate(OPEN, chance - 0.01)).toBe(true) // just inside the 25 % band
+    expect(gate(OPEN, chance)).toBe(false) // strict boundary — exactly at the chance does NOT spawn
+    expect(gate(OPEN, chance + 0.01)).toBe(false) // just outside
+    expect(gate(OPEN, 0.99)).toBe(false) // the common case: no blimp
   })
 
   it('is TOTAL on a degenerate roll — NaN / negative / ≥1 never crash, and fail SAFE (no phantom spawn)', () => {
-    const roll = need(m.shouldSpawnBlimp, 'shouldSpawnBlimp')
-    expect(roll(Number.NaN)).toBe(false) // a NaN roll must not conjure a blimp
-    expect(roll(Number.POSITIVE_INFINITY)).toBe(false)
-    expect([true, false]).toContain(roll(-1)) // a negative roll returns a real boolean, no throw
-    expect([true, false]).toContain(roll(2))
+    const gate = need(m.shouldSpawnBlimp, 'shouldSpawnBlimp')
+    const OPEN = need(m.BLIMP_PLANE_GATE, 'BLIMP_PLANE_GATE')
+    expect(gate(OPEN, Number.NaN)).toBe(false) // a NaN roll must not conjure a blimp
+    expect(gate(OPEN, Number.POSITIVE_INFINITY)).toBe(false)
+    expect([true, false]).toContain(gate(OPEN, -1)) // a negative roll returns a real boolean, no throw
+    expect([true, false]).toContain(gate(OPEN, 2))
   })
 })
 
@@ -244,74 +260,45 @@ describe('blimp — draws the authentic BLIMP/DBLIMP picture (findings §7, topo
 })
 
 // ───────────────────────────────────────────────────────────────────────────
-// AC-3 — DRIFTS across the screen: steady one-way motion, NOT a weave
+// AC-3 — APPROACHES (rb4-15): the depth CLOSES every calc-frame, it does not cruise
+// (Re-seated from the drifter model. The full machine — entry 0x1000, close 0x80,
+// cleared below 0x100, the 31-frame life — is pinned in blimp-approach.test.ts;
+// this block keeps the entity-level facts the rest of this file leans on. The
+// ROM's lateral BLOBJ+0C velocity is deliberately UNPINNED — see Design Deviations.)
 // ───────────────────────────────────────────────────────────────────────────
-describe('blimp — drifts across (BLMOTN), NOT the biplane weave', () => {
-  it('drifts with a CONSTANT-SIGN velocity — it never reverses like the window-follower', () => {
-    // THE load-bearing contrast with enemy.step (whose ΔX takes BOTH signs as it weaves): the
-    // blimp holds ONE drift direction the whole time. Collect the ΔX over a long run — every
-    // sample must share the spawn's sign, and none may be zero (a stalled blimp isn't drifting).
-    const { deltas } = trace(7, 400)
-    const s = Math.sign(deltas[0])
-    expect(s).not.toBe(0) // it is actually moving at spawn
-    for (const d of deltas) {
-      expect(Math.sign(d)).toBe(s) // same direction forever — no reversal
+describe('blimp — approaches (BLMOTN :4259-4265), NOT the constant-depth drifter', () => {
+  it('the depth strictly DECREASES every calc-frame — an approach, never a cruise', () => {
+    // THE load-bearing contrast with the machine this story deletes: the shipped blimp
+    // held ONE depth for its whole life. The ROM's closes, every single frame.
+    const { depths } = trace(7, 30) // 30 steps — the span the ROM keeps it alive
+    for (let i = 1; i < depths.length; i++) {
+      expect(depths[i], `calc-frame ${i}`).toBeLessThan(depths[i - 1])
     }
   })
 
-  it('drifts AWAY from its entry side — inward across centre, not off the edge it came from', () => {
-    // Entering from the right (side +1) it must drift LEFT (ΔX < 0) toward and past centre;
-    // entering from the left, the mirror. A blimp that drifted back off its own edge would
-    // never cross the player's view.
-    for (const seed of [1, 2, 7, 42, 100]) {
-      const b = spawnAt(seed)
-      expect(b.side === -1 || b.side === 1).toBe(true)
-      expect(Math.sign(b.x)).toBe(b.side) // enters on its side
-      expect(Math.sign(b.deltaX)).toBe(-b.side) // …and drifts toward the OTHER side
+  it('closes at ONE constant rate — the same Z delta every frame, no easing, no reversal', () => {
+    const { depths } = trace(11, 30)
+    const delta = depths[0] - depths[1]
+    expect(delta).toBeGreaterThan(0)
+    for (let i = 1; i < depths.length; i++) {
+      expect(depths[i - 1] - depths[i], `calc-frame ${i}`).toBe(delta)
     }
   })
 
-  it('actually crosses the screen — from its entry side, through centre, to the FAR side', () => {
-    // Run long enough for the observed drift to carry it across (adaptive to Dev's tuning:
-    // frames ≈ 2·|x0| / |ΔX|, plus margin — robust whether the drift is fast or slow).
-    const step = need(m.step, 'step')
-    for (const seed of [1, 7, 42]) {
-      const b0 = spawnAt(seed)
-      const framesToCross = Math.ceil((2 * Math.abs(b0.x)) / Math.max(1e-9, Math.abs(b0.deltaX))) + 10
-      let b = b0
-      let crossedCentre = false
-      for (let i = 0; i < framesToCross * 2; i++) {
-        b = step(b)
-        if (Math.sign(b.x) === -b0.side) crossedCentre = true
-      }
-      expect(crossedCentre).toBe(true) // reached the far side — a genuine drift ACROSS
-    }
-  })
-
-  it('x moves MONOTONICALLY in the drift direction — no back-and-forth', () => {
-    // Constant-sign velocity ⇒ x is monotone. A weave would fail this immediately.
-    const { xs } = trace(7, 200)
-    const dir = Math.sign(xs[1] - xs[0])
-    expect(dir).not.toBe(0)
-    for (let i = 1; i < xs.length; i++) {
-      expect(Math.sign(xs[i] - xs[i - 1]) === dir || xs[i] === xs[i - 1]).toBe(true)
-    }
-  })
-
-  it('cruises at a positive, finite depth in front of the eye for the whole drift', () => {
-    // The airship drifts SIDEWAYS; whatever the depth model, it must never go NaN or behind the
-    // eye (depth ≤ 0), which would invert the render and break collision projection.
-    const { depths } = trace(7, 400)
+  it('stays at a positive, finite depth in front of the eye for its whole ROM life', () => {
+    // 30 steps take 0x1000 down to exactly 0x100 — the last alive state. Everything the
+    // reap will keep must be drawable: finite, in front of the eye.
+    const { depths } = trace(7, 30)
     for (const d of depths) {
       expect(Number.isFinite(d)).toBe(true)
       expect(d).toBeGreaterThan(0)
     }
   })
 
-  it('flies LEVEL — a Zeppelin does not bank into a turn (bank stays 0 through the drift)', () => {
+  it('flies LEVEL — a Zeppelin does not bank into a turn (bank stays 0 through the approach)', () => {
     // Inferred (BLMOTN attitude not byte-transcribed): the airship has no roll. A genuine 0,
     // held across the run — 0 is a real bank, not an unset/falsy default (rule #4).
-    const { banks } = trace(7, 200)
+    const { banks } = trace(7, 30)
     for (const bk of banks) expect(bk).toBe(0)
   })
 
@@ -323,61 +310,63 @@ describe('blimp — drifts across (BLMOTN), NOT the biplane weave', () => {
     expect(JSON.stringify(b)).toBe(snapshot) // no mutation of the input (readonly contract)
   })
 
-  it('a blimp exactly AT centre (x = 0) keeps drifting through — 0 is a position, not a stop (rule #4)', () => {
-    // The classic numeric-zero-is-falsy trap: x = 0 is a VALID coordinate mid-crossing, not an
-    // "unplaced" sentinel. Stepping a blimp sitting at centre must carry it off centre by ΔX.
+  it('a blimp exactly AT the boresight (x = 0) still closes — 0 is a position, not a stop (rule #4)', () => {
+    // The classic numeric-zero-is-falsy trap: x = 0 is a VALID coordinate dead ahead, not an
+    // "unplaced" sentinel. Stepping it must still close the depth like any other state.
     const step = need(m.step, 'step')
     const b = withBlimp({ x: 0 })
     const next = step(b)
-    expect(next.x).not.toBe(0) // it moved through centre
-    expect(Math.sign(next.x)).toBe(Math.sign(b.deltaX)) // …in the drift direction
+    expect(next.depth).toBeLessThan(b.depth) // the approach does not stall at centre
+    expect(Number.isFinite(next.x)).toBe(true)
   })
 })
 
 // ───────────────────────────────────────────────────────────────────────────
-// AC-4 — fires at the player (findings §3: "also fires at the player")
+// AC-4 — fires through the SHARED SHLAUN: ÷4 cadence, GMLEVL >= 2 (rb4-15)
 // ───────────────────────────────────────────────────────────────────────────
-describe('blimp — fires at the player (BLMOTN), on the ÷2 cadence, always a threat', () => {
-  /** Which of frames 0..n-1 the blimp fires on. */
-  const fireFrames = (n: number): number[] => {
+describe('blimp — fires via SHLAUN (:4027-4041): 1 frame in 4, and only at GMLEVL >= 2', () => {
+  /** Which of frames 0..n-1 the blimp fires on, at `level`. */
+  const fireFrames = (n: number, level: number): number[] => {
     const fires = need(m.blimpFires, 'blimpFires')
     const out: number[] = []
-    for (let f = 0; f < n; f++) if (fires(f)) out.push(f)
+    for (let f = 0; f < n; f++) if (fires(f, level)) out.push(f)
     return out
   }
 
-  it('DOES fire — it is a real threat, not an inert drifter', () => {
-    // The whole point of the blimp over a barrage balloon: it shoots. At least some frame fires.
-    expect(fireFrames(12).length).toBeGreaterThan(0)
+  it('DOES fire at a firing level — it is a real threat, not an inert target', () => {
+    expect(fireFrames(12, 2).length).toBeGreaterThan(0)
   })
 
-  it('fires on the ÷2 cadence — half of consecutive frames, never two in a row (findings §3, PLNSHL)', () => {
-    const elig = fireFrames(10)
-    expect(elig.length).toBe(5) // half of 10 frames
-    for (let i = 1; i < elig.length; i++) expect(elig[i] - elig[i - 1]).toBeGreaterThanOrEqual(2)
+  it('fires on the ÷4 cadence — LDA FRAME / AND I,3 ;1 OUT OF 4 FRAMES (:4027-4030)', () => {
+    // A quarter of consecutive frames, never closer than 4 apart. The drifter's ÷2 —
+    // borrowed from the plane's PLNSHL — fired twice as often as the machine.
+    const elig = fireFrames(16, 2)
+    expect(elig.length).toBe(4) // a quarter of 16 frames
+    for (let i = 1; i < elig.length; i++) expect(elig[i] - elig[i - 1]).toBe(4)
   })
 
-  it('is a threat REGARDLESS of level — unlike a low-level plane, which never shoots back', () => {
-    // findings §3: a plane's "@ PLAYER" bit is level-gated (level < 4 → planeFires never true).
-    // The blimp is "also fires at the player" with NO such gate — it menaces the early sky the
-    // planes leave quiet. Contrast the REAL planeFires against the blimp on the same frames.
+  it('the EARLY sky is quiet on both counts — below GMLEVL 2 the blimp holds fire, like the low-level plane', () => {
+    // INVERTS the drifter's "threat at every level" (that reading is CONFIRMED FALSE — the
+    // blimp's shells launch through SHLAUN, and :4038-4041 skips them below GMLEVL 2).
+    // At level 2 the CONTRAST with the plane appears: planeFires is still level-gated shut
+    // (level < 4 → never), while the blimp opens up — it menaces the MID sky first.
     const fires = need(m.blimpFires, 'blimpFires')
-    let blimpEverFires = false
     for (let f = 0; f < 8; f++) {
-      // a level-0 plane never fires on any frame or roll…
-      for (const rollValue of [0, 0.4, 0.9]) expect(planeFires(0, f, rollValue)).toBe(false)
-      if (fires(f)) blimpEverFires = true
+      expect(fires(f, 0), `frame ${f}, level 0`).toBe(false)
+      expect(fires(f, 1), `frame ${f}, level 1`).toBe(false)
+      for (const rollValue of [0, 0.4, 0.9]) expect(planeFires(2, f, rollValue)).toBe(false)
     }
-    expect(blimpEverFires).toBe(true) // …but the blimp does, at level 0
+    expect(fireFrames(8, 2).length).toBeGreaterThan(0) // …but the blimp fires at level 2
   })
 
-  it('is deterministic and TOTAL — frame 0 is a real frame, degenerate frames never crash (rule #4)', () => {
+  it('is deterministic and TOTAL — frame 0 is a real frame, degenerate inputs never crash (rule #4)', () => {
     const fires = need(m.blimpFires, 'blimpFires')
-    expect(fires(0)).toBe(fires(0)) // deterministic
-    expect(typeof fires(0)).toBe('boolean') // frame 0 is a genuine decision, not a falsy skip
+    expect(fires(0, 2)).toBe(fires(0, 2)) // deterministic
+    expect(typeof fires(0, 2)).toBe('boolean') // frame 0 is a genuine decision, not a falsy skip
     for (const f of [-1, 2.5, Number.NaN, Number.POSITIVE_INFINITY]) {
-      expect(typeof fires(f)).toBe('boolean') // total — a boolean for any frame, no throw
+      expect(typeof fires(f, 2)).toBe('boolean') // total — a boolean for any frame, no throw
     }
+    expect(fires(0, Number.NaN)).toBe(false) // a NaN level is not >= 2 — fails safe
   })
 })
 
