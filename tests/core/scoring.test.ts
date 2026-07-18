@@ -224,11 +224,18 @@ describe('scoring — drones & the blimp are flat, depth-independent (findings �
 // AC-4 — OBJKLD → GMLEVL: the kill-driven difficulty ramp
 // ───────────────────────────────────────────────────────────────────────────
 describe('scoring — OBJKLD → GMLEVL ramp (PLNLVL, findings §3)', () => {
-  it('indexes PLNLVL by the kill count — every entry maps exactly', () => {
+  // rb4-7 RE-BASELINE (AC-1): the ROM HALVES the kill count before the lookup —
+  // GMLEVL = PLNLVL[min(OBJKLD>>1, 0x10)] (RBARON.MAC:2403 `LSR`, :2404 `CMP I,10`). This
+  // block used to pin the DIRECT index PLNLVL[k], which ramped the difficulty twice as fast
+  // as the arcade's. The three value-pins below are re-seated to the >>1 index; the halve is
+  // pinned in full at tests/core/mission-clock.test.ts.
+  const romGmlevl = (k: number): number => EXPECTED_PLNLVL[Math.min(k >> 1, EXPECTED_PLNLVL.length - 1)]
+
+  it('indexes PLNLVL by kills>>1 — the kill count is HALVED before the lookup (rb4-7 AC-1)', () => {
     const gmlevlForKills = need(m.gmlevlForKills, 'gmlevlForKills')
-    EXPECTED_PLNLVL.forEach((level, kills) => {
-      expect(gmlevlForKills(kills)).toBe(level) // OBJKLD k → PLNLVL[k]
-    })
+    for (let kills = 0; kills <= 40; kills++) {
+      expect(gmlevlForKills(kills)).toBe(romGmlevl(kills)) // OBJKLD k → PLNLVL[min(k>>1, 16)]
+    }
   })
 
   it('starts at level 0 with no kills (0 is a REAL level, not a falsy default — rule #4)', () => {
@@ -242,17 +249,20 @@ describe('scoring — OBJKLD → GMLEVL ramp (PLNLVL, findings §3)', () => {
     }
   })
 
-  it('specific rungs: 4 kills → level 1, 5 → level 2, 16 → level 5 (findings §3)', () => {
+  it('specific rungs at TWICE the kills (rb4-7 AC-1): 8 kills → level 1, 10 → level 2, 32 → level 5', () => {
+    // Re-seated from 4→1, 5→2, 16→5 (the direct index) to the >>1 index: it now takes twice
+    // the kills to reach each rung. 8>>1=4 → PLNLVL[4]=1; 10>>1=5 → PLNLVL[5]=2; 32>>1=16 → 5.
     const gmlevlForKills = need(m.gmlevlForKills, 'gmlevlForKills')
-    expect(gmlevlForKills(4)).toBe(1)
-    expect(gmlevlForKills(5)).toBe(2)
-    expect(gmlevlForKills(16)).toBe(5)
+    expect(gmlevlForKills(8)).toBe(1)
+    expect(gmlevlForKills(10)).toBe(2)
+    expect(gmlevlForKills(32)).toBe(5)
   })
 
   it('saturates at MAX_GMLEVL — a huge kill count never exceeds the .LEVLS ceiling', () => {
+    // Re-seated: the clamp bites at kills>>1 === 16, i.e. kills >= 32 (RBARON.MAC:2404 CMP I,10).
     const gmlevlForKills = need(m.gmlevlForKills, 'gmlevlForKills')
     const max = need(m.MAX_GMLEVL, 'MAX_GMLEVL')
-    for (const k of [17, 30, 100, 10_000]) expect(gmlevlForKills(k)).toBe(max) // clamped, no overrun
+    for (const k of [32, 33, 100, 10_000]) expect(gmlevlForKills(k)).toBe(max) // clamped, no overrun
   })
 })
 
