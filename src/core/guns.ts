@@ -421,13 +421,19 @@ export function step(
  * position is that minus the pilot (`LDA ZX,PLSTAT ;PLANE POSITION` / `SBC ZX,UNIV4X ;- UNIVERSE
  * CENTER`, RBARON.MAC:2909-2910), and the window/collision work happens on the screen side.
  *
- * THE BOUNDS ARE COLLD's PLATE (rb4-17 — see WINDOW_X above): ±48 in x, −64..+80 in y, the
- * fuselage band at the drawn ×4 picture scale. Note the enemy's PICTURE Z (`depth`) stays the
- * Z the gate divides against — exactly CDSSET's O.DPTH load (:5529-5533) — not the rb4-17
- * position Z. One deliberate simplification, logged: the ROM rotates the plate and then
- * min/maxes it into an axis-aligned box (MINMAX:5718); we rotate the OFFSET into the banked
- * frame and test the unrotated plate — the true rotated-plate test, identical at bank 0 and
- * strictly tighter mid-bank than the ROM's bounding box.
+ * THE BOUNDS ARE THE TARGET'S OWN BODY (rb4-11 AC-4). A target that CARRIES a window
+ * (`enemy.window` — the blimp's BLCOLL broadside box, blimp.ts) is bounded by IT; absent one,
+ * COLLD's plate applies (rb4-17 — see WINDOW_X above): ±48 in x, −64..+80 in y, the fuselage
+ * band at the drawn ×4 picture scale. That is the ROM's own arrangement — PLNDB pairs each
+ * body with its own CD points (COLLD for the plane, BLCOLL for the blimp, RBARON.MAC:
+ * 6285-6287) and CDSSET projects whichever plate the object under test owns. The seam stays
+ * THIS shared function (rb2-13's "not a bespoke blimp collision" pin); only the bounds ride
+ * the target. Note the enemy's PICTURE Z (`depth`) stays the Z the gate divides against —
+ * exactly CDSSET's O.DPTH load (:5529-5533) — not the rb4-17 position Z. One deliberate
+ * simplification, logged: the ROM rotates the plate and then min/maxes it into an
+ * axis-aligned box (MINMAX:5718); we rotate the OFFSET into the banked frame and test the
+ * unrotated plate — the true rotated-plate test, identical at bank 0 and strictly tighter
+ * mid-bank than the ROM's bounding box.
  */
 export function collides(shell: Shell, enemy: Enemy, eye: Vec3 = EYE_ORIGIN): boolean {
   const screen = displayPos(enemy, eye)
@@ -438,5 +444,9 @@ export function collides(shell: Shell, enemy: Enemy, eye: Vec3 = EYE_ORIGIN): bo
   const rx = dx * c + dy * s // rotate the offset into the enemy's banked frame
   const ry = -dx * s + dy * c
   const dz = shell.z - depthToShellZ(enemy.depth)
-  return Math.abs(rx) <= WINDOW_X && ry >= WINDOW_Y_MIN && ry <= WINDOW_Y_MAX && Math.abs(dz) <= WINDOW_Z
+  // `??`, never `||`: a target-carried 0 bound is a bound, not "use the plane's".
+  const windowX = enemy.window?.x ?? WINDOW_X
+  const windowYMin = enemy.window?.yMin ?? WINDOW_Y_MIN
+  const windowYMax = enemy.window?.yMax ?? WINDOW_Y_MAX
+  return Math.abs(rx) <= windowX && ry >= windowYMin && ry <= windowYMax && Math.abs(dz) <= WINDOW_Z
 }

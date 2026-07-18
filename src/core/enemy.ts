@@ -358,6 +358,15 @@ export interface Enemy {
    * :2620-2652 ramp does; re-rotation belongs to the ace pass, not the weave.
    */
   readonly facingAway: boolean
+  /**
+   * rb4-11 AC-4 — the target's OWN collision window, in the drawn world-window units
+   * `collides` bounds its offsets in. ABSENT for a plane: the shared COLLD picture-plate
+   * window applies, exactly as before (the ROM's PLNDB pairs each body with its own CD
+   * points — COLLD for the plane, BLCOLL for the blimp, :6285-6287). blimpTarget() carries
+   * the BLCOLL-derived broadside box here. Read with `??`, never `||` — a legitimate 0
+   * bound must not be defaulted away (the P_IIDL[0] lesson).
+   */
+  readonly window?: { readonly x: number; readonly yMin: number; readonly yMax: number }
 }
 
 // ─── pure helpers ─────────────────────────────────────────────────────────────

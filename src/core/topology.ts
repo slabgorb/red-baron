@@ -470,3 +470,169 @@ export const MOUNTAIN_SEGMAPS: readonly (readonly (readonly ConnectOp[])[])[] = 
     [V(8), V(9), V(10)],
   ],
 ]
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GROUND TARGETS (rb4-11) — the 037007.XXX:1132-1246 ground-object set: the four
+// PFPNTS point-sets, their four decode-lists, and the PFODEC/PFLOB/.PFLOB/PFOFFS
+// tables, plus the program ROM's PFOBJN type table and BLCOLL blimp collision box.
+//
+// RADIX: the whole picture-ROM window sits under 037007.XXX:80 `.RADIX 10` (the
+// file's only radix change after :43) — every literal below is DECIMAL, exactly as
+// the SCAPE/PFOCOL transcriptions above read RBGRND's decimal region. Do NOT apply
+// rb4-1's hex correction here; that sweep was for RBARON.MAC's `.RADIX 16` equates.
+//
+// The program ROM mirrors this window by address arithmetic (RBARON.MAC:430-433:
+// PFODEC=DBLIMP+4F, PFLOB=PFODEC+82, .PFLOB=PFLOB+8, PFOFFS=.PFLOB+4), which
+// corroborates every entry count transcribed here — the data suite re-runs the sum.
+//
+// Object-type index convention (PFODEC/PFLOB/PFLOB_SEG_BYTES, and PFOBJN >> 1):
+//   0 = pyramid, 1 = house, 2 = tank, 3 = pill box.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Ground-target point-set — the pyramid, 4 `PFPNTS` points (037007.XXX:1186-1189). */
+export const PFPYRM: readonly Point2[] = [
+  [-8, -4], // PFPNTS -8,-4,32   ;PYRAMID
+  [0, -4], //  PFPNTS 0,-4,24
+  [8, -4], //  PFPNTS 8,-4,32
+  [0, 4], //   PFPNTS 0,4,32     ;4  (the apex)
+]
+
+/** Ground-target point-set — the house, 7 points (037007.XXX:1191-1197). */
+export const PFHOME: readonly Point2[] = [
+  [-4, -4], // PFPNTS -4,-4,32   ;HOUSE
+  [-4, 0],
+  [-8, 0], //  left roof overhang
+  [0, 8], //   roof peak
+  [8, 0], //   ;4  right roof overhang
+  [4, 0],
+  [4, -4],
+]
+
+/**
+ * Ground-target point-set — the tank, 10 points (037007.XXX:1199-1208). Points 8 and 9
+ * are BOTH [0, 0], and that is AUTHENTIC: `PFPNTS 0,0,32` and `PFPNTS 0,0,28` differ only
+ * in the third argument the macro DISCARDS (`.BYTE .X/2,.Y*2`, 037007.XXX:10-12), so the
+ * assembled ROM holds two identical points — and {@link DEPFTK} ends `BV 8 / VV 9`, a
+ * zero-length LIT vector: the tank's centre DOT. Do not "de-duplicate".
+ */
+export const PFTANK: readonly Point2[] = [
+  [-2, -4], // PFPNTS -2,-4,32   ;TANK
+  [-4, -1],
+  [4, -1],
+  [2, -4],
+  [-2, -1], // ;4
+  [-2, 1],
+  [2, 1],
+  [2, -1],
+  [0, 0], //   ;8  PFPNTS 0,0,32
+  [0, 0], //       PFPNTS 0,0,28 — same bytes; Z is discarded
+]
+
+/** Ground-target point-set — the pill box, 16 points (037007.XXX:1210-1225). */
+export const PFPBOX: readonly Point2[] = [
+  [-4, -4], // PFPNTS -4,-4,32   ;PILL BOX
+  [-4, 0], //  PFPNTS -4,0,34
+  [4, 0], //   PFPNTS 4,0,34
+  [4, -4],
+  [-4, -1],
+  [-6, -1], // left gun slit
+  [-6, -2],
+  [-4, -2],
+  [4, -1], //  ;8  right gun slit
+  [6, -1],
+  [6, -2],
+  [4, -2],
+  [0, -1], //  ;12 centre slit
+  [2, -1],
+  [2, -2],
+  [0, -2],
+]
+
+/** Pyramid decode-list (`DEPFPY`, 037007.XXX:1144-1150, `ENDDB`). */
+export const DEPFPY: readonly ConnectOp[] = [B(0), V(3), V(2), V(0), B(1), V(3)]
+
+/** House decode-list (`DEPFHS`, 037007.XXX:1134-1142, `ENDDB`). */
+export const DEPFHS: readonly ConnectOp[] = [B(0), V(1), B(5), V(6), B(2), V(3), V(4), V(2)]
+
+/** Tank decode-list (`DEPFTK`, 037007.XXX:1152-1163, `ENDDB`) — ends in the centre-dot stroke `BV 8 / VV 9`. */
+export const DEPFTK: readonly ConnectOp[] = [
+  B(0), V(1), V(2), V(3), V(0), B(4), V(5), V(6), V(7), B(8), V(9),
+]
+
+/** Pill-box decode-list (`DEPFPB`, 037007.XXX:1165-1184, `ENDDB`). */
+export const DEPFPB: readonly ConnectOp[] = [
+  B(0), V(1), V(2), V(3), V(0),
+  B(4), V(5), V(6), V(7),
+  B(8), V(9), V(10), V(11), V(8),
+  B(15), V(14), V(13), V(12), V(15),
+]
+
+/** ROM `PFODEC` pointer table (037007.XXX:1132) — `.WORD DEPFPY,DEPFHS,DEPFTK,DEPFPB`:
+ *  the decode-list per object type, the exports themselves (pointers, not copies). */
+export const PFODEC: readonly (readonly ConnectOp[])[] = [DEPFPY, DEPFHS, DEPFTK, DEPFPB]
+
+/** ROM `PFLOB` pointer table (037007.XXX:1227) — `.WORD PFPYRM,PFHOME,PFTANK,PFPBOX`. */
+export const PFLOB: readonly (readonly Point2[])[] = [PFPYRM, PFHOME, PFTANK, PFPBOX]
+
+/**
+ * ROM `.PFLOB` length table (037007.XXX:1229-1230) — `.BYTE PFHOME-PFPYRM-2, …`: per set,
+ * the byte offset of its LAST point, `(pointCount − 1) × 2` (each `PFPNTS` is 2 bytes) —
+ * the same shape as `.SSEG` → {@link SCAPE_SEG_BYTES}.
+ */
+export const PFLOB_SEG_BYTES: readonly number[] = [6, 12, 18, 30]
+
+/**
+ * ROM `PFOFFS` (037007.XXX:1232-1246) — 12 `PFCOL` screen offsets, 4 groups of 3: the
+ * playfield offset each deployed slot draws at, relative to its carrier mountain's
+ * projected centre. GRDISP feeds each word through DDIVIT (the depth divide) before
+ * adding it to the projection's translation (RBARON.MAC:3592-3601), so the offsets are
+ * PRE-divide playfield units at the carrier's depth — the same logical units as the
+ * point-sets. (`PFCOL`'s ×8 word packing is ROM storage, like `PFPNTS`'s x/2,y*2.)
+ */
+export const PFOFFS: readonly Point2[] = [
+  [96, -28], //  group 0
+  [-56, -4],
+  [-72, -4],
+  [120, -4], //  group 1
+  [-24, -20],
+  [-40, -20],
+  [8, -4], //    group 2
+  [-8, -4],
+  [-40, -20],
+  [104, -20], // group 3
+  [-72, -4],
+  [-88, -4],
+]
+
+/**
+ * ROM `PFOBJN` (RBARON.MAC:3924-3927) — object number per (group, slot), 4 rows of 3.
+ * Values are PRE-DOUBLED word offsets into {@link PFLOB}/{@link PFODEC} (GRDISP reads the
+ * raw byte as a word index, then halves it for `.PFLOB`, RBARON.MAC:3637-3643):
+ * 0 = pyramid, 2 = house, 4 = tank, 6 = pill box. Every row ends in 6 — each deployed
+ * mountain target-group carries exactly one pill box, in its last slot.
+ */
+export const PFOBJN: readonly (readonly number[])[] = [
+  [0, 2, 6], // pyramid, house,   pill box
+  [0, 0, 6], // pyramid, pyramid, pill box
+  [4, 2, 6], // tank,    house,   pill box
+  [4, 4, 6], // tank,    tank,    pill box
+]
+
+/**
+ * ROM `BLCOLL` (RBARON.MAC:6270-6277) — the blimp's 8-corner collision box, POINTP format,
+ * inside the program ROM's `.RADIX 10` vertex island (:6217..:6281 — DECIMAL, like the
+ * plane vertex table around it). The last PLNDB master-table member (:6285-6287) missing
+ * from this module: a full axis-aligned box, ±16 × ±16 × ±40 — exactly the drawn
+ * {@link BLIMP_POINTS} envelope's extents. blimp.ts derives its collision window from
+ * these points (posed broadside); the values are never re-typed.
+ */
+export const BLCOLL_POINTS: readonly Point3[] = [
+  [16, 16, -40], //  POINTP 16,16,-40  ;POINT CD'S
+  [16, -16, -40],
+  [-16, 16, -40],
+  [-16, -16, -40],
+  [16, 16, 40],
+  [16, -16, 40],
+  [-16, 16, 40],
+  [-16, -16, 40],
+]
