@@ -59,39 +59,31 @@
 
 import { describe, it, expect } from 'vitest'
 import { HORZ } from '../../src/core/topology'
-import * as landscape from '../../src/core/landscape'
 import {
   MAX_MOUNTAINS,
   SPAWN_DEPTH,
   MIN_DEPTH,
   P_OBDZ,
   PF_FALLEN_DZ,
+  P_MAXZ,
+  WRAP_LIMIT,
   spawnMountain,
   initialMountains,
   stepMountain,
   type Mountain,
 } from '../../src/core/landscape'
 
-// P_MAXZ / WRAP_LIMIT are the two NEW rb4-8 constants. Read them off the module
-// namespace (undefined until DEV exports them → these pins fail RED, no import throw).
-const { P_MAXZ, WRAP_LIMIT } = landscape as unknown as { P_MAXZ: number; WRAP_LIMIT: number }
-
-// A Mountain with the latched bit set explicitly. The `as unknown as` casts here and in
-// latch()/the P_MAXZ+WRAP_LIMIT read are RED-phase shims: the `onHorizon` field, the two
-// constants, and stepMountain's second parameter do not exist yet. Once DEV lands the
-// GREEN contract, these casts collapse to plain typed access — remove them then (they trip
-// lang-review §1 `as unknown as` by design, only while the interface is still missing).
+// A Mountain with the latched bit (`Mountain.onHorizon`) set explicitly.
 const mtn = (over: {
   scape?: number
   depth: number
   x?: number
   active?: boolean
   onHorizon: boolean
-}): Mountain =>
-  ({ scape: 0, x: 0, active: true, ...over } as unknown as Mountain)
+}): Mountain => ({ scape: 0, x: 0, active: true, ...over })
 
-// Read the latched bit off a stepped mountain (field-based; no `onHorizon()` function).
-const latch = (m: Mountain): boolean => (m as unknown as { onHorizon: boolean }).onHorizon
+// Read the latched bit off a stepped mountain (field-based; the depth-predicate function is retired).
+const latch = (m: Mountain): boolean => m.onHorizon
 
 describe('rb4-8 AC-2 — on-horizon is a LATCHED bit (PFOBJ+6 D7), not a depth test', () => {
   it('exports P_MAXZ = 0x1001, the ROM on→fallen threshold (RBARON.MAC:445)', () => {

@@ -138,8 +138,10 @@ export function projectSegment(a: Vec3, b: Vec3, mvp: Mat4): SceneSegment | null
  * `projectSegment` divide PLUS the constant HORIZN screen-Y lift the ROM's POSITH/POSITP add
  * after the divide (`ADC I,HORIZN`, RBGRND.MAC:303), a depth-INDEPENDENT offset on every
  * playfield object (rb4-5 AC5). Only the world objects take it — motion objects use the bare
- * `projectSegment`, exactly as rb4-5 routes the UNIV4X pan + I4YPOS eye height to the world
- * eye alone. Null-passthrough (both endpoints behind the eye) is preserved.
+ * `projectSegment`, exactly as rb4-5 routes the I4YPOS eye height to the world eye. The
+ * UNIV4X lateral pan reaches the world eye for the NON-wrapping horizon; rb4-8's wrapping
+ * mountains instead carry their pan in their own stored X (landscape.ts). Null-passthrough
+ * (both endpoints behind the eye) is preserved.
  */
 export function projectWorldSegment(a: Vec3, b: Vec3, mvp: Mat4): SceneSegment | null {
   const seg = projectSegment(a, b, mvp)

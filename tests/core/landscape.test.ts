@@ -31,7 +31,7 @@
 // SUPERSEDED by a latched status bit — its contract (and the lateral scroll + wrap) now
 // live in tests/core/mountain-scroll.test.ts; the depth/slot/recycle/render guards stay here.
 //   export function mountainSegments(                               // project via the rb1 substrate
-//     mountains: readonly Mountain[], attitude: Attitude, eye: Vec3, aspect: number,
+//     mountains: readonly Mountain[], attitude: Attitude, eyeHeight: number, aspect: number,
 //   ): readonly SceneSegment[]
 //
 // WHY THIS SHAPE (cited — findings §4/§8, RBARON.MAC:3264-3430 PFOBMN):
@@ -60,7 +60,6 @@ import { describe, it, expect } from 'vitest'
 import { LEVEL } from '../../src/core/camera'
 import type { SceneSegment } from '../../src/core/scene'
 import { HORZ, HORIZN } from '../../src/core/topology'
-import type { Vec3 } from '@arcade/shared/math3d'
 import {
   MAX_MOUNTAINS,
   SPAWN_DEPTH,
@@ -72,7 +71,9 @@ import {
   mountainSegments,
 } from '../../src/core/landscape'
 
-const EYE: Vec3 = [0, 0, 0]
+// rb4-8: mountainSegments now takes the eye's ALTITUDE (a number), not the full eye —
+// its lateral pan lives in Mountain.x. At ground level the height is 0.
+const EYE_HEIGHT = 0
 
 // Step a mountain n calc-frames.
 const steps = (m: Mountain, n: number): Mountain => {
@@ -185,15 +186,15 @@ describe('rb3-3 scroll + fall — depth decreases toward the player (PFOBMN)', (
 
 describe('rb3-3 render — through the rb1 scene substrate, divide-by-depth (findings §8)', () => {
   it('renders nothing when there are no active mountains', () => {
-    expect(mountainSegments([], LEVEL, EYE, 1)).toEqual([])
+    expect(mountainSegments([], LEVEL, EYE_HEIGHT, 1)).toEqual([])
     const dormant: Mountain = { ...spawnMountain(0), active: false }
-    expect(mountainSegments([dormant], LEVEL, EYE, 1)).toEqual([])
+    expect(mountainSegments([dormant], LEVEL, EYE_HEIGHT, 1)).toEqual([])
   })
 
   it('projects an active mountain to a non-empty set of finite NDC segments', () => {
     // Place it in front of the eye, already fallen off the horizon so it is on-screen.
     const m: Mountain = { scape: 0, depth: 400, x: 0, active: true, onHorizon: false }
-    const segs = mountainSegments([m], LEVEL, EYE, 1)
+    const segs = mountainSegments([m], LEVEL, EYE_HEIGHT, 1)
     expect(segs.length).toBeGreaterThan(0)
     for (const s of segs) {
       // Totality: projectSegment's behind-eye nulls must be FILTERED, never leaked.
@@ -206,8 +207,8 @@ describe('rb3-3 render — through the rb1 scene substrate, divide-by-depth (fin
   it('divide-by-depth: a NEARER mountain projects WIDER than the same silhouette farther away', () => {
     const near: Mountain = { scape: 0, depth: 300, x: 0, active: true, onHorizon: false }
     const far: Mountain = { scape: 0, depth: 1200, x: 0, active: true, onHorizon: false }
-    const wNear = ndcWidth(mountainSegments([near], LEVEL, EYE, 1))
-    const wFar = ndcWidth(mountainSegments([far], LEVEL, EYE, 1))
+    const wNear = ndcWidth(mountainSegments([near], LEVEL, EYE_HEIGHT, 1))
+    const wFar = ndcWidth(mountainSegments([far], LEVEL, EYE_HEIGHT, 1))
     expect(wNear).toBeGreaterThan(wFar)
   })
 })
