@@ -317,7 +317,7 @@ vi.mock('../../src/core/hud-font', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/core/hud-font')>()
   return {
     ...actual,
-    hudTextSegments: (text: string, opts: Parameters<typeof actual.hudTextSegments>[1]): SceneSegment[] => {
+    hudTextSegments: (text: string, opts: Parameters<typeof actual.hudTextSegments>[1]): readonly SceneSegment[] => {
       const segs = actual.hudTextSegments(text, opts)
       rec.hudTextCalled = true
       rec.hudLen += segs.length

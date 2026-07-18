@@ -34,8 +34,11 @@ export interface HudTextOptions {
  * Lay `text` out in the shared glyph font and return it as HUD SceneSegments in NDC,
  * ready for strokeSegments. Full V.BRIT — the HUD draws at the cabinet's bright tier.
  */
-export function hudTextSegments(text: string, opts: HudTextOptions): SceneSegment[] {
+export function hudTextSegments(text: string, opts: HudTextOptions): readonly SceneSegment[] {
   const { x, y, size, align, width, height } = opts
+  // Degenerate/pre-layout canvas: nothing to draw yet — and dividing by a 0 width/height below
+  // would emit NaN/Infinity coordinates. Guard it the way viewAspect() guards `height === 0`.
+  if (!(width > 0) || !(height > 0)) return []
   const scale = size / CELL_H // pixels per glyph cell-unit
   const layout = layoutText(text) // strokes already positioned left-to-right
   const leftPx = align === 'center' ? x - (layout.width * scale) / 2 : x
