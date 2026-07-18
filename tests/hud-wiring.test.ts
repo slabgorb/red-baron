@@ -11,6 +11,15 @@
 //
 // Boots the REAL cockpit (the cockpit-draw-path harness pattern) under a pinned clock,
 // captures fillText strings + the globalAlpha in force at each stroke().
+//
+// rb4-19 UPDATE (Furiosa / TEA): the AC-4 "readout is DRAWN" assertions used to
+// observe the SCORE/PLANE line at `ctx.fillText`. rb4-19 routes that readout through
+// @arcade/shared/font (vector glyphs, stroked — NOT the canvas font), so the fillText
+// observation no longer holds. Those assertions are RELOCATED to
+// hud-font-adoption.test.ts, where the readout is observed at the shared-font seam
+// (and the numeric value is pinned there too). What stays here is the AC-3 intensity
+// check — it reads globalAlpha at each stroke() and is font-independent. The ctx stub
+// gains no-op transform ops so the migrated glyph-stroking path can't throw here.
 
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 
@@ -33,11 +42,15 @@ let curAlpha = 1
 const ctxStub: Record<string, unknown> = {
   strokeStyle: '', fillStyle: '', lineWidth: 0, shadowColor: '', shadowBlur: 0,
   font: '', textAlign: '', textBaseline: '',
-  beginPath: () => {}, moveTo: () => {}, lineTo: () => {},
+  beginPath: () => {}, closePath: () => {}, moveTo: () => {}, lineTo: () => {},
   stroke: () => { rec.strokeAlphas.push(curAlpha) },
-  fillRect: () => {},
+  fillRect: () => {}, fill: () => {},
   fillText: (t: string) => { rec.texts.push(String(t)) },
   save: () => {}, restore: () => {},
+  // rb4-19: the HUD readout now strokes @arcade/shared/font glyphs — tolerate a
+  // transform-based glyph path so booting main here can't throw.
+  translate: () => {}, scale: () => {}, rotate: () => {},
+  setTransform: () => {}, transform: () => {}, resetTransform: () => {},
 }
 Object.defineProperty(ctxStub, 'globalAlpha', { get: () => curAlpha, set: (v: number) => { curAlpha = v } })
 
@@ -73,21 +86,10 @@ beforeAll(async () => {
 
 afterAll(() => { Date.now = realNow })
 
-describe('rb4-9 AC-4 — the PLVALU readout is DRAWN beside the score', () => {
-  it('draws a `PLANE ###` readout while a wave is up (and the SCORE line every frame)', () => {
-    expect(rec.texts.some((s) => s.startsWith('SCORE ')), 'the score HUD must draw').toBe(true)
-    const plane = rec.texts.filter((s) => s.startsWith('PLANE '))
-    expect(plane.length, 'the PLVALU readout never reached the glass — AC-4 unwired').toBeGreaterThan(0)
-  })
-
-  it('the readout carries a real, non-negative numeric value', () => {
-    for (const s of rec.texts.filter((x) => x.startsWith('PLANE '))) {
-      const n = Number(s.slice('PLANE '.length))
-      expect(Number.isFinite(n), `PLVALU readout "${s}" must be a finite number`).toBe(true)
-      expect(n).toBeGreaterThanOrEqual(0)
-    }
-  })
-})
+// rb4-9 AC-4 ("the PLVALU readout is DRAWN beside the score, with a real numeric
+// value") RELOCATED to hud-font-adoption.test.ts by rb4-19 — the readout now routes
+// through @arcade/shared/font (stroked glyphs), not ctx.fillText, so it is observed
+// at that seam. `rec.texts` is still captured below as a canvas-font-usage tap.
 
 describe('rb4-9 AC-3 — intensity is RENDERED (globalAlpha), not just carried on the data', () => {
   it('strokes at more than one brightness — the depth-cue and two-tier reach the glass', () => {
