@@ -223,25 +223,25 @@ describe('REGISTRY 4/7 — audio.WHINE_HALF_DEPTH: the approach whine can reach 
   // So the half-strength point sits BELOW the closest the plane can ever fly: the whine's
   // entire design curve lives in a region the game cannot reach. Peak gain achievable is
   // 0.135 of a possible 0.35 — and it is monotone, so it never gets louder than that.
-  it('a plane at its CLOSEST is at least half strength — the design point is reachable', () => {
-    // Derive the ceiling from the function itself (gain at depth 0 = "on top of you") rather
-    // than hardcoding 0.35. Self-check: a pinned 0.35 would silently stop meaning "half" the
-    // moment anyone retuned the curve, which is the same class of rot this file is about.
-    const ceiling = approachWhine(0).gain
-    const closest = approachWhine(P_MNDP).gain
+  it('a plane at its CLOSEST is well up the whine sweep — the design point is reachable', () => {
+    // rb4-10 (SN-014): the whine's intensity is PITCH, not gain — nearer ⇒ higher pitch at a
+    // FLAT volume. The "reachable design point" intent is unchanged: WHINE_HALF_DEPTH tied to
+    // the axis (P_INDP/4) puts the plane's whole reachable range across the sweep, where the
+    // old bare 200 sat BELOW the plane's floor. So the plane at its closest genuinely SINGS.
+    const idle = approachWhine(Number.POSITIVE_INFINITY).frequency // clear sky = the hum pitch
+    const closest = approachWhine(P_MNDP).frequency
     expect(
       closest,
       `a plane at P.MNDP (${P_MNDP}) is as close as it will EVER get, and the whine should be ` +
-        `singing. WHINE_HALF_DEPTH = 200 sits BELOW that floor, so the half-strength point ` +
-        `lies outside the range the plane can occupy and the whine never exceeds 38% of full.`,
-    ).toBeGreaterThanOrEqual(ceiling / 2)
+        `well up its pitch sweep — not stuck near the idle hum the way the old bare 200 left it.`,
+    ).toBeGreaterThan(idle * 1.5)
   })
 
-  it('and it still FALLS OFF with distance — the ordering is the ROM fact (findings §6B)', () => {
-    // The negative case, so "just crank the gain" cannot satisfy the test above.
-    expect(approachWhine(P_MNDP).gain).toBeGreaterThan(approachWhine(P_INDP).gain)
-    expect(approachWhine(P_INDP).gain).toBeGreaterThan(approachWhine(P_INDP * 4).gain)
-    expect(approachWhine(Number.POSITIVE_INFINITY).gain).toBe(0) // a clear sky is silent
+  it('and its PITCH still falls off with distance — the ordering is the ROM fact (SN-014)', () => {
+    // The negative case: farther ⇒ lower pitch. A clear sky idles at the HUM pitch, not silence.
+    expect(approachWhine(P_MNDP).frequency).toBeGreaterThan(approachWhine(P_INDP).frequency)
+    expect(approachWhine(P_INDP).frequency).toBeGreaterThan(approachWhine(P_INDP * 4).frequency)
+    expect(approachWhine(Number.POSITIVE_INFINITY).frequency).toBeCloseTo(63920 / (2 * (0xf8 + 1)), 0)
   })
 
   it('is not a bare decimal — it is denominated in the axis', () => {

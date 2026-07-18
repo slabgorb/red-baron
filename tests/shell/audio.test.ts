@@ -36,7 +36,6 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { EXPL2_FRAMES } from '../../src/core/explosion'
 
 // --- recording fake Web Audio surface (battlezone bz1-11 harness) -----------
 
@@ -325,78 +324,117 @@ describe('gunStrobe — the D2 rat-a-tat, INTCNT&8 (findings §6B, RBGRND.MAC:17
   })
 })
 
-describe('explosionLevel — EXPVAL=$F0 ramps down (findings §6B)', () => {
-  it('starts at the ROM $F0 and reaches silence by EXPL2_FRAMES', async () => {
+describe('explosionLevel — per-victim EXCNTR duration, HARD cutoff (rb4-10 / SN-016)', () => {
+  // rb4-10 RE-SEAT. The rb2-11 code borrowed EXPL2_FRAMES (12, the debris window) as
+  // a fixed duration and ramped $F0 smoothly to 0 for EVERY cue. The ROM is different
+  // on both counts (RBARON.MAC:988-994 SOUNDS; 1177-80/3905-08/5652-55/5700-03/2975-78):
+  //   • EXPVAL starts $F0 and steps DOWN by exactly $10 once per calc frame.
+  //   • EXCNTR sets the duration and it is PER-VICTIM: 8 (player crash), 7 (ground
+  //     object), 10 (drone / blimp / falling-plane wreck) — NOT a fixed 12.
+  //   • when EXCNTR expires the nibble is HARD-ZEROED from a NON-zero floor — it does
+  //     NOT fade to 0. The cabinet's blast cuts off while still at ~40% level.
+  //
+  // GREEN contract: `explosionLevel(frame: number, frames: number): number` — the
+  // level at 96 ms calc-frame `frame` for a burst that runs `frames` frames.
+  const F0 = 0xf0
+  const STEP = 0x10
+
+  it('starts at the ROM $F0 and steps down by exactly $10 per calc frame', async () => {
     const { explosionLevel } = await loadAudio()
-    expect(explosionLevel(0)).toBe(0xf0)
-    expect(explosionLevel(EXPL2_FRAMES)).toBe(0)
+    expect(explosionLevel(0, 8)).toBe(F0)
+    expect(explosionLevel(1, 8)).toBe(F0 - STEP) // $E0
+    expect(explosionLevel(2, 8)).toBe(F0 - 2 * STEP) // $D0
   })
 
-  it('is monotonically NON-increasing across the burst', async () => {
+  it('runs a PER-VICTIM number of frames — 8 / 7 / 10, not a fixed 12', async () => {
     const { explosionLevel } = await loadAudio()
-    let prev = Number.POSITIVE_INFINITY
-    for (let f = 0; f <= EXPL2_FRAMES; f++) {
-      const v = explosionLevel(f)
-      expect(v, `frame ${f} must not rise`).toBeLessThanOrEqual(prev)
-      prev = v
+    // The last active frame is `frames - 1`; the burst is silent AT `frames`.
+    for (const frames of [8, 7, 10]) {
+      expect(explosionLevel(frames - 1, frames), `${frames}f: last frame sounds`).toBeGreaterThan(0)
+      expect(explosionLevel(frames, frames), `${frames}f: cut off after`).toBe(0)
     }
+    // The three victims genuinely differ in length: a drone (10) outlasts the player
+    // crash (8) which outlasts a ground object (7).
+    expect(explosionLevel(9, 10)).toBeGreaterThan(0) // drone still sounding at frame 9
+    expect(explosionLevel(9, 8)).toBe(0) // player crash long over by frame 9
+    expect(explosionLevel(7, 7)).toBe(0) // ground object done at frame 7
   })
 
-  it('clamps at 0 past the burst — never negative', async () => {
+  it('CUTS OFF at a non-zero floor — it does NOT ramp smoothly to silence', async () => {
     const { explosionLevel } = await loadAudio()
-    expect(explosionLevel(EXPL2_FRAMES + 50)).toBe(0)
-    expect(explosionLevel(10_000)).toBeGreaterThanOrEqual(0)
+    // The old bug: a 12-frame linear fade reached ~0 at the end. The ROM's last
+    // active nibble is high ($F0 − $10·(frames−1)) and then hard-zeroes in ONE frame.
+    const lastPlayer = explosionLevel(7, 8) // $F0 − $70 = $80
+    expect(lastPlayer, 'cabinet blast is still loud at its last frame').toBeGreaterThanOrEqual(0x60)
+    expect(explosionLevel(8, 8), 'then gone in a single frame — a hard cutoff').toBe(0)
+    // The exact floor nibble ($7/$6/$8 per SN-016) is routed to Dev as a Delivery
+    // Finding; this pins only the robust fact — a substantial floor, not a fade.
+  })
+
+  it('clamps to 0 past the burst and never goes negative (input hygiene)', async () => {
+    const { explosionLevel } = await loadAudio()
+    expect(explosionLevel(50, 8)).toBe(0)
+    expect(explosionLevel(10_000, 10)).toBeGreaterThanOrEqual(0)
+    expect(explosionLevel(Number.NaN, 8)).toBe(0)
   })
 })
 
-describe('approachWhine — ATGVAL, nearer ⇒ more intense (findings §6B, inferred curve)', () => {
-  it('gain RISES as the enemy closes (smaller distance is louder)', async () => {
+describe('approachWhine — a PITCH ramp at CONSTANT volume (rb4-10 / SN-014)', () => {
+  // rb4-10 RE-SEAT. The rb2-11 whine was a SECOND voice that swelled in VOLUME
+  // (gain 0→0.35) as the plane closed. The ROM (RBARON.MAC:1009-1033) is the OPPOSITE
+  // axis: the whine and the engine hum are the SAME ch3/ch4 voice pair, AUDC pinned at
+  // $A1 (volume 1/15) for BOTH — only the DIVISOR moves. Nearer ⇒ HIGHER pitch, at a
+  // FLAT volume. The hum ($F8 → 128 Hz) is simply the whine's idle state; the whine
+  // sweeps the pitch UP toward 652 Hz and cuts out below divisor $30.
+  it('volume is CONSTANT across every distance — the ROM does NOT swell in gain', async () => {
     const { approachWhine } = await loadAudio()
-    expect(approachWhine(50).gain).toBeGreaterThan(approachWhine(500).gain)
-    expect(approachWhine(500).gain).toBeGreaterThan(approachWhine(2000).gain)
+    const gains = [50, 500, 2000, 5000].map((d) => approachWhine(d).gain)
+    for (const g of gains) expect(g, 'flat volume at every distance').toBeCloseTo(gains[0], 6)
   })
 
-  it('stays bounded and finite at every distance (input hygiene)', async () => {
+  it('holds the ROM volume 1 of 15 ($A1 low nibble), not the old 0→0.35 swell', async () => {
     const { approachWhine } = await loadAudio()
-    for (const d of [1, 50, 500, 5000, Number.POSITIVE_INFINITY]) {
-      const p = approachWhine(d)
-      expect(p.gain, `gain at ${d}`).toBeGreaterThanOrEqual(0)
-      expect(p.gain, `gain at ${d}`).toBeLessThanOrEqual(1)
-      expect(Number.isFinite(p.frequency), `freq at ${d}`).toBe(true)
-      expect(p.frequency).toBeGreaterThan(0)
-    }
+    expect(approachWhine(80).gain).toBeCloseTo(1 / 15, 3)
   })
 
-  it('a clear sky (infinite distance) is effectively silent', async () => {
+  it('nearer ⇒ HIGHER pitch (the divisor falls) — the opposite of the old louder swell', async () => {
     const { approachWhine } = await loadAudio()
-    expect(approachWhine(Number.POSITIVE_INFINITY).gain).toBeCloseTo(0, 5)
+    expect(approachWhine(50).frequency).toBeGreaterThan(approachWhine(500).frequency)
+    expect(approachWhine(500).frequency).toBeGreaterThan(approachWhine(2000).frequency)
   })
 
-  it('an UNKNOWN distance (NaN) is silent, not deafening (review round 1)', async () => {
+  it('a clear sky idles at the HUM pitch (~128 Hz, $F8) — not silence', async () => {
     const { approachWhine } = await loadAudio()
-    // `NaN > 0` is false, so NaN fell into the same branch as 0 — "on top of you" —
-    // and produced the LOUDEST possible whine. It must read as "no target".
+    // The idle state is the engine hum, not a muted voice: divisor $F8 → 128.4 Hz.
+    const idle = approachWhine(Number.POSITIVE_INFINITY)
+    expect(idle.frequency).toBeCloseTo(63_920 / (2 * (0xf8 + 1)), 0)
+    expect(idle.gain, 'still voiced at the hum volume, not gain-0').toBeGreaterThan(0)
+  })
+
+  it('an UNKNOWN distance (NaN) idles safely — a finite hum pitch, never a garbage sweep', async () => {
+    const { approachWhine } = await loadAudio()
     const p = approachWhine(Number.NaN)
-    expect(p.gain).toBe(0)
     expect(Number.isFinite(p.frequency)).toBe(true)
+    expect(p.frequency).toBeGreaterThan(0)
   })
 })
 
-describe('engineHumParams — the detuned $F8/$F7 pair (findings §6B)', () => {
-  it('is a PAIR of DETUNED oscillators — the two frequencies differ', async () => {
+describe('engineHumParams — detuned $F8/$F7 PURE TONE at volume 1/15 (rb4-10 / SN-013)', () => {
+  it('is a PAIR of DETUNED oscillators — the two frequencies differ (the beat)', async () => {
     const { engineHumParams } = await loadAudio()
     const p = engineHumParams()
     expect(p.frequencies).toHaveLength(2)
-    expect(p.frequencies[0]).not.toBe(p.frequencies[1]) // detune → the beat
-    expect(p.frequencies[0]).toBeGreaterThan(0)
-    expect(p.frequencies[1]).toBeGreaterThan(0)
+    expect(p.frequencies[0]).not.toBe(p.frequencies[1])
+    // $F8 → 128.4 Hz, $F7 → 128.9 Hz: a ~0.5 Hz beat.
+    expect(p.frequencies[0]).toBeCloseTo(63_920 / (2 * (0xf8 + 1)), 0)
+    expect(p.frequencies[1]).toBeCloseTo(63_920 / (2 * (0xf7 + 1)), 0)
   })
 
-  it('hums at an audible-but-modest gain', async () => {
+  it('hums at the ROM volume 1 of 15 ($A1) — NOT the old 0.18 (2.7× too loud)', async () => {
     const { engineHumParams } = await loadAudio()
-    const p = engineHumParams()
-    expect(p.gain).toBeGreaterThan(0)
-    expect(p.gain).toBeLessThanOrEqual(1)
+    // AUDC3=AUDC4=$A1 ⇒ POKEY volume 1/15 ≈ 0.0667 (RBARON.MAC:1001-1003). The old
+    // 0.18 was a synthesised guess; a documented mix scalar would be a Dev deviation.
+    expect(engineHumParams().gain).toBeCloseTo(1 / 15, 3)
   })
 })
 
@@ -507,6 +545,71 @@ describe('post-gesture synthesis reaches the node graph', () => {
     const expected = m.approachWhine(80).gain
     engine.setApproach(80)
     expect(allGainValues()).toContain(expected)
+  })
+})
+
+describe('rb4-10 discrete-board timbre + the SPIRAL cue (SN-013 / SN-015)', () => {
+  it('the engine hum is a POKEY PURE TONE (square), never a sawtooth (SN-013)', async () => {
+    const m = await loadAudio()
+    const engine = m.createAudioEngine()
+    engine.resume()
+    engine.setEngine(true)
+    engine.setApproach(500) // the whine is the same voice pair — build it too
+    const types = FakeAudioContext.instances[0].oscillators.map((o) => o.type)
+    expect(types.length, 'the sustained hum/whine voices exist').toBeGreaterThan(0)
+    // AUDC=$A1's high nibble $A = "PURE TONE" (RBSOUN.MAC:81). A sawtooth/triangle is
+    // a harmonically rich waveform the ROM never asks for.
+    expect(types, 'no sawtooth — $A1 is a pure tone').not.toContain('sawtooth')
+    expect(types, 'no triangle — the whine is the same pure-tone pair, not a swelling voice').not.toContain(
+      'triangle',
+    )
+    for (const t of types) expect(t, 'every sustained voice is a square/pure tone').toBe('square')
+  })
+
+  it('the SPIRAL dive whine is a distinct one-shot cue that synthesises (SN-015)', async () => {
+    const m = await loadAudio()
+    const engine = m.createAudioEngine()
+    engine.resume()
+    // 'spiral' is a member of OneShot (the `play()` exhaustiveness guard forces a case);
+    // a missing case would fall through the guard's `never` default and synthesise
+    // NOTHING — so this asserts the cue actually builds nodes.
+    const before = nodeCount()
+    engine.play('spiral')
+    expect(nodeCount(), 'the spiral cue must synthesise, not silently no-op').toBeGreaterThan(before)
+  })
+
+  it('spiral is DISTINCT from the explosion and crash blasts (SN-015)', async () => {
+    const m = await loadAudio()
+    // The shot-down dive whine fills the ~576 ms before the wreck explodes; it must NOT
+    // be the same code path as the kill/crash. The blasts are filtered NOISE bursts
+    // (buffer sources, no oscillator); the spiral is a VOICED descending tone (an
+    // oscillator, no noise). That structural split is the discriminator: aliasing
+    // `case 'spiral'` to `case 'crash'` (the exact mutation this pins) would make the
+    // spiral a buffer-source burst with zero oscillators and the crash's 500 Hz cutoff.
+
+    // The kill + crash: pure noise bursts.
+    const blasts = m.createAudioEngine()
+    blasts.resume()
+    const ctxBlast = FakeAudioContext.instances.at(-1)!
+    blasts.play('explosion')
+    blasts.play('crash')
+    const burstCutoffs = ctxBlast.filters.flatMap((f) => f.frequency.values)
+    expect(ctxBlast.sources.length, 'the kill/crash ARE noise bursts (buffer sources)').toBeGreaterThan(0)
+    expect(ctxBlast.oscillators.length, 'a noise burst is not a voiced tone — no oscillator').toBe(0)
+
+    // The spiral: a voiced dive whine on its OWN context.
+    const dive = m.createAudioEngine()
+    dive.resume()
+    const ctxDive = FakeAudioContext.instances.at(-1)!
+    dive.play('spiral')
+    const diveCutoffs = ctxDive.filters.flatMap((f) => f.frequency.values)
+    expect(ctxDive.oscillators.length, 'the spiral is a VOICED cue — it builds an oscillator').toBeGreaterThan(0)
+    expect(ctxDive.sources.length, 'the spiral is a tone, not a re-used noise burst').toBe(0)
+
+    // Its filter voice is its own — it never reuses the crash/explosion burst cutoffs.
+    expect(diveCutoffs, 'the spiral has its own voiced/filtered character').not.toEqual([])
+    const shared = diveCutoffs.filter((c) => burstCutoffs.includes(c))
+    expect(shared, 'the spiral must not reuse the explosion/crash burst filter').toEqual([])
   })
 })
 
