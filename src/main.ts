@@ -20,8 +20,9 @@
 // the plane to its UPPLEX wreck — it falls, spins, bursts into the PIECE0-3 debris.
 //
 // THE WAVE (rb2-7): score-scaled counts (300 → 2 planes, 1000 → 3), drones in the
-// PLANE1/PLANE2 formation, PLNXCG lead promotion, and the MODECT/MCOUNT schedule
-// (stepWaveClock) that brings the next wave in after its inter-wave gap (waves.ts).
+// PLANE1/PLANE2 formation, PLNXCG lead promotion, and the MODECT/NEWCT schedule
+// (stepWaveClock) that brings each wave in as the last one clears — NEWCT counts WAVES, so a
+// plane MODE fields a RUN of MCOUNT[MODECT>>1] waves before a single ground wave (rb4-7, waves.ts).
 
 import { flightView } from './core/camera'
 import { horizonSegments } from './core/horizon'
@@ -684,6 +685,7 @@ function frame(nowMs: number): void {
     // generation through the EOL flags, :787-788) or after the game is over.
     if (enemies.length === 0 && wrecks.length === 0 && dying === null && !gameOver) {
       let spawnPlaneWave = false
+      let decided = true // a wave SLOT was serviced this frame (opening / completion / ground-end)
       if (isGroundMode(grmode)) {
         // A ground wave is UP — it ends on the CONDITION (GRNDCT spent AND no ground object
         // visible, RBARON.MAC:3269-3293), never on a timer (rb4-7 AC-4). Ground OBJECTS and the
@@ -695,7 +697,8 @@ function frame(nowMs: number): void {
           grmode = grmodeForWave(waveClock.modect)
           spawnPlaneWave = sched.spawnPlaneWave
         } else {
-          grndct = Math.max(0, grndct - 1) // a ground target-group deploys
+          grndct = Math.max(0, grndct - 1) // a ground target-group deploys — not a new wave slot
+          decided = false
         }
       } else if (!waveOpened) {
         // The opening wave: MODECT 0, fielded from the initial clock without a completion step.
@@ -719,8 +722,10 @@ function frame(nowMs: number): void {
         enemies = spawnWave(createRng((seed + kills) >>> 0), countUp.displayed, gmlevlForKills(kills))
         events.push({ type: 'wave-incoming' }) // the WP descending announce
       }
-      // The BLMOTN ~25% roll: a blimp drifts in during the lull if the sky has none.
-      if (blimp === null && shouldSpawnBlimp(nextFloat(blimpRng))) {
+      // The BLMOTN ~25% roll: a blimp drifts in during the lull if the sky has none. Rolled once
+      // per wave DECISION (not on the intervening ground-deploy frames), so a multi-frame ground
+      // wave does not over-roll the shared blimpRng stream (rb4-7).
+      if (decided && blimp === null && shouldSpawnBlimp(nextFloat(blimpRng))) {
         blimp = spawnBlimp(blimpRng, aspect)
       }
     }

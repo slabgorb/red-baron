@@ -127,7 +127,10 @@ export function scoreKill(kind: KillKind, depth: number): number {
  */
 export function gmlevlForKills(objkld: number): number {
   if (!Number.isFinite(objkld)) return 0
-  const halved = Math.max(0, Math.floor(objkld)) >> 1 // the ROM's LSR — halve, then clamp
+  // The ROM's LSR — halve, then clamp. `Math.floor(.../2)` rather than `>> 1`: a bitwise shift
+  // coerces to int32, which would wrap an (astronomically large) kill count negative and index
+  // PLNLVL off the table; floor-divide stays total for every finite non-negative input.
+  const halved = Math.floor(Math.max(0, Math.floor(objkld)) / 2)
   const index = Math.min(halved, PLNLVL.length - 1)
   return PLNLVL[index]
 }

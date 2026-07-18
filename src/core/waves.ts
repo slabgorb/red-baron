@@ -253,7 +253,11 @@ export function grmodeForWave(modect: number): number {
 // A ground wave ends on a CONDITION, not a timer: GRNDCT (the count of ground target-groups
 // still to deploy) must be spent AND no ground object may still be visible. PFOBMN continues
 // the ground mode while `GRNDCT != 0` (RBARON.MAC:3271) OR any PFOBJ status byte is still
-// visible (`AND I,0C0`, :3284) — it ends only when BOTH are exhausted.
+// visible (`AND I,0C0`, :3284) — this predicate models those two exhaustion gates. The same
+// PFOBMN fall-through carries two further gates (`BIT GRMODE / BPL`, :3286-3287, and
+// `BIT GREND / BMI`, :3288-3289 — the ground-EOL flag) that the CALLER already covers: main.ts
+// only reaches here inside `isGroundMode(grmode)` (the GRMODE precondition) and behind its
+// `dying === null` guard (the GREND/EOL condition), so they are not re-tested in this predicate.
 
 /** GRNDCT — a ground wave deploys 2 target-groups (INITGR: LDA I,2, RBARON.MAC:1403-1404). */
 export const GRNDCT_INITIAL = 2

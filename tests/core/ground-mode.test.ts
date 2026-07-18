@@ -88,11 +88,11 @@ interface WavesModule {
   // rb2-7 carry-forward the branch must stay consistent with
   isPlaneWave?: (modect: number) => boolean
   // rb4-7 (AC-2/AC-3): the clock counts WAVES — the second field is NEWCT, not a frame
-  // countdown. NEWCT is optional so the module cast bridges the current source (still
-  // `countdown`) during RED; the assertions catch the missing field at runtime.
-  INITIAL_WAVE_CLOCK?: { modect: number; newct?: number }
-  stepWaveClock?: (clock: { modect: number; newct?: number }) => {
-    clock: { modect: number; newct?: number }
+  // countdown. `readonly` mirrors the domain type (waves.ts WaveClock); newct is optional so the
+  // re-seated scheduler test types loosely, the assertions catch a missing field at runtime.
+  INITIAL_WAVE_CLOCK?: { readonly modect: number; readonly newct?: number }
+  stepWaveClock?: (clock: { readonly modect: number; readonly newct?: number }) => {
+    clock: { readonly modect: number; readonly newct?: number }
     spawnPlaneWave: boolean
   }
 }
@@ -112,9 +112,9 @@ let f: FlightModule = {}
 
 beforeAll(async () => {
   try {
-    // `unknown` bridge (rb4-7): the source's WaveClock is still `{modect, countdown}` during RED
-    // while the re-seated scheduler test uses the new `{modect, newct}` contract.
-    w = (await import('../../src/core/waves')) as unknown as WavesModule
+    // rb4-7: the source's WaveClock `{modect, newct}` structurally satisfies the re-seated
+    // scheduler test's `{modect, newct?}` contract, so a single cast type-checks.
+    w = (await import('../../src/core/waves')) as WavesModule
   } catch {
     w = {}
   }

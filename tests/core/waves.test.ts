@@ -102,10 +102,10 @@ let m: WavesModule = {}
 
 beforeAll(async () => {
   try {
-    // `unknown` bridge (rb4-7): the source's WaveClock is still `{modect, countdown}` during
-    // RED while this file's contract is `{modect, newct}`. The WavesModule interface still types
-    // each member, so the surviving rb2-7 tests keep full type-checking.
-    m = (await import('../../src/core/waves')) as unknown as WavesModule
+    // rb4-7: the source's WaveClock `{modect, newct}` structurally satisfies this file's
+    // `{modect, newct?}` contract, so a single cast type-checks and keeps the drift protection
+    // between the surviving rb2-7 tests and src/core/waves.ts.
+    m = (await import('../../src/core/waves')) as WavesModule
   } catch {
     m = {}
   }

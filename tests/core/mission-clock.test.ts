@@ -4,7 +4,7 @@
 // difficulty ramp runs TWICE AS FAST as the arcade's, and waves come in RUNS, not the
 // 1:1 air/ground alternation we ship. Cluster C6 (MI-003/004/005/007/008/009, CB-001,
 // CD-009). Every ROM citation below is against the CITABLE byte-of-record
-// ~/Projects/red-baron-source-text/RBARON.MAC (LF-only, 6294 lines, `.RADIX 16` from
+// ~/Projects/red-baron-source-text/RBARON.MAC (LF-only, 6293 lines, `.RADIX 16` from
 // :74). The CRLF sibling reference/red-baron/ is NOT citable (staircase line drift).
 //
 // ── AC-1  GMLEVL = PLNLVL[min(OBJKLD >> 1, 0x10)]  (RBARON.MAC:2399-2408) ──────────
@@ -111,10 +111,10 @@ beforeAll(async () => {
     scoring = {}
   }
   try {
-    // `unknown` bridge: during RED the source's WaveClock is still `{modect, countdown}`;
-    // this file's contract is `{modect, newct}`. tsc cannot reconcile the two, so we cross
-    // the seam explicitly — `need()` and the assertions verify the real (new) shape at runtime.
-    waves = (await import('../../src/core/waves')) as unknown as WavesModule
+    // The module's `WaveClock` is `{modect, newct}`, which structurally satisfies this file's
+    // `{modect, newct?}` contract, so a single cast type-checks — keeping the compiler's drift
+    // protection between this test and src/core/waves.ts. `need()` verifies each export at runtime.
+    waves = (await import('../../src/core/waves')) as WavesModule
   } catch {
     waves = {}
   }
