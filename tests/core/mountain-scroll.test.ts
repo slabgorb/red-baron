@@ -200,4 +200,21 @@ describe('rb4-8 AC-3 — mountains scroll laterally with PLYRDL and WRAP (WRAPIT
     }
     expect(moved, 'a fallen mountain never moved under a sustained delta — the world is still static').toBe(true)
   })
+
+  it('folds a delta MANY periods wide in a SINGLE step — WRAPIT is modular, not one subtraction', () => {
+    // rb4-8 rework (Reviewer F2): a single-fold `if (x>W) x-=period` would subtract ONE
+    // period and leave a huge delta OUT of band — this pins the modular behaviour the
+    // docstring claims. A delta 3+ periods wide must still land in-band in one step.
+    const period = 2 * WRAP_LIMIT
+    const big = 3 * period + 500
+    expect(Math.abs(stepMountain(mtn({ depth: 0x0800, x: 0, onHorizon: false }), -big).x)).toBeLessThanOrEqual(WRAP_LIMIT)
+    expect(Math.abs(stepMountain(mtn({ depth: 0x0800, x: 0, onHorizon: false }), big).x)).toBeLessThanOrEqual(WRAP_LIMIT)
+  })
+
+  it('handles the exact limit crossing (x − playerDX == ±WRAP_LIMIT) without escaping the band', () => {
+    // Land x−playerDX exactly on +WRAP_LIMIT → it wraps to the far edge (|x| ≥ limit changes sides).
+    expect(stepMountain(mtn({ depth: 0x0800, x: 0, onHorizon: false }), -WRAP_LIMIT).x).toBe(-WRAP_LIMIT)
+    // Land exactly on −WRAP_LIMIT → it is the in-band lower bound and holds there.
+    expect(stepMountain(mtn({ depth: 0x0800, x: 0, onHorizon: false }), WRAP_LIMIT).x).toBe(-WRAP_LIMIT)
+  })
 })

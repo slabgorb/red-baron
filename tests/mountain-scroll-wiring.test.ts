@@ -8,7 +8,8 @@
 // which under the new REQUIRED-arg signature would pass the map INDEX, not the pilot's
 // PLYRDL. A `stepMountain(m, 0)` would pass the pure suite and leave the world frozen.
 //
-// So this file proves the delta is REAL end-to-end. Two guards:
+// So this file proves the delta is REAL end-to-end. Three guards (the third added in the
+// rb4-8 review rework to lock the render seam the double-count fix depends on):
 //   1. STRUCTURAL (source text): the bare static `.map(stepMountain)` is gone and the
 //      call takes a real second argument (not the literal 0).
 //   2. BEHAVIOURAL (booted loop): boot the real cockpit and clear the opening plane RUN
@@ -25,6 +26,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { bootCockpit } from './helpers/boot-cockpit'
 import type { Mountain } from '../src/core/landscape'
+import type { Attitude } from '../src/core/camera'
 
 // ─── 1. STRUCTURAL: the delta is wired into the loop, the static bare-map is gone ────
 
@@ -59,14 +61,17 @@ const rec = vi.hoisted(() => ({
   frame: 0,
   // every stepMountain call: the calc frame it ran on and the delta it was handed
   calls: [] as Array<{ frame: number; delta: number }>,
+  // every draw-time mountainSegments call: the eye HEIGHT (3rd arg) it was handed
+  heights: [] as Array<{ frame: number; eyeHeight: number; count: number }>,
   reset(): void {
     this.frame = 0
     this.calls = []
+    this.heights = []
   },
 }))
 
-// Tap stepMountain: record the calc frame and the delta the loop hands each mountain.
-// Delegates to the real implementation unchanged.
+// Tap stepMountain (the per-frame delta) AND mountainSegments (the render's eye height).
+// Both delegate to the real implementation unchanged.
 vi.mock('../src/core/landscape', async (importOriginal) => {
   const real = await importOriginal<typeof import('../src/core/landscape')>()
   return {
@@ -74,6 +79,10 @@ vi.mock('../src/core/landscape', async (importOriginal) => {
     stepMountain(m: Mountain, playerDX: number): Mountain {
       rec.calls.push({ frame: rec.frame, delta: playerDX })
       return real.stepMountain(m, playerDX)
+    },
+    mountainSegments(ms: readonly Mountain[], attitude: Attitude, eyeHeight: number, aspect: number) {
+      rec.heights.push({ frame: rec.frame, eyeHeight, count: ms.length })
+      return real.mountainSegments(ms, attitude, eyeHeight, aspect)
     },
   }
 })
@@ -97,6 +106,11 @@ beforeAll(async () => {
   cockpit.pressKey(' ') // hold fire through the opening run; neutral yoke keeps the seed-444 clear
   for (let f = 1; f <= 140; f++) {
     rec.frame = f
+    // rb4-8 rework (Reviewer F1): CLIMB (no turn) once the opening run has cleared. At the
+    // ground frames the eye's ALTITUDE (eye[1]) is then nonzero while its lateral pan (eye[0])
+    // stays 0 — so the render-seam guard below can tell eye[1] from eye[0]. A climb does not
+    // turn, so playerDX stays a uniform 0 and the one-global-delta test above still holds.
+    if (f === 90) cockpit.pressKey('ArrowUp')
     cockpit.tick()
   }
 }, 30000)
@@ -132,5 +146,24 @@ describe('rb4-8 wiring (behavioural) — one global PLYRDL reaches every mountai
       'a ground frame handed its mountains different deltas — main.ts is passing the map index, ' +
         'not the player pan; the world stays static',
     ).toEqual([])
+  })
+})
+
+describe('rb4-8 wiring (render seam) — mountains take the eye ALTITUDE, not the lateral pan', () => {
+  it('mountainSegments is handed a NONZERO eye height while climbing — eye[1], not eye[0] (F1)', () => {
+    // The pilot climbs but never turns, so at the ground frames eye[1] (altitude) is nonzero
+    // while eye[0] (heading pan) is exactly 0. main.ts:181 MUST pass eye[1]: the Reviewer proved
+    // that swapping it to eye[0] leaves the whole suite green while re-introducing the double-count
+    // (mountains would then bob with the turn and ignore altitude). This guard reds that swap.
+    const groundHeights = rec.heights.filter((h) => h.count > 0)
+    expect(
+      groundHeights.length,
+      'mountainSegments was never called with mountains up — the ground wave did not render; staging broke',
+    ).toBeGreaterThan(0)
+    expect(
+      groundHeights.some((h) => Math.abs(h.eyeHeight) > 1),
+      'mountainSegments got a ~0 height while the pilot was climbing — main.ts is passing the lateral ' +
+        'eye[0] (heading, 0 with no turn) instead of the altitude eye[1]; the double-count is back',
+    ).toBe(true)
   })
 })
