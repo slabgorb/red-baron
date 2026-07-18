@@ -118,7 +118,8 @@ interface EnemyModule {
   /** rb4-16 — the perspective-divide fixed-point the servo reads its zone in (screen == world at this depth). */
   POSITH_SCALE?: number
   spawn?: (rng: Rng, level?: number) => Enemy
-  step?: (enemy: Enemy, level?: number) => Enemy
+  /** rb4-16: step threads the pilot's eye — the servo reads the plane's screen against it. */
+  step?: (enemy: Enemy, level?: number, eye?: readonly [number, number, number]) => Enemy
   proximityBand?: (depth: number) => ProximityBand
 }
 
@@ -295,7 +296,13 @@ describe('enemy — spawn (NWPLNE: side entry, 90° bank, depth P.INDP)', () => 
 // AC-4 — weaving window-follower steering (accelerate to limits, reverse, weave)
 // ───────────────────────────────────────────────────────────────────────────
 describe('enemy — weaving window-follower steering (UPDPLN, findings §3)', () => {
-  it('stays inside the outer window — the weave never escapes ±P_OLIM', () => {
+  it('stays bounded near the boresight — a stationary pilot at the origin keeps the weave small', () => {
+    // rb4-16 reframe (Reviewer): AC-3 RETIRED the ±P_OLIM WORLD fence — the world position is no
+    // longer clamped to ±olim (PLONSN bounds the SCREEN position instead; see plonsn.test.ts AC-2/3).
+    // `trace` here uses the boresight eye (world origin), so the servo weaves the plane ABOUT the
+    // origin and it converges there rather than flying off — a real liveness property (a stationary
+    // pilot is not abandoned), but NOT the old world-fence. olim[0] is a loose sanity ceiling on that
+    // convergence, not the mechanism.
     const olim = need(m.P_OLIM, 'P_OLIM')[0]
     const { xs } = trace(7, 0, 300)
     expect(maxAbs(xs)).toBeLessThanOrEqual(olim + 1e-6)
@@ -353,11 +360,15 @@ describe('enemy — weaving window-follower steering (UPDPLN, findings §3)', ()
   })
 
   it('a higher GMLEVL weaves WIDER — level 4 swings past the entire level-0 window', () => {
+    // rb4-16 reframe (Reviewer): both traces use the boresight eye. Level 0's weave converges near
+    // the origin (its narrow window), level 4's wider window + wider spawn carry its world excursion
+    // past level 0's olim — so a deeper GMLEVL genuinely ranges wider. This is the level-scaled window
+    // WIDTH, not the retired ±olim world fence (AC-3); olim0 is the comparison landmark, not a clamp.
     const olim0 = need(m.P_OLIM, 'P_OLIM')[0]
     const wide = maxAbs(trace(7, 4, 400).xs)
     const narrow = maxAbs(trace(7, 0, 400).xs)
-    expect(narrow).toBeLessThanOrEqual(olim0 + 1e-6) // level 0 stays in its small window
-    expect(wide).toBeGreaterThan(olim0) // level 4 flies out past it
+    expect(narrow).toBeLessThanOrEqual(olim0 + 1e-6) // level 0 stays small (its narrow window + boresight convergence)
+    expect(wide).toBeGreaterThan(olim0) // level 4 ranges wider than level 0's whole window
   })
 
   it('a higher GMLEVL CLOSES faster — through step(), not just closeSpeed() in isolation', () => {

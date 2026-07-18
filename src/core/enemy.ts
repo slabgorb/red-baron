@@ -482,7 +482,13 @@ function screenPos(world: number, eye: number, positionZ: number): number {
  * so a DEEPER plane is allowed further off the boresight (the window is PROPORTIONAL to depth), and
  * the constant works out to `positionZ × 0x1A0 / 0x100 = positionZ × 1.625` before the `>> 16`
  * truncation. `>> 16` is replicated with Math.floor so the quantization matches MRSAB0's high-word
- * multiply; positionZ is a depth (≥ 0), so this is exact for the domain.
+ * multiply. positionZ is a depth, so it is CLAMPED to ≥ 0 (`Math.max(0, …)`): the ROM's MRSAB0 is a
+ * signed multiply, but a negative or −Infinity depth is degenerate (never produced by spawn/closeSpeed,
+ * but the field is an unguarded `number` and the AC-4 successor plans to read the raw PLSTAT+19 LSB
+ * into it), and an unclamped negative would make `limit` negative — which `plonsnClamp` would read as
+ * "the plane is always outside the window" and shove it to the WRONG side. The clamp keeps `limit ≥ 0`
+ * (or +Infinity/NaN for a degenerate +Infinity/NaN depth, both of which `plonsnClamp` leaves alone), so
+ * the totality this module claims actually holds.
  *
  * DEVIATION — the PFROTN rotation is NOT applied (declared seam). The ROM rotates this window by the
  * inverse of the universe bank before comparing (`LDY PFROTN … JSR D.COMP / JSR TRIG / JSR MRSLT0`,
@@ -494,21 +500,24 @@ function screenPos(world: number, eye: number, positionZ: number): number {
  * as a Dev deviation; the successor that threads the bank ports the rotation from the cited bytes.
  */
 function plonsnLimit(positionZ: number): number {
-  return Math.floor((positionZ * PLONSN_WINDOW) / 0x10000) * 0x100
+  return Math.floor((Math.max(0, positionZ) * PLONSN_WINDOW) / 0x10000) * 0x100
 }
 
 /**
  * PLONSN's per-axis clamp: if `|world − pilot|` exceeds the depth-scaled `limit`, set the world
  * position to the window edge measured THROUGH the pilot (:2921-2932) — so it tracks him downrange
  * — else leave it where the servo put it (`:2920 BCC 40$ ;PLANE W/I WINDOW`, PLONSN clamps, it does
- * not attract). A non-finite limit (degenerate depth) leaves the position untouched.
+ * not attract). Totality: a NaN world coordinate centres on the pilot; and because `plonsnLimit`
+ * clamps depth to ≥ 0, the only non-finite `limit` that can reach here is +Infinity or NaN (a
+ * degenerate +Infinity/NaN depth) — both fail the `> limit` test and leave the position untouched, so
+ * no degenerate depth can ever produce a wrong-side or non-finite result.
  */
 function plonsnClamp(world: number, eye: number, limit: number): number {
   const offset = world - eye
   // Totality (rb4-6 R3): a degenerate coordinate (NaN) centres on the pilot rather than propagating
   // — the ±olim `clamp` used to be the NaN sink on X; PLONSN is now that bound, so it must sink it too.
   if (Number.isNaN(offset)) return eye
-  if (!(Math.abs(offset) > limit)) return world // inside the window (or NaN limit) → untouched
+  if (!(Math.abs(offset) > limit)) return world // inside the window (or non-finite limit) → untouched
   return eye + Math.sign(offset) * limit
 }
 

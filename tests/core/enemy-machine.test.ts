@@ -137,7 +137,7 @@ interface WavesModule {
    * formation logic that a single-enemy step() cannot see. Returns the advanced
    * wave with destroyed planes removed.
    */
-  stepWave?: (enemies: readonly Enemy[], level?: number) => readonly Enemy[]
+  stepWave?: (enemies: readonly Enemy[], level?: number, eye?: readonly [number, number, number]) => readonly Enemy[]
 }
 
 let m: EnemyModule = {}
@@ -228,7 +228,12 @@ describe('rb4-6 AC-1 — inner-window reversal (P.INER, RBARON.MAC:2794-2796)', 
     const lvl = 2
     const ilim = need(m.P_ILIM, 'P_ILIM')[lvl]
     const olim = need(m.P_OLIM, 'P_OLIM')[lvl]
-    let e = withEnemy({ x: ilim - 1, y: 0, deltaX: -8, kind: 'lead', parallel: false }, 1, lvl)
+    // rb4-16 re-seat (Reviewer HIGH): seat at the identity depth so `x = ilim-1` is genuinely INSIDE
+    // the inner window in SCREEN space. Without this the servo (which reads screen = world × scale /
+    // positionZ) sees x=ilim-1 at positionZ=P_INDP as OUTER, and the inner-reversal this test names
+    // is never exercised — the test was mutation-proven vacuous (its two siblings above were re-seated,
+    // this one was missed).
+    let e = withEnemy({ x: ilim - 1, y: 0, deltaX: -8, kind: 'lead', parallel: false, positionZ: identityZ() }, 1, lvl)
     let minX = e.x
     for (let f = 0; f < 60 && e.active; f++) {
       e = step(e, lvl)
@@ -856,5 +861,21 @@ describe('rb4-6 R3 — totality: a NaN coordinate cannot poison the per-frame st
     expect(Number.isFinite(badY.y), 'a NaN altitude survived step() — clamp() propagates NaN').toBe(true)
     const badX = step(withEnemy({ x: Number.NaN, entryFrames: 0 }, 1, 2), 2)
     expect(Number.isFinite(badX.x), 'a NaN x survived step() — clamp() propagates NaN').toBe(true)
+  })
+
+  it('step() returns finite x/y for a degenerate positionZ (the servo divide + PLONSN limit stay total)', () => {
+    // rb4-16 (Reviewer [SEC]): the servo divides by positionZ (`screenPos`) and PLONSN scales its
+    // limit by it (`plonsnLimit`). A degenerate positionZ (0/negative/±Infinity/NaN) must not poison
+    // enemy.x/y — a negative depth once shoved the plane to the WRONG side of the pilot, and a
+    // -Infinity depth once returned a non-finite x that persisted every later frame. The `Math.max(0,
+    // positionZ)` domain guard + the `> limit` window test now sink all of them. Unreachable from
+    // spawn today, but the AC-4 successor reads the raw PLSTAT+19 LSB into positionZ — this pins the
+    // boundary so it STAYS total. RED before the guard; green after.
+    const step = need(m.step, 'step')
+    for (const pz of [0, -1, Number.NEGATIVE_INFINITY, Number.POSITIVE_INFINITY, Number.NaN]) {
+      const r = step(withEnemy({ x: 100, positionZ: pz, entryFrames: 0 }, 1, 4), 4, [0, 224, 0])
+      expect(Number.isFinite(r.x), `positionZ=${pz}: x came out ${r.x} — the servo/PLONSN divide leaked a non-finite`).toBe(true)
+      expect(Number.isFinite(r.y), `positionZ=${pz}: y came out ${r.y} — the servo/PLONSN divide leaked a non-finite`).toBe(true)
+    }
   })
 })

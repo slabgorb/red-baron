@@ -461,6 +461,14 @@ describe('rb4-16 AC-R3 — a plane stays reachable through rb4-17\'s growing gun
   // threaded down to the servo, which the current code silently ignores) and judges reach with the
   // REAL `guns.collides` — the same rotated COLLD box that scores kills, bank rotation and all.
   //
+  // WHAT IT DOES AND DOES NOT PROVE (Reviewer, rb4-16): this is a coarse REACHABILITY / soft-lock
+  // FLOOR — "can a chasing pilot keep a plane in the gun." It is NOT the proof that the eye is
+  // threaded: its outer control loop (the chasing `flightStep` below) COMPENSATES for a blind servo,
+  // so tearing the eye out of `stepWave` leaves GMLEVL 1/2/3 above their bars and only nicks 0/4 by
+  // <1%. AC-1's "stepWave OBSERVES the eye" (top of this file) is the DECISIVE eye-threading proof —
+  // it pins identical stepping under two far-apart eyes and fails hard the moment the eye is ignored.
+  // Read this guard as the anti-soft-lock reachability floor it is, and lean on AC-1 for the seam.
+  //
   // THE BAR IS THE HONEST CAPTURED BASELINE, measured 2026-07-17 through the CURRENT (rb4-17 COLLD)
   // gun with this exact harness — NOT the stale 597/112/24/20/10.8 that display-space.test.ts:343
   // records from the deleted ±32 gun. Re-measured avg frames-in-reach per plane life (25 seeds ×
