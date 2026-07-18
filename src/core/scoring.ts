@@ -105,6 +105,15 @@ const leadScore = (depth: number): number => {
  * enemy depth convention: SMALLER depth is nearer); 'drone' and 'blimp' are flat,
  * depth-independent. Total — every KillKind returns a positive, finite score.
  */
+/**
+ * PLVALU — the live worth of the plane in your sights, for the HUD readout (rb4-9 / AC-4;
+ * RBARON.MAC:5290 `LDA PLVALU / JSR DECIMAL`). It IS the lead-kill value: `depthMSB × VALFRC / 16`
+ * floored at VALMIN, flat DRNPNT once far/dim — so it COUNTS DOWN as the plane closes.
+ */
+export function planeValue(depth: number): number {
+  return leadScore(depth)
+}
+
 export function scoreKill(kind: KillKind, depth: number): number {
   switch (kind) {
     case 'lead':

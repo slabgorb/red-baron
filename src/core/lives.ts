@@ -35,6 +35,8 @@
 // PURE and deterministic. No DOM, no time, no randomness — every function returns a
 // fresh value and never mutates its input.
 
+import { type SceneSegment, V_BRIT_MAX } from './scene'
+
 // ─── ROM-exact constants (findings §5) ───────────────────────────────────────
 
 /** INITLF — options-indexed initial lives (RBARON.MAC, `.BYTE 2,3,4,5`). */
@@ -132,4 +134,30 @@ export function tickGrace(lives: Lives): Lives {
 /** WO.CNT gate — are enemy planes disabled this frame? (spawn grace still running). */
 export function enemiesDisabled(lives: Lives): boolean {
   return lives.grace > 0
+}
+
+// ─── DSPLIF — the lives readout (rb4-9 / AC-4) ────────────────────────────────
+
+/**
+ * The LIVES readout as a row of little plane glyphs — one LPLANE icon per remaining life, exactly
+ * as DSPLIF draws them (`DSPLIF … JSR VGJSRL ;DISPLAY LIFE PLANES`, RBARON.MAC:1501-1526). Each
+ * glyph is a tiny biplane silhouette in NDC (HUD overlay, screen space); the row sits top-left.
+ * Empty at zero lives. The glyph shape is OUR seam (the ROM's LPLANE picture); it is playtest-tunable.
+ */
+export function livesGlyphs(count: number): readonly (readonly SceneSegment[])[] {
+  const glyphs: (readonly SceneSegment[])[] = []
+  const n = Math.max(0, Math.trunc(count))
+  const seg = (x1: number, y1: number, x2: number, y2: number): SceneSegment => ({ x1, y1, x2, y2, intensity: V_BRIT_MAX })
+  for (let i = 0; i < n; i++) {
+    const cx = -0.92 + 0.06 * i
+    const cy = 0.9
+    const w = 0.02 // wing half-span
+    // A minimal plane icon: wing bar, fuselage, tail — three strokes.
+    glyphs.push([
+      seg(cx - w, cy, cx + w, cy), // wings
+      seg(cx, cy + 0.012, cx, cy - 0.02), // fuselage
+      seg(cx - 0.008, cy - 0.02, cx + 0.008, cy - 0.02), // tail
+    ])
+  }
+  return glyphs
 }

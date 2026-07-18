@@ -183,14 +183,6 @@ const WINDOW_Z = 1
  */
 const MUZZLE_X = 4
 
-/**
- * The tracer streak trails this far behind the shell's nose, so the bullet reads as MOTION
- * rather than as a dot. One shell-Z COUNT — the ROM's own range unit, the same unit S.MAXZ
- * and SHELL_SPEED are in, and the granularity of one collision sub-step. Inferred (the ROM's
- * tracer is a hardware artefact, not a byte).
- */
-const TRACER_TRAIL_Z = 1
-
 // ─── state ───────────────────────────────────────────────────────────────────
 
 /** Which of the two muzzles a shot leaves — they alternate (findings §5). */
@@ -309,16 +301,16 @@ export const shellDepth = (z: number): number => z * S_DPTH
  * (biplane.ts sets the house precedent: the plane's model and its `renderModel` walk live in
  * one core module. The shell now does the same.)
  *
- * The streak runs from the shell's nose back TRACER_TRAIL_Z counts. (x, y) are world-window
- * units — the space the enemy lives in — carried straight through, since a shell fired down
- * the boresight does not manoeuvre.
+ * rb4-9: a shell is a DOT (VGDOT), not a streak — `JSR VGDOT ;DISPLAY DOT (Z REG)`
+ * (RBARON.MAC:5258, VGUT.MAC:305). It projects to a single POINT at `shellDepth(z)` — the depth
+ * it KILLS at (the whole rb4-1 lesson: the light is where the kill is). The clone's old trailing
+ * streak "so it reads as motion" was the invented part. (x, y) are world-window units — the space
+ * the enemy lives in — carried straight through, since a shell fired down the boresight does not
+ * manoeuvre.
  */
 export function shellSegments(shell: Shell, viewProj: Mat4): readonly SceneSegment[] {
-  const nose = shellDepth(shell.z)
-  const tail = shellDepth(Math.max(0, shell.z - TRACER_TRAIL_Z))
-  const front: Vec3 = [shell.x, shell.y, -nose]
-  const back: Vec3 = [shell.x, shell.y, -tail]
-  const seg = projectSegment(front, back, viewProj)
+  const at: Vec3 = [shell.x, shell.y, -shellDepth(shell.z)]
+  const seg = projectSegment(at, at, viewProj) // both endpoints coincide → a dot
   return seg ? [seg] : []
 }
 

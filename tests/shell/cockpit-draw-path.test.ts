@@ -110,7 +110,7 @@ import {
   DISCHK, INITIAL_FLIGHT, step as stepFlight, toAttitude, type ProximityBand,
 } from '../../src/core/flight'
 import { sceneProjection, type SceneSegment } from '../../src/core/scene'
-import { shellDepth, S_DPTH, type Shell } from '../../src/core/guns'
+import { shellDepth, type Shell } from '../../src/core/guns'
 import { P_INDP, displayPos, type Enemy } from '../../src/core/enemy'
 import type { Wreck } from '../../src/core/explosion'
 
@@ -644,16 +644,14 @@ describe('INVARIANT 1 — the light is where the kill is (measured off the real 
               `A bullet must be drawn where it can kill.`,
           )
         }
-        // …and the streak trails it by exactly one Z count, so it reads as motion and not as a
-        // dot. (A tracer scaled by k keeps a 256-unit trail too — this is not the depth check,
-        // it is the shape check, and both are needed.)
-        const expectedTail = shellDepth(Math.max(0, shell.z - 1))
-        if (Math.abs(drawnTail - expectedTail) > 1e-6) {
-          divergences.push(`frame ${i}: tracer tail at ${drawnTail}, expected ${expectedTail}`)
+        // rb4-9 / AC-5: the shell is a DOT (VGDOT), not a streak. Both endpoints are the SAME
+        // point at the kill depth — the shape check is now "tail == nose", the trail is gone. The
+        // DEPTH-truth above is untouched (a dot at the wrong depth still lands at `drawnNose`).
+        if (Math.abs(drawnTail - killDepth) > 1e-6) {
+          divergences.push(`frame ${i}: dot tail at ${drawnTail}, expected the kill depth ${killDepth}`)
         }
-        // The streak is a streak: nose and tail are one Z count apart in depth.
-        if (Math.abs(drawnNose - drawnTail - S_DPTH) > 1e-6 && shell.z > 1) {
-          divergences.push(`frame ${i}: tracer is ${drawnNose - drawnTail} long, expected ${S_DPTH}`)
+        if (Math.abs(drawnNose - drawnTail) > 1e-6) {
+          divergences.push(`frame ${i}: a dot has zero length, but nose−tail = ${drawnNose - drawnTail}`)
         }
       }
     }
@@ -774,8 +772,17 @@ describe('INVARIANT 4 — every pixel stroked came out of a core projection, una
     // we compare the RECORDED CANVAS against what core actually returned.
     //
     // Every core renderer drops null (behind-eye) segments and strokes the rest in projection
-    // order — renderModel, shellSegments, horizonSegments, mountainSegments all do — so the
-    // stroked path is the non-null projections, one for one.
+    // order — renderModel, shellSegments, horizonSegments, mountainSegments, and now propSegments
+    // (the player + enemy propellers, rb4-9) all do — so the WORLD path is the non-null
+    // projections, one for one.
+    //
+    // rb4-9 changes the shape of the canvas path: after the projected WORLD (which now includes the
+    // props) comes a HUD OVERLAY — the lives glyphs (DSPLIF) and windscreen bullet holes (WNDSHD).
+    // Those are authored directly in NDC (screen space), NOT projected, so they are NOT in `f.proj`.
+    // The guard keeps its full teeth on the projected geometry — the world+props are stroked EXACTLY
+    // as projected, in order (the whole original attack class) — and the non-projected HUD tail
+    // (whose geometry is pinned in tests/core/hud.test.ts) is required only to be finite, in-frame
+    // pixels. main.ts draws the world first and the HUD last, so the world is a strict prefix.
     for (const [i, f] of frames.entries()) {
       const expected: PixelSeg[] = f.proj
         .filter((c): c is ProjCall & { seg: SceneSegment } => c.seg !== null)
@@ -786,11 +793,20 @@ describe('INVARIANT 4 — every pixel stroked came out of a core projection, una
         })
 
       expect(
-        f.strokes,
-        `frame ${i}: the vectors on the canvas are not the vectors core projected. ` +
+        f.strokes.slice(0, expected.length),
+        `frame ${i}: the WORLD vectors on the canvas are not the vectors core projected. ` +
           `Something between the renderer and the glass added, dropped, reordered or rescaled ` +
           `geometry — which is a renderer with no name and no test.`,
       ).toEqual(expected)
+
+      // The tail is the HUD overlay (lives + windscreen). It must be finite, in-frame pixels —
+      // never a smuggled WORLD stroke escaping the projection guard by being authored in NDC.
+      for (const s of f.strokes.slice(expected.length)) {
+        for (const v of [s.x1, s.x2]) expect(v, `frame ${i}: HUD x out of frame`).toBeGreaterThanOrEqual(0)
+        for (const v of [s.x1, s.x2]) expect(v).toBeLessThanOrEqual(WIDTH)
+        for (const v of [s.y1, s.y2]) expect(v, `frame ${i}: HUD y out of frame`).toBeGreaterThanOrEqual(0)
+        for (const v of [s.y1, s.y2]) expect(v).toBeLessThanOrEqual(HEIGHT)
+      }
     }
     expect(frames.some((f) => f.strokes.length > 0)).toBe(true)
   })
