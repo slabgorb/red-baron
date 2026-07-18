@@ -176,7 +176,9 @@ function draw(
   // the scrolling ground-wave landscape (rb3-3) — up to 4 SCAPE mountains falling
   // from the horizon, projected through the SAME substrate as everything else.
   // Empty (renders nothing) outside a ground wave.
-  strokeSegments(mountainSegments(mountains, attitude, eye, aspect), width, height)
+  // rb4-8: mountains take the eye's ALTITUDE only; their lateral pan lives in m.x (panned +
+  // wrapped by stepMountain), so passing eye[0] here too would double-count the pilot's turn.
+  strokeSegments(mountainSegments(mountains, attitude, eye[1], aspect), width, height)
 
   // the wave — each live plane is a WORLD object at `depth`, banked, tilting with the player's
   // attitude, and drawn where the pilot can actually see it: `displayPos(enemy, eye)`, the ROM's
@@ -551,7 +553,12 @@ function frame(nowMs: number): void {
     // PLDELX/PLDELY for the duration (RBARON.MAC:1108-1113), so the horizon
     // holds still while the war (and the airship) animates on. After game over
     // the yoke still flies the empty war — the ROM parks in attract.
+    // rb4-8: capture the eye's world-X before the flight step; the mountains scroll their
+    // stored X by the per-frame CHANGE in it (PLYRDL). Zero while dying (yoke frozen), so
+    // the landscape holds. One global delta feeds every free mountain (not the map index).
+    const panBefore = toEye(flight)[0]
     if (dying === null) flight = step(flight, input)
+    const playerPanDX = toEye(flight)[0] - panBefore
     // EOL clears GUN.ST and the shell sound (:1109-1110): no NEW shells while
     // dying or after the end — the trigger reads released and the gun cools.
     guns = fire(guns, fireHeld && dying === null && !gameOver)
@@ -563,7 +570,7 @@ function frame(nowMs: number): void {
     // frame at the calc-frame cadence, and clears when the wave returns to the sky.
     if (isGroundMode(grmode)) {
       if (mountains.length === 0) mountains = initialMountains()
-      mountains = mountains.map(stepMountain)
+      mountains = mountains.map((m) => stepMountain(m, playerPanDX))
     } else if (mountains.length > 0) {
       mountains = []
     }

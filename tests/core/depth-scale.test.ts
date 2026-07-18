@@ -599,6 +599,10 @@ describe('COMPLETENESS — every depth-denominated constant is enumerated, or th
       'MIN_DEPTH',
       'P_OBDZ',
       'PF_FALLEN_DZ',
+      // P_MAXZ — rb4-8. The mountain on→fallen Z threshold (RBARON.MAC:445 `P.MAXZ =1001`,
+      // .RADIX 16 → 0x1001 = HORZ+1). A position ON the depth axis, transcribed with a
+      // citation like SPAWN_DEPTH/S_MAXZ, not derived — the latch flips when depth < P_MAXZ.
+      'P_MAXZ',
       'PFOBIZ_DEPTHS',
       'BONUS_DEPTH_MSB', // scoring.ts — the ROM's own depth-MSB gate (PLNSCR)
       'HORZ',
