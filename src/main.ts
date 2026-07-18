@@ -37,14 +37,16 @@ import {
   shouldSpawnBlimp, spawn as spawnBlimp, step as stepBlimp, blimpFires,
   reapBlimp, blimpSegments, blimpTarget, type Blimp,
 } from './core/blimp'
-import { initialLives, loseLife, tickGrace, enemiesDisabled, type Lives } from './core/lives'
+import { initialLives, loseLife, tickGrace, enemiesDisabled, livesGlyphs, type Lives } from './core/lives'
 import { initialMountains, stepMountain, mountainSegments, type Mountain } from './core/landscape'
-import { sceneProjection, type SceneSegment } from './core/scene'
+import { sceneProjection, depthIntensity, V_BRIT_MAX, type SceneSegment } from './core/scene'
+import { propFrame, propSegments, playerPropSegments } from './core/prop'
+import { initialWindscreen, addBulletHole, windscreenSegments, type Windscreen } from './core/windscreen'
 import { SIM_TIMESTEP_S } from './core/timing'
 import { INITIAL_GUNS, fire, step as stepGuns, shellSegments, type Guns, type Shell } from './core/guns'
 import { explode, stepWreck, type Wreck } from './core/explosion'
 import { wreckSegments } from './core/wreck-render'
-import { scoreKill, gmlevlForKills } from './core/scoring'
+import { scoreKill, gmlevlForKills, planeValue } from './core/scoring'
 import { closesPast, beginPass, evadeCheck, ACE_ATTACK_FRAMES, type ReturningAce } from './core/returning-ace'
 import { initialCountUp, queueScore, tickCountUp } from './core/score-countup'
 import { beginEol, tickEol, eolDone, type EolState } from './core/eol'
@@ -118,17 +120,40 @@ function toPixel(nx: number, ny: number, width: number, height: number): [number
   return [((nx + 1) / 2) * width, ((1 - ny) / 2) * height]
 }
 
-/** Stroke a list of NDC segments as glowing vectors on the current context. */
-function strokeSegments(segs: readonly SceneSegment[], width: number, height: number): void {
+/**
+ * Stroke a list of NDC segments as glowing vectors on the current context.
+ *
+ * rb4-9: the AVG's per-vector intensity is honoured — each segment's `intensity` (or a per-object
+ * `override`, for depth-cueing a whole object at its own depth) maps to how brightly it strokes.
+ * Segments are stroked in contiguous runs of equal intensity, so the DRAW ORDER is preserved
+ * exactly (the cockpit-draw-path INVARIANT-4 pixel-fidelity guard still holds), and objects fade
+ * with depth (`;INTENSITY SET TO DEPTH`) with the airframe/strut two-tier riding the plane's own
+ * per-segment intensity.
+ */
+function strokeSegments(
+  segs: readonly SceneSegment[],
+  width: number,
+  height: number,
+  override?: number,
+): void {
   if (!ctx) return
-  ctx.beginPath()
-  for (const seg of segs) {
-    const [x1, y1] = toPixel(seg.x1, seg.y1, width, height)
-    const [x2, y2] = toPixel(seg.x2, seg.y2, width, height)
-    ctx.moveTo(x1, y1)
-    ctx.lineTo(x2, y2)
+  let i = 0
+  while (i < segs.length) {
+    const intensity = override ?? segs[i].intensity
+    ctx.globalAlpha = Math.max(0.2, intensity / V_BRIT_MAX)
+    ctx.beginPath()
+    let j = i
+    for (; j < segs.length; j++) {
+      if ((override ?? segs[j].intensity) !== intensity) break
+      const [x1, y1] = toPixel(segs[j].x1, segs[j].y1, width, height)
+      const [x2, y2] = toPixel(segs[j].x2, segs[j].y2, width, height)
+      ctx.moveTo(x1, y1)
+      ctx.lineTo(x2, y2)
+    }
+    ctx.stroke()
+    i = j
   }
-  ctx.stroke()
+  ctx.globalAlpha = 1
 }
 
 /**
@@ -153,6 +178,9 @@ function draw(
   shells: readonly Shell[],
   overheated: boolean,
   score: number,
+  propPicture: number,
+  lives: number,
+  windscreen: Windscreen,
 ): void {
   if (!ctx) return
   const { width, height } = canvas
@@ -207,13 +235,19 @@ function draw(
   // the downed planes — falling/spinning, then bursting into the PIECE0-3 debris (rb2-6).
   // The picture (and the burst's size, which is a SCREEN quantity) lives in core/wreck-render.
   for (const wreck of wrecks) {
-    strokeSegments(wreckSegments(wreck, projView), width, height)
+    strokeSegments(wreckSegments(wreck, projView), width, height, depthIntensity(wreck.depth))
   }
   for (const enemy of enemies) {
     // The model matrix is core's `planeModel` (rb4-17): the eye still enters through
     // `displayPos` — inside planeModel — so the plane is DRAWN through the identical pan the
     // gun KILLS it with, and the ROM's ×4 picture scale + dual-Z live where a test can reach.
-    strokeSegments(renderModel(biplaneLOD(enemy.facingAway), multiply(projView, planeModel(enemy, eye))), width, height)
+    const planeMvp = multiply(projView, planeModel(enemy, eye))
+    // rb4-9: the airframe strokes at the depth-cued V.BRIT (nearer brighter), the wing struts
+    // 0x60 dimmer (renderModel's two tiers). The enemy PROPELLER — transcribed but never drawn
+    // until now — grows on the nose from the same DBPROP topology, at the plane's pose and depth.
+    const brightness = depthIntensity(enemy.depth)
+    strokeSegments(renderModel(biplaneLOD(enemy.facingAway), planeMvp, brightness), width, height)
+    strokeSegments(propSegments(propPicture, planeMvp), width, height, brightness)
   }
 
   // the drifting blimp (rb2-13) — the authentic BLIMP_PICTURE yawed BROADSIDE, posed and
@@ -222,21 +256,35 @@ function draw(
   // the suite watches them agree, both in core (tests/core/screen-scale.test.ts) and through
   // THIS function, in the booted cockpit (tests/cockpit-loop.test.ts).
   if (blimp !== null) {
-    strokeSegments(blimpSegments(blimp, projView), width, height)
+    strokeSegments(blimpSegments(blimp, projView), width, height, depthIntensity(blimp.depth))
   }
 
   // the player's tracers — bright bullets streaking out along the boresight (rb2-5), projected
-  // by core/guns through the SAME z→depth conversion `collides` kills with.
+  // by core/guns through the SAME z→depth conversion `collides` kills with. rb4-9: each is now a
+  // DOT (VGDOT), one point at the depth it kills at, not the old line streak.
   for (const shell of shells) {
     strokeSegments(shellSegments(shell, projView), width, height)
   }
 
-  // GUN.ST overheat warning — the ROM "shows a warning" when the guns lock out
-  // (findings §5); it clears as they cool, so the cue doubles as the cooldown signal.
+  // rb4-9: the PLAYER'S OWN PROPELLER — the ROM's most prominent foreground element, absent until
+  // now. A cockpit-foreground picture cycling PROP.F over the three blade pictures on the DISPLAY
+  // clock (propPicture = propFrame(displayFrame), advanced once per frame() below). Drawn LAST of
+  // the projected world so it sweeps over the scene ahead.
+  strokeSegments(playerPropSegments(propPicture, aspect), width, height)
+
+  // ── the HUD overlay (rb4-9 / AC-4): screen-space vectors, drawn over the world ──
+  // Authored directly in NDC (not projected), so they follow the projected world in the stroke
+  // order — the cockpit-draw-path INVARIANT-4 guard checks the projected prefix, then this tail.
+  strokeSegments(livesGlyphs(lives).flat(), width, height) // DSPLIF — a plane glyph per life
+  strokeSegments(windscreenSegments(windscreen), width, height) // WNDSHD — the ace's bullet holes
+
+  // GUN.ST overheat warning — the ROM "shows a warning" when the guns lock out (findings §5); it
+  // clears as they cool, so the cue doubles as the cooldown signal. rb4-9: the invented red
+  // second-colour banner is retired — the ROM's message is MONOCHROME cabinet green like the world.
   if (overheated) {
     ctx.save()
-    ctx.fillStyle = '#ff5533'
-    ctx.shadowColor = '#ff5533'
+    ctx.fillStyle = '#33ff66'
+    ctx.shadowColor = '#33ff66'
     ctx.shadowBlur = 12
     ctx.font = 'bold 24px monospace'
     ctx.textAlign = 'center'
@@ -256,6 +304,11 @@ function draw(
   ctx.textAlign = 'left'
   ctx.textBaseline = 'top'
   ctx.fillText(`SCORE ${score}`, 16, 12)
+  // rb4-9 / AC-4: the PLVALU readout — the live worth of the plane in your sights, beside the
+  // score. It counts DOWN as the lead closes (RBARON.MAC:5290). Shown only while a wave is up.
+  if (enemies.length > 0) {
+    ctx.fillText(`PLANE ${planeValue(nearestDepth(enemies))}`, 16, 40)
+  }
   ctx.restore()
 }
 
@@ -367,6 +420,8 @@ let grndct = 0 // GRNDCT — ground target-groups left to deploy while a ground 
 let grmode = GRMODE_PLANE // GRMODE ground-wave byte — set to INITGR (0C0) on a ground slot, cleared (STPLNE) on a plane slot (rb3-2)
 let guns: Guns = INITIAL_GUNS
 let simFrame = 0 // calc-frame counter — drives the blimp's ÷2 fire cadence (blimpFires)
+let displayFrame = 0 // rb4-9: DISPLAY-frame counter (one per frame()/rAF, 62.5 Hz) — advances the prop
+let windscreen: Windscreen = initialWindscreen() // rb4-9: the ace's accumulating bullet holes (WNDSHD)
 
 // ─── rb4-3: DETERMINISM — the SHELL owns the seed; the sim never reads the clock ──
 // The ROM's RANDOM (RBARON.MAC:6193) is a pure software LFSR with no clock input. The
@@ -467,6 +522,7 @@ function preMotionFrame(events: GameEvent[]): boolean {
         ace = attack.ace
         if (attack.result === 'hit') {
           dying = beginEol('shells') // GREND = 0x80, "SHELL CD" (:3758-3759)
+          windscreen = addBulletHole(windscreen, ace.side) // WNDSHD: a hole on the ace's shoulder (ENSIDE)
           events.push({ type: 'player-hit' }) // the CRSHSN crash
         }
       }
@@ -493,6 +549,7 @@ function preMotionFrame(events: GameEvent[]): boolean {
         gameOver = true // nothing left → the high-score seat (:1210-1212); the card draws below
       } else {
         flight = INITIAL_FLIGHT // GMINIT/INITIAL — I4YPOS back to 0x0210 (rb2-9)
+        windscreen = initialWindscreen() // a fresh plane brings a clean windscreen (rb4-9)
       }
       if (groundDeath) {
         consumeFrame()
@@ -526,6 +583,9 @@ function frame(nowMs: number): void {
   // Cap the catch-up so a stalled tab (huge dt) can't spiral the fixed-step loop.
   accumulator += Math.min((nowMs - lastMs) / 1000, 0.25)
   lastMs = nowMs
+  // rb4-9: THE DISPLAY CLOCK. One tick per rendered frame (rAF ≈ 62.5 Hz), independent of the
+  // calc-frame accumulator below — the prop advances on THIS, not on simFrame (the ÷N trap).
+  displayFrame += 1
 
   const input = readInput(enemies, grmode)
   const fireHeld = held.has(' ')
@@ -623,6 +683,7 @@ function frame(nowMs: number): void {
       // with the pilot's state); only the EFFECT is gated on him being alive.
       if (blimpFires(simFrame) && nextFloat(blimpRng) < BLIMP_HIT_CHANCE && dying === null && !gameOver) {
         dying = beginEol('shells')
+        windscreen = addBulletHole(windscreen, blimp.side) // WNDSHD: a hole on the airship's side
         events.push({ type: 'player-hit' }) // the CRSHSN crash
       }
       blimp = reapBlimp(drifted, aspect)
@@ -753,7 +814,7 @@ function frame(nowMs: number): void {
 
   // rb4-5 draws from the FLIGHT (the translated-world camera); rb4-4 supplies the
   // DISPLAYED score — the SCOREM count-up's register, not an instant total.
-  draw(flight, enemies, blimp, mountains, wrecks, guns.shells, guns.overheated, countUp.displayed)
+  draw(flight, enemies, blimp, mountains, wrecks, guns.shells, guns.overheated, countUp.displayed, propFrame(displayFrame), lives.count, windscreen)
   // rb4-4: the end-state card. ENDLFE with no lives left parks the ROM at the
   // high-score check (RBARON.MAC:1210-1212); the clone's minimal seat for that
   // story is the card itself, over an emptied sky the yoke still flies.

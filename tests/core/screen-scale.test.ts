@@ -742,6 +742,10 @@ describe('COMPLETENESS — every screen-denominated constant is enumerated, or t
       'blimpSegments', //    core/blimp      — screen-scale (the crossing, the despawn)
       'shellSegments', //    core/guns       — tracer-seam (the drawn depth IS the kill depth)
       'renderModel', //      core/biplane    — tests/core/biplane.test.ts
+      'propSegments', //     core/prop       — tests/core/prop.test.ts (the enemy prop, rb4-9)
+      'playerPropSegments', // core/prop     — tests/core/prop.test.ts + prop-clock-wiring (player prop)
+      'windscreenSegments', // core/windscreen — tests/core/hud.test.ts (the bullet holes, rb4-9)
+      'livesGlyphs', //      core/lives      — tests/core/hud.test.ts (the DSPLIF lives, rb4-9)
     ]
 
     it('every strokeSegments() call site draws a MEASURED core function — no rivals', () => {

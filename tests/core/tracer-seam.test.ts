@@ -255,15 +255,15 @@ describe('the tracer is DRAWN at the depth the bullet KILLS at (measured, not as
     }
   })
 
-  it('the streak TRAILS the bullet — the tail is nearer the eye than the nose', () => {
-    // The tracer must read as motion, and it must point the right way: the back of the streak
-    // is the depth the shell was at one Z count ago, so it projects FARTHER from the vanishing
-    // point than the nose does. (A streak drawn backwards would still pass the depth tests
-    // above — this is the property they cannot see.)
+  it('the shell is a DOT (VGDOT), not a streak — a single point at the kill depth (rb4-9)', () => {
+    // rb4-9 / AC-5: the ROM draws the shell with `JSR VGDOT ;DISPLAY DOT` (RBARON.MAC:5258) — a
+    // POINT, not the clone's old trailing streak. Both endpoints coincide. This RETIRES the former
+    // "the streak trails the bullet" assertion; what it must NOT lose is the depth-truth the depth
+    // tests above pin — a dot drawn at the wrong depth still lands there, so this only fixes the SHAPE.
     const shell: Shell = { x: 4, y: 0, z: 10, gun: 'right', active: true }
     const [seg] = shellSegments(shell, PROJ)
-    expect(Math.abs(seg.x1)).toBeLessThan(Math.abs(seg.x2)) // nose closer to centre => farther away
-    expect(seg.x1).not.toBe(seg.x2) // …and it is a streak, not a dot
+    expect(seg.x1, 'a dot has no trail: x1 === x2').toBe(seg.x2)
+    expect(seg.y1, 'a dot has no trail: y1 === y2').toBe(seg.y2)
   })
 
   it('a shell at the muzzle (z = 0) is not drawn behind the pilot', () => {
