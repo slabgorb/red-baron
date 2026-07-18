@@ -39,6 +39,10 @@ import {
 } from './core/blimp'
 import { initialLives, loseLife, tickGrace, enemiesDisabled, livesGlyphs, type Lives } from './core/lives'
 import { initialMountains, stepMountain, mountainSegments, type Mountain } from './core/landscape'
+import {
+  GTIMER_INITIAL, deployGate, groupFromRandom, deployGroup, groundTargetSegments,
+  scrollBandAbs, type GroundTarget,
+} from './core/ground-targets'
 import { sceneProjection, depthIntensity, V_BRIT_MAX, type SceneSegment } from './core/scene'
 import { propFrame, propSegments, playerPropSegments } from './core/prop'
 import { initialWindscreen, addBulletHole, windscreenSegments, type Windscreen } from './core/windscreen'
@@ -170,11 +174,19 @@ function viewAspect(): number {
   return canvas.height === 0 ? 1 : canvas.width / canvas.height
 }
 
+/** A deployed mountain target-group riding its carrier slot — the PFOBJ+7..+A decoration. */
+interface DeployedGroup {
+  /** Index into `mountains` — the carrier record the group was deployed onto. */
+  readonly slot: number
+  readonly targets: readonly GroundTarget[]
+}
+
 function draw(
   flight: FlightState,
   enemies: readonly Enemy[],
   blimp: Blimp | null,
   mountains: readonly Mountain[],
+  groundGroups: readonly DeployedGroup[],
   wrecks: readonly Wreck[],
   shells: readonly Shell[],
   overheated: boolean,
@@ -208,6 +220,16 @@ function draw(
   // rb4-8: mountains take the eye's ALTITUDE only; their lateral pan lives in m.x (panned +
   // wrapped by stepMountain), so passing eye[0] here too would double-count the pilot's turn.
   strokeSegments(mountainSegments(mountains, attitude, eye[1], aspect), width, height)
+
+  // rb4-11: the deployed ground-target groups — each strokes against its CARRIER mountain
+  // (GRDISP draws a decorated mountain's slots while drawing that mountain, RBARON.MAC:
+  // 3562-3650), through the same altitude-only playfield substrate the carrier itself uses.
+  for (const group of groundGroups) {
+    const carrier = mountains[group.slot]
+    if (carrier !== undefined) {
+      strokeSegments(groundTargetSegments(group.targets, carrier, attitude, eye[1], aspect), width, height)
+    }
+  }
 
   // the wave — each live plane is a WORLD object at `depth`, banked, tilting with the player's
   // attitude, and drawn where the pilot can actually see it: `displayPos(enemy, eye)`, the ROM's
@@ -417,6 +439,8 @@ function worldBlimpTarget(b: Blimp, eye: Vec3): Enemy {
 let waveClock = INITIAL_WAVE_CLOCK // MODECT/NEWCT schedule — NEWCT counts WAVES (rb4-7); runs of plane waves
 let waveOpened = false // has the opening wave been fielded? the first wave comes off the initial clock, no step
 let grndct = 0 // GRNDCT — ground target-groups left to deploy while a ground wave runs (rb4-7 AC-4)
+let gtimer = 0 // GTIMER — the deploy pacing clock (rb4-11; INITGR arms it, deployGate re-arms on deploy)
+let groundGroups: readonly DeployedGroup[] = [] // rb4-11: deployed target-groups riding their carrier mountains
 let grmode = GRMODE_PLANE // GRMODE ground-wave byte — set to INITGR (0C0) on a ground slot, cleared (STPLNE) on a plane slot (rb3-2)
 let guns: Guns = INITIAL_GUNS
 let simFrame = 0 // calc-frame counter — drives the blimp's ÷2 fire cadence (blimpFires)
@@ -438,6 +462,10 @@ const seed = seedParam !== null ? Number(seedParam) >>> 0 : (Date.now() >>> 0)
 // Each stream draws from its OWN sub-seed off the one shell seed — deterministic, and
 // independent so consuming one does not shift another (the rb4-4 draw-order discipline).
 const blimpRng = createRng((seed ^ 0x5e_ed) >>> 0) // the BLMOTN spawn roll + the blimp's per-shot hit roll
+// rb4-11: the ground-target group roll (JSR RANDOM / AND I,3, RBARON.MAC:3450-3451). Its OWN
+// sub-seeded stream — drawing it from blimpRng would shift the airship's whole life (the rb4-4
+// rng-discipline rule: every stream is independent, every draw unconditional on its own events).
+const groundRng = createRng((seed ^ 0x9f0b) >>> 0)
 
 // ─── rb4-4: the dead mechanics, wired ─────────────────────────────────────────
 // The returning ace (rb2-8's module, shelved until now), the two-channel death
@@ -635,9 +663,29 @@ function frame(nowMs: number): void {
     // frame at the calc-frame cadence, and clears when the wave returns to the sky.
     if (isGroundMode(grmode)) {
       if (mountains.length === 0) mountains = initialMountains()
+      const beforeStep = mountains
       mountains = mountains.map((m) => stepMountain(m, playerPanDX))
+      // rb4-11: a recycled carrier (depth snapped BACK toward the horizon) sheds its
+      // decoration — the ROM re-initialises the whole PFOBJ record at recycle (:3356-3364).
+      groundGroups = groundGroups.filter((g) => mountains[g.slot].depth <= beforeStep[g.slot].depth)
+      // rb4-11: THE DEPLOY MACHINE (RBARON.MAC:3415-3455) — one gate event per mountain step
+      // while GRNDCT has groups left (the LDA GRNDCT / BEQ spent-gate stays HERE, the
+      // caller's, per the TEA deviation — like groundModeEnds' GRMODE/GREND gates). A deploy
+      // spends a group (DEC GRNDCT), re-arms GTIMER inside the gate, rolls the group on its
+      // own seeded stream, and decorates THIS mountain (STA AX,PFOBJ+7).
+      for (let slot = 0; slot < mountains.length && grndct > 0; slot++) {
+        if (!mountains[slot].active) continue
+        const gate = deployGate(gtimer, scrollBandAbs(mountains[slot].x))
+        gtimer = gate.gtimer
+        if (gate.deploy) {
+          grndct -= 1
+          const group = groupFromRandom(Math.floor(nextFloat(groundRng) * 256))
+          groundGroups = [...groundGroups.filter((g) => g.slot !== slot), { slot, targets: deployGroup(group) }]
+        }
+      }
     } else if (mountains.length > 0) {
       mountains = []
+      groundGroups = [] // no carrier, no decoration — the wave took its landscape with it
     }
 
     const level = gmlevlForKills(kills)
@@ -764,17 +812,17 @@ function frame(nowMs: number): void {
       let decided = true // a wave SLOT was serviced this frame (opening / completion / ground-end)
       if (isGroundMode(grmode)) {
         // A ground wave is UP — it ends on the CONDITION (GRNDCT spent AND no ground object
-        // visible, RBARON.MAC:3269-3293), never on a timer (rb4-7 AC-4). Ground OBJECTS and the
-        // GTIMER that paces GRNDCT land in rb4-11; until then no object is visible and GRNDCT
-        // counts down its two INITGR target-group slots so the mode still ends and the run resumes.
-        if (groundModeEnds(grndct, 0)) {
+        // visible, RBARON.MAC:3269-3293), never on a timer (rb4-7 AC-4). rb4-11: the objects
+        // are REAL now — GRNDCT is spent by the deploy machine in the mountain block above
+        // (never a per-frame burn), and the visible count is the deployed groups still riding
+        // a carrier, so the mode holds while a decorated mountain is on screen.
+        if (groundModeEnds(grndct, groundGroups.length)) {
           const sched = stepWaveClock(waveClock)
           waveClock = sched.clock
           grmode = grmodeForWave(waveClock.modect)
           spawnPlaneWave = sched.spawnPlaneWave
         } else {
-          grndct = Math.max(0, grndct - 1) // a ground target-group deploys — not a new wave slot
-          decided = false
+          decided = false // the wave is still running its ground content — no slot serviced
         }
       } else if (!waveOpened) {
         // The opening wave: MODECT 0, fielded from the initial clock without a completion step.
@@ -789,7 +837,10 @@ function frame(nowMs: number): void {
         waveClock = sched.clock
         grmode = grmodeForWave(waveClock.modect)
         spawnPlaneWave = sched.spawnPlaneWave
-        if (!spawnPlaneWave && isGroundMode(grmode)) grndct = GRNDCT_INITIAL // INITGR: 2 groups
+        if (!spawnPlaneWave && isGroundMode(grmode)) {
+          grndct = GRNDCT_INITIAL // INITGR: 2 groups (LDA I,2 / STA GRNDCT, :1403-1404)
+          gtimer = GTIMER_INITIAL // …and the pacing clock (LDA I,1 / STA GTIMER, :1405-1406)
+        }
       }
       // Plane waves spawn only when new-plane generation is enabled (D6 clear); a ground slot's
       // INITGR disables it, so the ground wave is a slow-control, empty-sky wait (its CONTENT
@@ -823,7 +874,7 @@ function frame(nowMs: number): void {
 
   // rb4-5 draws from the FLIGHT (the translated-world camera); rb4-4 supplies the
   // DISPLAYED score — the SCOREM count-up's register, not an instant total.
-  draw(flight, enemies, blimp, mountains, wrecks, guns.shells, guns.overheated, countUp.displayed, propFrame(displayFrame), lives.count, windscreen)
+  draw(flight, enemies, blimp, mountains, groundGroups, wrecks, guns.shells, guns.overheated, countUp.displayed, propFrame(displayFrame), lives.count, windscreen)
   // rb4-4: the end-state card. ENDLFE with no lives left parks the ROM at the
   // high-score check (RBARON.MAC:1210-1212); the clone's minimal seat for that
   // story is the card itself, over an emptied sky the yoke still flies.

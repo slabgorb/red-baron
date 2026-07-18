@@ -41,7 +41,7 @@ import { type Rng, nextFloat } from '@arcade/shared/rng'
 import { multiply, rotationY, rotationZ, translation, type Mat4 } from '@arcade/shared/math3d'
 import { P_INDP } from './returning-ace'
 import { SIM_HZ } from './timing'
-import { BLIMP_PICTURE, BLIMP_POINTS } from './topology'
+import { BLCOLL_POINTS, BLIMP_PICTURE, BLIMP_POINTS } from './topology'
 import { renderModel } from './biplane'
 import { frustumHalfWidth, ndcX, worldX, worldY } from './screen'
 import type { SceneSegment } from './scene'
@@ -321,11 +321,30 @@ export function blimpSegments(blimp: Blimp, viewProj: Mat4): readonly SceneSegme
 }
 
 /**
+ * The airship's OWN collision window — BLCOLL (RBARON.MAC:6270-6277), the 8-corner
+ * ±16 × ±16 × ±40 box PLNDB pairs with the blimp (:6285-6287), POSED BROADSIDE exactly as
+ * the picture is drawn (BLIMP_YAW quarter-turn: the model's z span becomes the screen's x
+ * span, its y band stays y). DERIVED from the topology.ts transcription, never re-typed —
+ * the window can never drift from the box, and the box equals the drawn envelope's extents,
+ * so the hit test matches what the player sees (WYSIWYG): ±40 wide, ±16 tall, SYMMETRIC —
+ * no plane belly/top bias. The box's model-x ±16 (the broadside DEPTH extent) is NOT ported
+ * to a shell-z bound here — the shared seam's WINDOW_Z owns that axis; routed as a Delivery
+ * Finding per TEA, never silently invented.
+ */
+const BLIMP_WINDOW = {
+  x: Math.max(...BLCOLL_POINTS.map((p) => Math.abs(p[2]))), // 40 — broadside width (model z)
+  yMin: Math.min(...BLCOLL_POINTS.map((p) => p[1])), //         −16
+  yMax: Math.max(...BLCOLL_POINTS.map((p) => p[1])), //          16
+} as const
+
+/**
  * Adapt the airship to the shared Enemy-shaped target the rb2-5 guns collision (`collides`)
  * and the rb2-6 explosion (`explode`) consume — the blimp rides the SAME kill pipeline as a
  * plane (rb2-13 AC-7). The `kind` is cosmetic to those geometry-only seams; the kill is valued
  * on scoring.ts's dedicated flat-200 'blimp' path. (Was an ad-hoc literal in main.ts and a
  * second copy in tests/core/blimp.test.ts — two copies of an adapter is one too many.)
+ * rb4-11 AC-4: the target CARRIES its BLCOLL window, so `collides` judges the airship by its
+ * own broadside body instead of the plane's COLLD plate.
  */
 export function blimpTarget(blimp: Blimp): Enemy {
   return {
@@ -340,6 +359,7 @@ export function blimpTarget(blimp: Blimp): Enemy {
     // rb4-13: an airship cruising its course is a settled thing — D4 clear, like a
     // settled plane. (Only the wreck path ever reads this; a blimp has no entry turn.)
     facingAway: true,
+    window: BLIMP_WINDOW, // rb4-11 AC-4 — the BLCOLL broadside box rides the target
   }
 }
 

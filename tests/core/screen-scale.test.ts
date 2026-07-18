@@ -738,6 +738,7 @@ describe('COMPLETENESS — every screen-denominated constant is enumerated, or t
     const MEASURED_SOURCES = [
       'horizonSegments', //  core/horizon    — tests/core/horizon.test.ts
       'mountainSegments', // core/landscape  — tests/core/landscape.test.ts, mountain-render-data
+      'groundTargetSegments', // core/ground-targets — tests/core/ground-targets.test.ts (stroke laws) + ground-target-wiring (rb4-11)
       'wreckSegments', //    core/wreck-render — screen-scale (the debris burst)
       'blimpSegments', //    core/blimp      — screen-scale (the crossing, the despawn)
       'shellSegments', //    core/guns       — tracer-seam (the drawn depth IS the kill depth)

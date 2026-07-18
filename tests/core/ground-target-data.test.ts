@@ -388,16 +388,23 @@ describe('rb4-11 AC-4 — BLCOLL blimp collision box (RBARON.MAC:6270-6277, .RAD
     }
   })
 
-  it('EQUALS the blimp model’s own bounding extents — the box bounds what is drawn', () => {
-    // BLIMP_POINTS (topology.ts, rb2-2) spans exactly ±16 in x, ±16 in y, ±40 in z. The ROM
-    // author sized BLCOLL to the envelope; if either transcription drifts, this cross-check
-    // breaks on the side that moved.
+  it('EQUALS the blimp ENVELOPE’s bounding extents — the box bounds the hull, not the gondola', () => {
+    // BLIMP_POINTS (topology.ts, rb2-2) spans ±16 in x and ±40 in z — matched exactly. In y
+    // the ENVELOPE rings span ±16 (the real points [0, ±16, 0]); the GONDOLA hangs to −20
+    // ([±8, −20, ±8]) and the ROM's box deliberately excludes it — BLCOLL is the envelope's
+    // body, so a shot under the hull authentically misses. If either transcription drifts,
+    // this cross-check breaks on the side that moved.
+    // (rb4-11 GREEN correction: the RED premise "±16 in y" ignored the gondola — TEA never
+    // saw this test run, it RED'd on the missing export. Logged as a Delivery Finding.)
     const blimp = need(topo.BLIMP_POINTS, 'BLIMP_POINTS')
     const box = need(topo.BLCOLL_POINTS, 'BLCOLL_POINTS')
     const extent = (pts: readonly Point3[], axis: 0 | 1 | 2): number =>
       Math.max(...pts.map((p) => Math.abs(p[axis])))
     expect(extent(box, 0)).toBe(extent(blimp, 0)) // 16
-    expect(extent(box, 1)).toBe(extent(blimp, 1)) // 16
     expect(extent(box, 2)).toBe(extent(blimp, 2)) // 40
+    // y: the box TOPS the envelope exactly (+16 is a drawn envelope point)…
+    expect(Math.max(...box.map((p) => p[1]))).toBe(Math.max(...blimp.map((p) => p[1]))) // 16
+    // …and the gondola dips BELOW the box floor — authentically outside BLCOLL:
+    expect(Math.min(...blimp.map((p) => p[1]))).toBeLessThan(Math.min(...box.map((p) => p[1]))) // −20 < −16
   })
 })
