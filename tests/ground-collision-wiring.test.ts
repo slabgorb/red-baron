@@ -8,11 +8,20 @@
 //
 // The predicate's CONTRACT (gate, lane, altitude, totality) is pinned in
 // tests/core/ground-collision.test.ts. THIS file boots the real cockpit, holds
-// fire so the opening lone plane dies early (seed 12345, probe-calibrated kill at
-// ~calc frame 7), lets the MODECT schedule enter its ground slot (the probe saw
-// the ground interval between the frame-7 kill and the frame-31 second wave), and
-// asserts the sim actually CONSULTS core/ground-collision while the mountains
-// are up. A predicate nobody calls is returning-ace.ts all over again.
+// fire to shoot down the opening plane RUN, and lets the MODECT/NEWCT schedule
+// enter its first ground slot — then asserts the sim actually CONSULTS
+// core/ground-collision while the mountains are up. A predicate nobody calls is
+// returning-ace.ts all over again.
+//
+// rb4-7 RE-STAGE: the wave clock now counts WAVES, not calc frames, so the game
+// opens with a RUN of MCOUNT[0] = 4 plane waves (MODECT 0) before the first GROUND
+// slot (MODECT 1) — not the old 1:1 plane/ground alternation that put a ground wave
+// right after the first kill. So this suite must clear the whole opening run before
+// the ground slot arrives. Seed 444 (probe-selected) fields a run the held trigger
+// clears, entering the ground slot at ~calc frame 107 where the mountains rise; the
+// window is 220 calc frames to hold it. (Seed 12345's run stalls under fixed-forward
+// fire — a multi-plane wave the un-aimed trigger cannot finish — so it never reaches
+// a ground slot now; 444 is the replacement that does.)
 //
 // (The full fly-into-a-mountain death cannot be staged hands-off today: the
 // SCAPE silhouette units and the I4YPOS eye only meet through the projection
@@ -68,13 +77,13 @@ vi.mock('../src/shell/audio', () => ({
   }),
 }))
 
-const SEED_MS = 12345
+const SEED_MS = 444 // rb4-7: seed whose opening plane RUN the held trigger clears, reaching a ground slot
 
 beforeAll(async () => {
   rec.reset()
   const cockpit = await bootCockpit(1600, 900, SEED_MS)
-  cockpit.pressKey(' ') // the early kill clears the sky and lets the MODECT ground slot arrive
-  for (let f = 1; f <= 150; f++) {
+  cockpit.pressKey(' ') // hold fire through the opening run; the ground slot follows the MODECT-0 run
+  for (let f = 1; f <= 220; f++) {
     rec.frame = f
     cockpit.tick()
   }
