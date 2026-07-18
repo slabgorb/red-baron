@@ -340,8 +340,11 @@ describe('rb4-6 R2 AC-R3 — a plane is reachable at EVERY GMLEVL (the soft-lock
     const avg = reachableFrames / lives
     // > 1.0 is the exact bar round 1 failed: at GMLEVL 2/3/4 it scored exactly 1.0 — the spawn
     // frame and nothing else. A pilot who can fly must do better than a pilot who cannot move.
-    // Through the real gun the shipped machine measures 597.3/112.5/24.1/20.2/10.8 — GMLEVL 4's
-    // margin is REAL but thin. Do not re-tune this bar to manufacture slack; read the level.
+    // rb4-16 CORRECTION (TEA Gap finding): the old figures cited here (597.3/112.5/24.1/20.2/10.8)
+    // were measured through the ±32 world-tube gun rb4-17 DELETED — stale. This is now a coarse
+    // smoke test (2-arg stepWave, boresight); the AUTHORITATIVE per-level reachability guard is
+    // rb4-16 AC-R3 (plonsn.test.ts), which threads a chasing eye through the growing COLLD gun and
+    // pins the honest captured baseline. Do not re-tune this bar to manufacture slack; read the level.
     expect(
       avg,
       `GMLEVL ${lvl}: a chasing pilot averaged ${avg.toFixed(1)} frames in gun-reach per plane — the plane ` +

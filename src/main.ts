@@ -573,8 +573,14 @@ function frame(nowMs: number): void {
     // objects, not floored) so the wave empties instead of hovering in the pilot's face. Downed
     // planes still score BY KIND, bump OBJKLD, wreck, and PLNXCG-promote below — the shells fire
     // + collide in ONE pass against the planes AND the blimp, so a shot connects with what it meets.
+    //
+    // rb4-16: thread the pilot's EYE (`toEye(flight)`) into the servo — it now decides each plane's
+    // zone from its POST-DIVIDE SCREEN position (world − pilot, ÷ depth), so the stick finally moves
+    // the boresight the plane weaves about. Without this the servo reads the boresight and the game
+    // re-creates the five-kill soft-lock this story exists to kill. Same eye guns.collides is judged
+    // against (rb4-6) — the producer and the consumer read the plane in one space.
     if (enemies.length > 0) {
-      enemies = stepWave(enemies, level)
+      enemies = stepWave(enemies, level, toEye(flight))
     }
 
     // ── the blimp (rb2-13): drift + fire, every calc-frame while present ──

@@ -89,6 +89,8 @@ interface Enemy {
   readonly x: number
   readonly y: number
   readonly depth: number
+  /** rb4-16 — POSITION Z, the depth the servo's perspective divide reads; `?? depth` when absent. */
+  readonly positionZ?: number
   readonly deltaX: number
   /** rb4-6 — ΔY, the vertical weave velocity. Optional, exactly as the real Enemy has it. */
   readonly deltaY?: number
@@ -113,8 +115,11 @@ interface EnemyModule {
   P_MNDP?: number
   ACCEL?: number
   LONE_PLANE_CHANCE?: number
+  /** rb4-16 — the perspective-divide fixed-point the servo reads its zone in (screen == world at this depth). */
+  POSITH_SCALE?: number
   spawn?: (rng: Rng, level?: number) => Enemy
-  step?: (enemy: Enemy, level?: number) => Enemy
+  /** rb4-16: step threads the pilot's eye — the servo reads the plane's screen against it. */
+  step?: (enemy: Enemy, level?: number, eye?: readonly [number, number, number]) => Enemy
   proximityBand?: (depth: number) => ProximityBand
 }
 
@@ -291,7 +296,13 @@ describe('enemy — spawn (NWPLNE: side entry, 90° bank, depth P.INDP)', () => 
 // AC-4 — weaving window-follower steering (accelerate to limits, reverse, weave)
 // ───────────────────────────────────────────────────────────────────────────
 describe('enemy — weaving window-follower steering (UPDPLN, findings §3)', () => {
-  it('stays inside the outer window — the weave never escapes ±P_OLIM', () => {
+  it('stays bounded near the boresight — a stationary pilot at the origin keeps the weave small', () => {
+    // rb4-16 reframe (Reviewer): AC-3 RETIRED the ±P_OLIM WORLD fence — the world position is no
+    // longer clamped to ±olim (PLONSN bounds the SCREEN position instead; see plonsn.test.ts AC-2/3).
+    // `trace` here uses the boresight eye (world origin), so the servo weaves the plane ABOUT the
+    // origin and it converges there rather than flying off — a real liveness property (a stationary
+    // pilot is not abandoned), but NOT the old world-fence. olim[0] is a loose sanity ceiling on that
+    // convergence, not the mechanism.
     const olim = need(m.P_OLIM, 'P_OLIM')[0]
     const { xs } = trace(7, 0, 300)
     expect(maxAbs(xs)).toBeLessThanOrEqual(olim + 1e-6)
@@ -334,23 +345,30 @@ describe('enemy — weaving window-follower steering (UPDPLN, findings §3)', ()
   })
 
   it('is NOT a beeline seeker — with the player at centre it never settles at 0', () => {
-    // A seeker would drive x→0 and stop. The window-follower keeps weaving. rb4-6 re-seat:
-    // the one-sided inner-reversal weave oscillates within [±P_ILIM, ±P_OLIM], so the
-    // discriminating property is that the LATE half still swings OUT past the inner window
-    // — it has not converged to centre. (Was: range(lateHalf) > ilim, which lands on the
-    // boundary once the weave is one-sided; maxAbs is robust to that.)
-    const ilim = need(m.P_ILIM, 'P_ILIM')[2]
-    const { xs } = trace(7, 2, 400)
-    const lateHalf = xs.slice(xs.length / 2)
-    expect(maxAbs(lateHalf)).toBeGreaterThan(ilim) // still swings out past the inner window, not parked at 0
+    // A seeker would drive the plane to centre AND stop (deltaX → 0). The window-follower keeps
+    // WEAVING — it never stops reversing. rb4-16 re-seat: the servo now reads the plane's SCREEN
+    // position, and as the plane closes its screen window maps to a SHRINKING world excursion
+    // (correctly keeping it on screen), so the old `maxAbs(world) > ilim` proxy no longer separates
+    // weave from seek — a faithful weaver's world excursion legitimately falls toward the boresight
+    // centre as depth closes. The discriminator that survives is the DELTA: a seeker's would decay to
+    // ~0, the window-follower's keeps taking BOTH signs. (100 frames — within the plane's life before
+    // it bores past P.MNDP; the late half is still airborne.)
+    const { deltas } = trace(7, 2, 100)
+    const late = deltas.slice(deltas.length / 2)
+    expect(late.some((d) => d > 0), 'deltaX never went positive late — the weave decayed to a seek').toBe(true)
+    expect(late.some((d) => d < 0), 'deltaX never went negative late — the weave decayed to a seek').toBe(true)
   })
 
   it('a higher GMLEVL weaves WIDER — level 4 swings past the entire level-0 window', () => {
+    // rb4-16 reframe (Reviewer): both traces use the boresight eye. Level 0's weave converges near
+    // the origin (its narrow window), level 4's wider window + wider spawn carry its world excursion
+    // past level 0's olim — so a deeper GMLEVL genuinely ranges wider. This is the level-scaled window
+    // WIDTH, not the retired ±olim world fence (AC-3); olim0 is the comparison landmark, not a clamp.
     const olim0 = need(m.P_OLIM, 'P_OLIM')[0]
     const wide = maxAbs(trace(7, 4, 400).xs)
     const narrow = maxAbs(trace(7, 0, 400).xs)
-    expect(narrow).toBeLessThanOrEqual(olim0 + 1e-6) // level 0 stays in its small window
-    expect(wide).toBeGreaterThan(olim0) // level 4 flies out past it
+    expect(narrow).toBeLessThanOrEqual(olim0 + 1e-6) // level 0 stays small (its narrow window + boresight convergence)
+    expect(wide).toBeGreaterThan(olim0) // level 4 ranges wider than level 0's whole window
   })
 
   it('a higher GMLEVL CLOSES faster — through step(), not just closeSpeed() in isolation', () => {
@@ -457,15 +475,21 @@ describe('enemy — GMLEVL clamping & direct boundary reversal', () => {
   })
 
   it('reverses IMMEDIATELY at the outer wall — a plane pinned at ±P_OLIM turns back inward', () => {
-    // Deterministic, not inferred from a random trace: seed the plane at the wall moving
-    // outward; one step must decelerate it, and within a short run it leaves the wall.
+    // Deterministic, not inferred from a random trace: seed the plane at the outer window moving
+    // outward; one step must decelerate its delta, and within a short run it weaves back inward.
+    //
+    // rb4-16 (AC-3): the old ±P_OLIM WORLD fence is RETIRED — the world position is no longer clamped
+    // to ±olim. The bound is now PLONSN's depth-scaled SCREEN window (far outside olim at this depth),
+    // and the servo reads the plane's SCREEN zone. Seat the plane at the identity depth (positionZ =
+    // POSITH_SCALE ⇒ screen == world) so `x = olim` sits AT the outer window; pin the REVERSAL the
+    // servo performs there, not a world-position ceiling (which was the stand-in clamp this story kills).
     const step = need(m.step, 'step')
     const olim = need(m.P_OLIM, 'P_OLIM')[0]
+    const identity = need(m.POSITH_SCALE, 'POSITH_SCALE')
 
-    const right = step(withEnemy({ x: olim, deltaX: 50 }), 0)
-    expect(right.x).toBeLessThanOrEqual(olim + 1e-9) // never escapes the wall
-    expect(right.deltaX).toBeLessThan(50) // ΔX decelerating — heading reversed at the bound
-    let e = withEnemy({ x: olim, deltaX: 50 })
+    const right = step(withEnemy({ x: olim, deltaX: 50, positionZ: identity }), 0)
+    expect(right.deltaX).toBeLessThan(50) // ΔX decelerating — heading reversed at the outer window
+    let e = withEnemy({ x: olim, deltaX: 50, positionZ: identity })
     let minX = e.x
     for (let i = 0; i < 20; i++) {
       e = step(e, 0)
@@ -473,9 +497,8 @@ describe('enemy — GMLEVL clamping & direct boundary reversal', () => {
     }
     expect(minX).toBeLessThan(olim) // it left the +wall and weaved back inward
 
-    const left = step(withEnemy({ x: -olim, deltaX: -50 }), 0) // symmetric at the −wall
-    expect(left.x).toBeGreaterThanOrEqual(-olim - 1e-9)
-    expect(left.deltaX).toBeGreaterThan(-50)
+    const left = step(withEnemy({ x: -olim, deltaX: -50, positionZ: identity }), 0) // symmetric at the −window
+    expect(left.deltaX).toBeGreaterThan(-50) // ΔX decelerating — heading reversed at the −outer window
   })
 })
 
