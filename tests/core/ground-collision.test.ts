@@ -40,7 +40,8 @@ import { SCAPES } from '../../src/core/topology'
 import type { Mountain } from '../../src/core/landscape'
 
 /** A staged mountain: scape 0 (peak 24 at x=-104/-88), placed by depth and lane. */
-const mountain = (depth: number, x = 0, scape = 0, active = true): Mountain => ({ scape, depth, x, active })
+const mountain = (depth: number, x = 0, scape = 0, active = true): Mountain =>
+  ({ scape, depth, x, active, onHorizon: depth >= 0x1000 }) // rb4-8: latched bit; collision ignores it
 
 /** The tallest silhouette point of a scape — the staging peak. */
 const peakOf = (scape: number): number => Math.max(...SCAPES[scape].map((p) => p[1]))

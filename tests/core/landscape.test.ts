@@ -24,8 +24,12 @@
 //
 //   export function spawnMountain(scape: number): Mountain          // one mountain, on the horizon
 //   export function initialMountains(): readonly Mountain[]         // the ≤4-slot opening fill
-//   export function stepMountain(m: Mountain): Mountain             // one calc-frame of scroll+fall
-//   export function onHorizon(m: Mountain): boolean                 // depth >= HORZ (not yet fallen)
+//   export function stepMountain(m: Mountain, playerDX: number): Mountain  // one calc-frame
+//
+// rb4-8 RE-SEAT: stepMountain now takes the per-frame player delta (PLYRDL); calls below
+// pass 0 where lateral scroll is not under test. The old `onHorizon(m)` DEPTH predicate is
+// SUPERSEDED by a latched status bit — its contract (and the lateral scroll + wrap) now
+// live in tests/core/mountain-scroll.test.ts; the depth/slot/recycle/render guards stay here.
 //   export function mountainSegments(                               // project via the rb1 substrate
 //     mountains: readonly Mountain[], attitude: Attitude, eye: Vec3, aspect: number,
 //   ): readonly SceneSegment[]
@@ -65,7 +69,6 @@ import {
   spawnMountain,
   initialMountains,
   stepMountain,
-  onHorizon,
   mountainSegments,
 } from '../../src/core/landscape'
 
@@ -74,7 +77,7 @@ const EYE: Vec3 = [0, 0, 0]
 // Step a mountain n calc-frames.
 const steps = (m: Mountain, n: number): Mountain => {
   let out = m
-  for (let i = 0; i < n; i++) out = stepMountain(out)
+  for (let i = 0; i < n; i++) out = stepMountain(out, 0)
   return out
 }
 
@@ -98,7 +101,7 @@ describe('rb3-3 mountain slots — up to 4 PFOBJ objects (N.PFOB)', () => {
 
   it('the slot count is invariant under a full calc-frame step (no growth past 4)', () => {
     const fleet = initialMountains()
-    const stepped = fleet.map(stepMountain)
+    const stepped = fleet.map((m) => stepMountain(m, 0))
     expect(stepped.length).toBe(fleet.length)
     expect(stepped.length).toBeLessThanOrEqual(MAX_MOUNTAINS)
   })
@@ -119,19 +122,19 @@ describe('rb3-3 spawn depth — on the horizon, keyed to HORZ not HORIZN', () =>
     expect(MIN_DEPTH).toBeLessThan(HORZ)
   })
 
-  it('a freshly spawned mountain starts at SPAWN_DEPTH, active, and on the horizon', () => {
+  it('a freshly spawned mountain starts at SPAWN_DEPTH, active, and on the horizon (by depth)', () => {
     const m = spawnMountain(2)
     expect(m.scape).toBe(2)
     expect(m.depth).toBe(SPAWN_DEPTH)
     expect(m.active).toBe(true)
-    expect(onHorizon(m)).toBe(true)
+    expect(m.depth).toBeGreaterThanOrEqual(HORZ) // spawns on the horizon; the latched bit is pinned in mountain-scroll.test.ts
   })
 })
 
 describe('rb3-3 scroll + fall — depth decreases toward the player (PFOBMN)', () => {
   it('stepMountain strictly DECREASES depth (the mountain approaches the eye)', () => {
     const m = spawnMountain(0)
-    const next = stepMountain(m)
+    const next = stepMountain(m, 0)
     expect(next.depth).toBeLessThan(m.depth)
   })
 
@@ -140,27 +143,19 @@ describe('rb3-3 scroll + fall — depth decreases toward the player (PFOBMN)', (
     expect(Number.isFinite(m.depth)).toBe(true)
   })
 
-  it('"on the horizon" is a DEPTH predicate keyed to HORZ, not a screen offset', () => {
-    // A mountain at/above the horizon depth is still on the horizon; once it has
-    // fallen below HORZ it is not (RBARON.MAC:3392-3397, threshold P.MAXZ = HORZ+1).
-    expect(onHorizon({ scape: 0, depth: SPAWN_DEPTH, x: 0, active: true })).toBe(true)
-    expect(onHorizon({ scape: 0, depth: HORZ, x: 0, active: true })).toBe(true)
-    expect(onHorizon({ scape: 0, depth: HORZ - 1, x: 0, active: true })).toBe(false)
-    // HORIZN ($40) is a Y-axis screen offset far below the horizon depth: a mountain
-    // that has scrolled that close has long since fallen off the horizon.
-    expect(onHorizon({ scape: 0, depth: HORIZN, x: 0, active: true })).toBe(false)
-  })
+  // rb4-8 SUPERSEDES rb3-3's "on the horizon is a live `depth >= HORZ` predicate" test:
+  // the on-horizon state is now a LATCHED status bit with hysteresis, and its transitions
+  // (fall at P.MAXZ, re-latch at recycle) are pinned in tests/core/mountain-scroll.test.ts.
 
   it('a stepped mountain eventually leaves the horizon (depth falls below HORZ)', () => {
     let m = spawnMountain(0)
     let left = false
     let prev = m.depth
     for (let i = 0; i < 10000; i++) {
-      m = stepMountain(m)
+      m = stepMountain(m, 0)
       if (m.depth > prev) break // recycled back before we could observe the fall
       if (m.depth < HORZ) {
         left = true
-        expect(onHorizon(m)).toBe(false)
         break
       }
       prev = m.depth
@@ -175,7 +170,7 @@ describe('rb3-3 scroll + fall — depth decreases toward the player (PFOBMN)', (
     let recycled = false
     let prev = m.depth
     for (let i = 0; i < 10000; i++) {
-      m = stepMountain(m)
+      m = stepMountain(m, 0)
       if (m.depth > prev) {
         recycled = true // depth jumped UP → wrapped back to the horizon
         expect(m.depth).toBe(SPAWN_DEPTH)
@@ -197,7 +192,7 @@ describe('rb3-3 render — through the rb1 scene substrate, divide-by-depth (fin
 
   it('projects an active mountain to a non-empty set of finite NDC segments', () => {
     // Place it in front of the eye, already fallen off the horizon so it is on-screen.
-    const m: Mountain = { scape: 0, depth: 400, x: 0, active: true }
+    const m: Mountain = { scape: 0, depth: 400, x: 0, active: true, onHorizon: false }
     const segs = mountainSegments([m], LEVEL, EYE, 1)
     expect(segs.length).toBeGreaterThan(0)
     for (const s of segs) {
@@ -209,8 +204,8 @@ describe('rb3-3 render — through the rb1 scene substrate, divide-by-depth (fin
   })
 
   it('divide-by-depth: a NEARER mountain projects WIDER than the same silhouette farther away', () => {
-    const near: Mountain = { scape: 0, depth: 300, x: 0, active: true }
-    const far: Mountain = { scape: 0, depth: 1200, x: 0, active: true }
+    const near: Mountain = { scape: 0, depth: 300, x: 0, active: true, onHorizon: false }
+    const far: Mountain = { scape: 0, depth: 1200, x: 0, active: true, onHorizon: false }
     const wNear = ndcWidth(mountainSegments([near], LEVEL, EYE, 1))
     const wFar = ndcWidth(mountainSegments([far], LEVEL, EYE, 1))
     expect(wNear).toBeGreaterThan(wFar)
