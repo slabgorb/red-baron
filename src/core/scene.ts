@@ -34,6 +34,31 @@ export interface SceneSegment {
   readonly y1: number
   readonly x2: number
   readonly y2: number
+  /**
+   * AVG per-vector intensity (rb4-9): the ROM drives the vector generator's intensity from an
+   * object's DEPTH and draws the plane in two tiers. A byte masked to the top nibble (0x00..0xF0);
+   * {@link V_BRIT_MAX} is full bright. The projector stamps it so the one substrate every object
+   * funnels through carries a per-object brightness (the shell maps it to how brightly it strokes).
+   */
+  readonly intensity: number
+}
+
+/** Full AVG intensity — the V.BRIT ceiling, a byte masked to the top nibble (RBARON.MAC:121/4550). */
+export const V_BRIT_MAX = 0xf0
+
+/** How much dimmer the wing struts draw than the airframe — `SBC I,60` (RBARON.MAC:5026). */
+export const STRUT_DIM = 0x60
+
+/**
+ * Depth → AVG intensity — the ROM's `;INTENSITY SET TO DEPTH` (RBARON.MAC:4550-4557): a
+ * NEARER object is BRIGHTER. The depth-derived value is masked to the top nibble (`AND I,0F0`,
+ * steps of 0x10) and clamped to the byte window [0, {@link V_BRIT_MAX}]. Degenerate depth folds
+ * to the dim floor rather than leaking NaN.
+ */
+export function depthIntensity(depth: number): number {
+  if (!Number.isFinite(depth)) return 0
+  const drop = Math.min(V_BRIT_MAX, Math.floor(Math.max(0, depth) / 64))
+  return (V_BRIT_MAX - drop) & 0xf0
 }
 
 /**
@@ -121,7 +146,7 @@ function toClip(mvp: Mat4, v: Vec3): { x: number; y: number; w: number } {
  * (RBGRND.MAC:359). Returns null when both endpoints are behind the eye (clip w ≤ 0) — the
  * substrate never strokes a perspective-mirrored ghost.
  */
-export function projectSegment(a: Vec3, b: Vec3, mvp: Mat4): SceneSegment | null {
+export function projectSegment(a: Vec3, b: Vec3, mvp: Mat4, intensity: number = V_BRIT_MAX): SceneSegment | null {
   const ca = toClip(mvp, a)
   const cb = toClip(mvp, b)
   if (ca.w <= 0 && cb.w <= 0) return null
@@ -130,6 +155,7 @@ export function projectSegment(a: Vec3, b: Vec3, mvp: Mat4): SceneSegment | null
     y1: ca.y / ca.w,
     x2: cb.x / cb.w,
     y2: cb.y / cb.w,
+    intensity,
   }
 }
 
@@ -138,11 +164,13 @@ export function projectSegment(a: Vec3, b: Vec3, mvp: Mat4): SceneSegment | null
  * `projectSegment` divide PLUS the constant HORIZN screen-Y lift the ROM's POSITH/POSITP add
  * after the divide (`ADC I,HORIZN`, RBGRND.MAC:303), a depth-INDEPENDENT offset on every
  * playfield object (rb4-5 AC5). Only the world objects take it — motion objects use the bare
- * `projectSegment`, exactly as rb4-5 routes the UNIV4X pan + I4YPOS eye height to the world
- * eye alone. Null-passthrough (both endpoints behind the eye) is preserved.
+ * `projectSegment`, exactly as rb4-5 routes the I4YPOS eye height to the world eye. The
+ * UNIV4X lateral pan reaches the world eye for the NON-wrapping horizon; rb4-8's wrapping
+ * mountains instead carry their pan in their own stored X (landscape.ts). Null-passthrough
+ * (both endpoints behind the eye) is preserved.
  */
-export function projectWorldSegment(a: Vec3, b: Vec3, mvp: Mat4): SceneSegment | null {
-  const seg = projectSegment(a, b, mvp)
+export function projectWorldSegment(a: Vec3, b: Vec3, mvp: Mat4, intensity: number = V_BRIT_MAX): SceneSegment | null {
+  const seg = projectSegment(a, b, mvp, intensity)
   if (seg === null) return null
-  return { x1: seg.x1, y1: seg.y1 + HORIZN_NDC, x2: seg.x2, y2: seg.y2 + HORIZN_NDC }
+  return { x1: seg.x1, y1: seg.y1 + HORIZN_NDC, x2: seg.x2, y2: seg.y2 + HORIZN_NDC, intensity: seg.intensity }
 }

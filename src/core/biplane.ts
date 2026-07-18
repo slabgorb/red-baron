@@ -31,7 +31,7 @@
 // PURE and deterministic. No DOM, no time, no randomness.
 
 import { type Point3, type ConnectOp, DB_MAP, DB_MAR, DB_LNS } from './topology'
-import { type SceneSegment, projectSegment } from './scene'
+import { type SceneSegment, projectSegment, V_BRIT_MAX, STRUT_DIM } from './scene'
 import { toAttitude } from './flight'
 import { multiply, rotationZ, scaling, translation, type Mat4, type Vec3 } from '@arcade/shared/math3d'
 // DELIBERATE FUNCTION-ONLY CYCLE (rb4-17): enemy.ts imports `biplaneBank` from this module, and
@@ -144,15 +144,23 @@ export const PICTURE_SCALE = 4
 export interface BiplaneModel {
   readonly points: readonly Point3[]
   readonly connect: readonly ConnectOp[]
+  /**
+   * rb4-9 — the index in {@link connect} where the DB.LNS "lighter lines" (wing struts) begin.
+   * The ROM decodes the airframe at `V.BRIT`, then the struts 0x60 dimmer (`;ADD LIGHTER LINES`,
+   * RBARON.MAC:5023-5034); `renderModel` reproduces that by dropping the intensity of every op at
+   * or after this index. Absent on the drone — DB.MAR carries no struts, so it draws one tier.
+   */
+  readonly strutStart?: number
 }
 
 /** D4=1, plane rotated toward the viewer: all 42 vertices, back faces (DB.MAP→DB.MAR fall-through) + struts. */
 const FULL_MODEL: BiplaneModel = {
   points: PLANE_POINTS,
   connect: [...DB_MAP, ...DB_MAR, ...DB_LNS],
+  strutStart: DB_MAP.length + DB_MAR.length, // the DB.LNS "lighter lines" start here
 }
 
-/** D4=0, plane facing away: the 29 front-face `.DRPNT` vertices, DB.MAR front list only. */
+/** D4=0, plane facing away: the 29 front-face `.DRPNT` vertices, DB.MAR front list only (no struts). */
 const DRONE_MODEL: BiplaneModel = {
   points: DRONE_POINTS,
   connect: DB_MAR,
@@ -196,13 +204,23 @@ export function biplaneBank(turnRate: number): number {
  * dropped by scene.ts's `projectSegment` (never mirrored). Pure — the model is
  * read, never mutated.
  */
-export function renderModel(model: BiplaneModel, mvp: Mat4): readonly SceneSegment[] {
+export function renderModel(
+  model: BiplaneModel,
+  mvp: Mat4,
+  brightness: number = V_BRIT_MAX,
+): readonly SceneSegment[] {
+  // rb4-9: the airframe strokes at `brightness` (the object's depth-cued V.BRIT); the DB.LNS wing
+  // struts — the ops at/after `strutStart` — stroke 0x60 dimmer, floored at 0 (`;ADD LIGHTER LINES`,
+  // RBARON.MAC:5023-5034). A model with no `strutStart` (the drone) draws one tier.
+  const strutBright = Math.max(0, brightness - STRUT_DIM)
+  const strutStart = model.strutStart ?? model.connect.length
   const segments: SceneSegment[] = []
   let current: Point3 | null = null
-  for (const op of model.connect) {
+  for (let i = 0; i < model.connect.length; i++) {
+    const op = model.connect[i]
     const vertex = model.points[op.point]
     if (op.draw && current !== null) {
-      const segment = projectSegment(current, vertex, mvp)
+      const segment = projectSegment(current, vertex, mvp, i >= strutStart ? strutBright : brightness)
       if (segment !== null) segments.push(segment)
     }
     current = vertex

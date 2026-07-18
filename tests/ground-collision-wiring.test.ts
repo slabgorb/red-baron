@@ -59,9 +59,9 @@ vi.mock('../src/core/landscape', async (importOriginal) => {
   const real = await importOriginal<typeof import('../src/core/landscape')>()
   return {
     ...real,
-    stepMountain(m: Mountain): Mountain {
+    stepMountain(m: Mountain, playerDX: number): Mountain {
       rec.groundFrames.add(rec.frame)
-      return real.stepMountain(m)
+      return real.stepMountain(m, playerDX)
     },
   }
 })

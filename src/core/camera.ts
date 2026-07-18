@@ -12,6 +12,11 @@
 // the downstream perspective divide (scene.ts) turns that eye translation into the
 // ROM's (X − UNIV4X)/depth pan. No rotationX(pitch), no rotationY(yaw) remain.
 //
+// rb4-8 SCOPES the lateral pan: the eye carries UNIV4X for the NON-wrapping playfield
+// (the horizon) and the motion objects. WRAPPING free objects (the mountains) need
+// bounded per-object lateral state, so they carry the pan in their own stored X and take
+// the eye's ALTITUDE only (landscape.ts `stepMountain`/`mountainSegments`).
+//
 // Built on the SHARED Math Box (@arcade/shared/math3d): Red Baron does NOT re-port
 // math3d (epic ruling). Model space already puts the nose at −Z (findings §8), which
 // matches the shared eye space, so no sign bridge is applied.

@@ -599,6 +599,10 @@ describe('COMPLETENESS — every depth-denominated constant is enumerated, or th
       'MIN_DEPTH',
       'P_OBDZ',
       'PF_FALLEN_DZ',
+      // P_MAXZ — rb4-8. The mountain on→fallen Z threshold (RBARON.MAC:445 `P.MAXZ =1001`,
+      // .RADIX 16 → 0x1001 = HORZ+1). A position ON the depth axis, transcribed with a
+      // citation like SPAWN_DEPTH/S_MAXZ, not derived — the latch flips when depth < P_MAXZ.
+      'P_MAXZ',
       'PFOBIZ_DEPTHS',
       'BONUS_DEPTH_MSB', // scoring.ts — the ROM's own depth-MSB gate (PLNSCR)
       'HORZ',
@@ -620,6 +624,12 @@ describe('COMPLETENESS — every depth-denominated constant is enumerated, or th
       // PICTURE_SCALE × positionZ / depth) but is a pure ratio, not a position on the axis —
       // rescaling it with the axis would be the mirror bug, exactly as for PLANE_SPAN above.
       'PICTURE_SCALE',
+      // V_BRIT_MAX — rb4-9. The AVG intensity CEILING (0xF0), not a position on the depth axis. It
+      // appears beside `depth` in `depthIntensity` because that function MAPS a depth to an
+      // intensity (`;INTENSITY SET TO DEPTH`, RBARON.MAC:4550-4557) — depth is the input, V_BRIT_MAX
+      // is the output range. A brightness, not a distance; rescaling it with the axis is the mirror
+      // bug, exactly as for PICTURE_SCALE. Classified in scene.ts, tested in tests/core/intensity.test.ts.
+      'V_BRIT_MAX',
     ])
 
     const unannounced: string[] = []
