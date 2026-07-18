@@ -746,6 +746,7 @@ describe('COMPLETENESS — every screen-denominated constant is enumerated, or t
       'playerPropSegments', // core/prop     — tests/core/prop.test.ts + prop-clock-wiring (player prop)
       'windscreenSegments', // core/windscreen — tests/core/hud.test.ts (the bullet holes, rb4-9)
       'livesGlyphs', //      core/lives      — tests/core/hud.test.ts (the DSPLIF lives, rb4-9)
+      'hudTextSegments', //  core/hud-font   — tests/hud-font-adoption.test.ts (the HUD readout glyphs, rb4-19)
     ]
 
     it('every strokeSegments() call site draws a MEASURED core function — no rivals', () => {

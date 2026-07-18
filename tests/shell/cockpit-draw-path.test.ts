@@ -306,6 +306,22 @@ vi.mock('../../src/core/windscreen', async (importOriginal) => {
   }
 })
 
+// rb4-19: the HUD READOUT glyphs (SCORE/PLANE/GUNS HOT/GAME OVER) — a THIRD non-projected HUD
+// renderer, stroked through the shared ROM glyph font (@arcade/shared/font). Accounted into the
+// INVARIANT-4 tail exactly like lives + windscreen, so the readout's strokes are pinned to the
+// renderer's actual output, not smuggled past the guard. Passthrough: real geometry still draws.
+vi.mock('../../src/core/hud-font', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/core/hud-font')>()
+  return {
+    ...actual,
+    hudTextSegments: (text: string, opts: Parameters<typeof actual.hudTextSegments>[1]): SceneSegment[] => {
+      const segs = actual.hudTextSegments(text, opts)
+      rec.hudLen += segs.length
+      return segs
+    },
+  }
+})
+
 // ─────────────────────────────────────────────────────────────────────────────────
 // THE SYNTHETIC COCKPIT — a canvas that remembers every line it was asked to draw
 // ─────────────────────────────────────────────────────────────────────────────────
