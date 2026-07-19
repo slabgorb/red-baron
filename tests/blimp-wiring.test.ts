@@ -18,16 +18,17 @@
 // BLIMP_SCORE) so a Dev cannot satisfy them by "mentioning" the blimp — each
 // forces a real piece of the wiring.
 //
-// SCOPE — what rb2-13 must wire into main.ts (from the story title + AC-1..AC-7):
-//   AC-1 spawn on the ~25 % BLMOTN roll        → shouldSpawnBlimp gates a blimp spawn
-//   AC-2 drift-step each calc-frame            → blimp.step runs in the SIM_TIMESTEP loop
+// SCOPE — what main.ts must wire (rb2-13, RE-SEATED by rb4-15 — the machine APPROACHES):
+//   AC-1 spawn behind the N.PLNZ gate + roll   → shouldSpawnBlimp(planeCount, roll) — TWO args
+//   AC-2 step each calc-frame                  → blimp.step runs in the SIM_TIMESTEP loop
 //   AC-3 render BLIMP_PICTURE BROADSIDE + yaw  → rotationY (nose-on-z geometry → broadside)
-//   AC-4 fire ÷2 via a REAL damage path        → blimpFires → lives.loseLife (not a discarded bool)
+//   AC-4 fire ÷4, GMLEVL >= 2, REAL damage     → blimpFires(frame, level) → lives.loseLife
 //   AC-5 collide/score(flat 200)/explode       → the shared guns/scoring/explosion seams, blimp kind
-//   AC-6 DESPAWN off-screen (step is unbounded) → main.ts drops the blimp when it drifts off
+//   AC-6 REAP past the ROM line (Z < 0x100)    → main.ts drops the blimp when it flies past
 //   AC-7 resolve Enemy-vs-Blimp 'kind' plumbing → the blimp kill scores as a 'blimp' (flat 200)
 //
-// NB (corrects rb2-10 AC-3's stale wording): the blimp DRIFTS across (non-weaving).
+// NB (corrects rb2-10's stale premise): the blimp APPROACHES — Z-closing from 0x1000
+// (INITBP :1425-1426, BLMOTN :4259-4270), not the drifter the findings doc certified.
 
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
@@ -63,11 +64,16 @@ describe('rb2-13 wiring — main.ts flies the blimp, not just biplane waves', ()
     expect(clause.length).toBeGreaterThan(0)
   })
 
-  // ── AC-1 — spawns on the ~25 % BLMOTN roll ──────────────────────────────────
-  it('AC-1: gates the blimp spawn on the ~25 % roll — main.ts uses shouldSpawnBlimp', () => {
-    // The blimp APPEARS on shouldSpawnBlimp(roll) (findings §3, BLMOTN) — a separate roll
-    // from the biplane wave schedule. A Dev who spawns it unconditionally, or never, fails.
+  // ── AC-1 — spawns behind the N.PLNZ gate, THEN the roll (rb4-15, :2325-2331) ─
+  it('AC-1: gates the spawn on a PLANE COUNT then the roll — shouldSpawnBlimp takes TWO arguments', () => {
+    // LDA N.PLNZ / CMP I,4 / BCC skip / JSR RANDOM / AND I,0C / BNE skip — the decision is
+    // (planeCount, roll). The first argument must be a counted value main.ts maintains, passed
+    // bare (the house style for a routed count); the shipped single-argument roll dies here.
     expect(/\bshouldSpawnBlimp\b/.test(mainText)).toBe(true)
+    expect(
+      /shouldSpawnBlimp\s*\(\s*[A-Za-z_$][\w.$]*\s*,/.test(mainText),
+      'main.ts must pass shouldSpawnBlimp a plane count FIRST, then the roll (rb4-15)',
+    ).toBe(true)
     // …and the blimp core's spawn is pulled in to build it (aliased or not).
     expect(/\bspawn\b/.test(importClause(mainText, './core/blimp'))).toBe(true)
   })
@@ -127,10 +133,16 @@ describe('rb2-13 wiring — main.ts flies the blimp, not just biplane waves', ()
     expect(/(?:function|const|let)\s+blimpSegments\b/.test(mainText)).toBe(false)
   })
 
-  // ── AC-4 — fires ÷2 via a REAL enemy-shell → player-damage path ──────────────
-  it('AC-4: fires on the ÷2 cadence — main.ts drives blimpFires', () => {
-    // The blimp is a threat at every level (no PLNLVL gate), firing on the ÷2 FRAME cadence.
+  // ── AC-4 — fires ÷4, level-gated, via a REAL enemy-shell → player-damage path ─
+  it('AC-4: fires through SHLAUN\'s gates — main.ts drives blimpFires(frame, level)', () => {
+    // rb4-15: the blimp's shells launch through the shared SHLAUN — 1 frame in 4 (:4027-4030)
+    // and ONLY at GMLEVL >= 2 (:4038-4041). main.ts already computes the level for the planes;
+    // it must hand the SAME level to the blimp — a one-argument call is the old machine.
     expect(/\bblimpFires\b/.test(mainText)).toBe(true)
+    expect(
+      /blimpFires\s*\(\s*[A-Za-z_$][\w.$]*\s*,/.test(mainText),
+      'main.ts must pass blimpFires the frame AND the game level (rb4-15)',
+    ).toBe(true)
   })
 
   it('AC-4: the fire connects to a REAL player-damage channel — main.ts wires lives.loseLife', () => {
@@ -158,14 +170,15 @@ describe('rb2-13 wiring — main.ts flies the blimp, not just biplane waves', ()
     expect(/stepGuns|\bfire\b/.test(mainText)).toBe(true)
   })
 
-  // ── AC-6 — DESPAWN when it drifts off-screen ────────────────────────────────
-  it('AC-6: despawns the blimp when it drifts off-screen — the unbounded drift is bounded here', () => {
-    // blimp.step is unbounded BY DESIGN (it never reverses); if main.ts never removes the blimp it
-    // drifts to infinity AND keeps firing forever. main.ts must drop it once it has drifted off —
-    // a despawn bound + a clear of the blimp state.
-    expect(/despawn|off-?screen|drift(?:s|ed)? off|off the (?:screen|edge)/i.test(mainText)).toBe(true)
-    // the blimp state must be CLEARABLE (nullable / reset) so the despawn can actually remove it.
-    expect(/blimp\s*=\s*(?:null|undefined|no)/i.test(mainText)).toBe(true)
+  // ── AC-6 — REAPED when it flies past the ROM line (rb4-15: Z < 0x100) ────────
+  it('AC-6: reaps the blimp when it flies past — the unbounded approach is bounded here', () => {
+    // blimp.step is unbounded BY DESIGN (it closes forever); if main.ts never removes the blimp
+    // it closes through the player AND keeps firing. main.ts must drop it once it is past the
+    // ROM line — the reap seam + a clear of the blimp state. (The word check accepts either
+    // era's vocabulary; the DECISION-PATH guard in screen-scale.test.ts pins the actual call.)
+    expect(/\breap|despawn|off-?screen|fl(?:ies|ew) past/i.test(mainText)).toBe(true)
+    // the blimp state must be CLEARABLE (nullable / reset) so the reap can actually remove it.
+    expect(/blimp\s*=\s*(?:null|undefined|no|reap)/i.test(mainText)).toBe(true)
   })
 
   // ── regression — the blimp must not break the existing plane wiring ──────────

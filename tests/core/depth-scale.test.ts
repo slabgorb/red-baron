@@ -223,25 +223,25 @@ describe('REGISTRY 4/7 — audio.WHINE_HALF_DEPTH: the approach whine can reach 
   // So the half-strength point sits BELOW the closest the plane can ever fly: the whine's
   // entire design curve lives in a region the game cannot reach. Peak gain achievable is
   // 0.135 of a possible 0.35 — and it is monotone, so it never gets louder than that.
-  it('a plane at its CLOSEST is at least half strength — the design point is reachable', () => {
-    // Derive the ceiling from the function itself (gain at depth 0 = "on top of you") rather
-    // than hardcoding 0.35. Self-check: a pinned 0.35 would silently stop meaning "half" the
-    // moment anyone retuned the curve, which is the same class of rot this file is about.
-    const ceiling = approachWhine(0).gain
-    const closest = approachWhine(P_MNDP).gain
+  it('a plane at its CLOSEST is well up the whine sweep — the design point is reachable', () => {
+    // rb4-10 (SN-014): the whine's intensity is PITCH, not gain — nearer ⇒ higher pitch at a
+    // FLAT volume. The "reachable design point" intent is unchanged: WHINE_HALF_DEPTH tied to
+    // the axis (P_INDP/4) puts the plane's whole reachable range across the sweep, where the
+    // old bare 200 sat BELOW the plane's floor. So the plane at its closest genuinely SINGS.
+    const idle = approachWhine(Number.POSITIVE_INFINITY).frequency // clear sky = the hum pitch
+    const closest = approachWhine(P_MNDP).frequency
     expect(
       closest,
       `a plane at P.MNDP (${P_MNDP}) is as close as it will EVER get, and the whine should be ` +
-        `singing. WHINE_HALF_DEPTH = 200 sits BELOW that floor, so the half-strength point ` +
-        `lies outside the range the plane can occupy and the whine never exceeds 38% of full.`,
-    ).toBeGreaterThanOrEqual(ceiling / 2)
+        `well up its pitch sweep — not stuck near the idle hum the way the old bare 200 left it.`,
+    ).toBeGreaterThan(idle * 1.5)
   })
 
-  it('and it still FALLS OFF with distance — the ordering is the ROM fact (findings §6B)', () => {
-    // The negative case, so "just crank the gain" cannot satisfy the test above.
-    expect(approachWhine(P_MNDP).gain).toBeGreaterThan(approachWhine(P_INDP).gain)
-    expect(approachWhine(P_INDP).gain).toBeGreaterThan(approachWhine(P_INDP * 4).gain)
-    expect(approachWhine(Number.POSITIVE_INFINITY).gain).toBe(0) // a clear sky is silent
+  it('and its PITCH still falls off with distance — the ordering is the ROM fact (SN-014)', () => {
+    // The negative case: farther ⇒ lower pitch. A clear sky idles at the HUM pitch, not silence.
+    expect(approachWhine(P_MNDP).frequency).toBeGreaterThan(approachWhine(P_INDP).frequency)
+    expect(approachWhine(P_INDP).frequency).toBeGreaterThan(approachWhine(P_INDP * 4).frequency)
+    expect(approachWhine(Number.POSITIVE_INFINITY).frequency).toBeCloseTo(63920 / (2 * (0xf8 + 1)), 0)
   })
 
   it('is not a bare decimal — it is denominated in the axis', () => {
@@ -254,33 +254,42 @@ describe('REGISTRY 4/7 — audio.WHINE_HALF_DEPTH: the approach whine can reach 
   })
 })
 
-describe('REGISTRY 5/7 — blimp.CRUISE_DEPTH: the airship cruises mid-field, as its own comment says', () => {
-  // FOUND BY THE SWEEP. Nobody had looked at this one.
-  //
-  // main.ts:303 adapts the blimp to the same Enemy-shaped target guns.collides consumes, so
-  // blimp.depth is the SAME axis the plane flies down. Its doc comment claims "a visible
-  // mid-field distance" — true at 600/1080 (56%), false at 600/4224 (14%).
-  it('spawns in the mid-field of the axis, not in the player\'s face', () => {
-    // "Mid-field" is a range, not a number — Dev picks the number; the property is that it
-    // is genuinely mid-field on the CORRECTED axis, and derived from it.
+describe('REGISTRY 5/7 — blimp entry depth: RE-SEATED by rb4-15 (CRUISE_DEPTH is retired)', () => {
+  // THE ENTRY'S HISTORY: the sweep found CRUISE_DEPTH = 600 as a bare decimal that had
+  // forgotten its unit; rb4-1 re-derived it as P_INDP / 2 ("mid-field"). rb4-15 then found
+  // the whole CRUISE was the wrong machine — the ROM blimp does not cruise at ALL. It
+  // ENTERS at Z = 0x1000 = 4096 (INITBP, RBARON.MAC:1425-1426) and CLOSES 0x80 per
+  // calc-frame (BLMOTN :4259-4265). The mid-field property below is therefore INVERTED:
+  // the airship enters DEEP — above 3/4 of the plane's own spawn depth — and earns its
+  // close-ups by flying at you.
+  it('enters at the ROM depth — transcribed, not tuned, and DEEP on the axis', () => {
     const blimp = spawnBlimp(createRng(3), ASPECT)
+    expect(blimp.depth, 'INITBP: Z MSB = 0x10, LSB = 0 → 0x1000').toBe(0x1000)
     expect(
       blimp.depth,
-      `the airship's own comment calls its cruise depth "a visible mid-field distance". On the ` +
-        `corrected axis (spawn ${P_INDP}), 600 is 14% — that is not mid-field, that is nose-on.`,
-    ).toBeGreaterThanOrEqual(P_INDP / 4)
-    expect(blimp.depth).toBeLessThanOrEqual((P_INDP * 3) / 4)
+      `the drifter's "mid-field" band [P_INDP/4, 3·P_INDP/4] is the OLD machine's premise — ` +
+        `the ROM enters the airship at 4096/${P_INDP} = 97% of the plane's spawn depth.`,
+    ).toBeGreaterThan((P_INDP * 3) / 4)
   })
 
-  it('stays inside the gun\'s reach — a blimp you cannot shoot is not a target', () => {
+  it('every frame of the approach stays inside the gun\'s reach — it only ever gets EASIER to hit', () => {
+    // 0x1000 = 4096 < SHELL_RANGE_DEPTH = 6400 at entry, and the depth only DECREASES from
+    // there — the whole life is shootable. (The drifter needed this pinned at its one cruise
+    // depth; the approach makes it a monotone consequence of the entry.)
     const blimp = spawnBlimp(createRng(3), ASPECT)
     expect(blimp.depth).toBeLessThan(SHELL_RANGE_DEPTH)
   })
 
-  it('is not a bare decimal — it is denominated in the axis', () => {
+  it('is not a bare decimal — the ROM constants carry the ROM\'s own hex spelling', () => {
     const blimp = readFileSync(join(srcRoot, 'core', 'blimp.ts'), 'utf8')
-    expect(blimp, 'CRUISE_DEPTH = 600 predates the corrected axis').not.toMatch(
-      /CRUISE_DEPTH\s*=\s*\d+\s*$/m,
+    expect(blimp, 'CRUISE_DEPTH is retired with the drifter (rb4-15)').not.toMatch(
+      /CRUISE_DEPTH\s*=/,
+    )
+    expect(blimp, 'the entry depth is the ROM\'s 0x1000, spelled in hex').toMatch(
+      /BLIMP_Z_START\s*=\s*0x1000\b/,
+    )
+    expect(blimp, 'and a bare decimal 4096 invites the next radix accident').not.toMatch(
+      /BLIMP_Z_START\s*=\s*\d+\s*$/m,
     )
   })
 })
@@ -509,6 +518,10 @@ const REGISTERED: ReadonlySet<string> = new Set([
   // reintroducing the NAME re-arms the bare-decimal guard on it instantly.
   'SHELL_DRAW_FAR',
   'WHINE_HALF_DEPTH',
+  // CRUISE_DEPTH — a TOMBSTONE (rb4-15, like SHELL_DRAW_FAR above). The cruise was the wrong
+  // MACHINE: the ROM blimp enters at BLIMP_Z_START = 0x1000 and closes 0x80/calc-frame
+  // (INITBP :1425-1426, BLMOTN :4259-4265) — there is no constant depth to denominate. Kept
+  // in the set so that reintroducing the NAME re-arms the bare-decimal guard on it instantly.
   'CRUISE_DEPTH',
   // LOD_DISTANCE — a TOMBSTONE (rb4-13, like SHELL_DRAW_FAR above). The switch it fed is
   // ORIENTATION-keyed (PLSTAT+6 D4 — DRNPIC, RBARON.MAC:4961); no depth constant may replace
@@ -593,6 +606,17 @@ describe('COMPLETENESS — every depth-denominated constant is enumerated, or th
       // P_INDP, and it is a ROM NAME: renaming it to DRONE_SPAWN_DEPTH to satisfy the sweep would
       // trade the provenance for the spelling. Registered here for the same reason P_INDP is.
       'DRINZ',
+      // rb4-15 — the airship's three axis constants, all transcribed with citations (the story's
+      // named surface, so renaming them to satisfy the sweep would break the RED contract):
+      //   BLIMP_Z_START    a position ON the axis — the entry Z, 0x1000 (INITBP,
+      //                    RBARON.MAC:1425-1426). Registered for the same reason DRINZ is.
+      //   BLIMP_CLOSE_SPEED a VELOCITY ALONG the axis — 0x80 of Z closed per calc-frame
+      //                    (BLMOTN's 16-bit add of -0x80, :4259-4265).
+      //   BLIMP_DESPAWN_Z  a position ON the axis — the 0x100 line below which BLMOTN clears
+      //                    the object (CMP I,1 / BPL … CLR BLOBJ, :4266-4270).
+      'BLIMP_Z_START',
+      'BLIMP_CLOSE_SPEED',
+      'BLIMP_DESPAWN_Z',
       'S_MAXZ',
       'S_DPTH',
       'SPAWN_DEPTH',

@@ -175,6 +175,8 @@ const rec = vi.hoisted(() => ({
   hudLen: 0, // segments the HUD renderers returned THIS frame
   livesCalled: false, // was livesGlyphs invoked this frame?
   windscreenCalled: false, // was windscreenSegments invoked this frame?
+  hudTextCalled: false, // rb4-19: was hudTextSegments invoked AT ALL this frame? (coarse OR across all 4 readouts)
+  scoreDrawn: false, // rb4-19 round-2: was the SCORE readout specifically drawn this frame? (per-readout guard)
 }))
 
 // Sound is not geometry. Stub the engine so no AudioContext is ever needed; the real
@@ -189,6 +191,25 @@ vi.mock('../../src/shell/audio', () => ({
     setApproach: () => {},
   }),
 }))
+
+// rb4-15: THE SPAWN GATE IS HELD OPEN AT THE SEAM. The airship now spawns behind the
+// N.PLNZ gate — four planes must have appeared — and a 24-frame sky cannot have shown
+// four planes, so the REAL gate would empty this suite of its airship: TARGET TRUTH
+// below exists to measure "every plane AND the airship", and the drifter-era pinned sky
+// relied on the airship's fire grounding the pilot mid-run. The pass-through lifts the
+// count past the gate; the roll still decides (FIXED_NOW's first draw wins, as it always
+// has) and everything flown afterwards — the approach, the fire gates, the reap — is the
+// real machine. The gate's own threshold matrix is pinned in tests/core/blimp-approach
+// .test.ts, its wiring truth in tests/cockpit-loop.test.ts and tests/blimp-wiring.test.ts.
+vi.mock('../../src/core/blimp', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../src/core/blimp')>()
+  return {
+    ...real,
+    shouldSpawnBlimp(planeCount: number, roll: number) {
+      return real.shouldSpawnBlimp(Math.max(planeCount, real.BLIMP_PLANE_GATE), roll)
+    },
+  }
+})
 
 // THE TWO GATES. Every vector on screen is divided by a matrix here — main.ts may not import
 // either function (screen-scale.test.ts) and may not build its own `perspective(`. So this sees
@@ -300,6 +321,31 @@ vi.mock('../../src/core/windscreen', async (importOriginal) => {
     windscreenSegments: (ws: Parameters<typeof actual.windscreenSegments>[0]): readonly SceneSegment[] => {
       const segs = actual.windscreenSegments(ws)
       rec.windscreenCalled = true
+      rec.hudLen += segs.length
+      return segs
+    },
+  }
+})
+
+// rb4-19: the HUD READOUT glyphs (SCORE/PLANE/GUNS HOT/GAME OVER) — a THIRD non-projected HUD
+// renderer, stroked through the shared ROM glyph font (@arcade/shared/font). Accounted into the
+// INVARIANT-4 tail like lives + windscreen: (a) its returned strokes feed rec.hudLen (tail count
+// parity). For "was it drawn?" there are TWO flags with DIFFERENT teeth (round-2 Reviewer note):
+//   • rec.hudTextCalled — a COARSE OR across ALL FOUR readouts; it only proves ≥1 hudText call this
+//     frame, so on a wave-up frame the PLANE readout alone keeps it true and it CANNOT tell which
+//     readout fired. Do not read it as per-readout protection.
+//   • rec.scoreDrawn — the SCORE line SPECIFICALLY. SCORE draws every frame (unconditional in
+//     draw()), so this is asserted true on EVERY frame below; deleting the SCORE draw reddens it on
+//     every frame, not just the enemy-less frame 0 that hudTextCalled happens to catch.
+// Passthrough: real geometry still draws.
+vi.mock('../../src/core/hud-font', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/core/hud-font')>()
+  return {
+    ...actual,
+    hudTextSegments: (text: string, opts: Parameters<typeof actual.hudTextSegments>[1]): readonly SceneSegment[] => {
+      const segs = actual.hudTextSegments(text, opts)
+      rec.hudTextCalled = true
+      if (text.startsWith('SCORE ')) rec.scoreDrawn = true
       rec.hudLen += segs.length
       return segs
     },
@@ -485,8 +531,11 @@ interface Frame {
   readonly stepped: boolean
   /** rb4-9: total segments the HUD renderers (lives + windscreen) returned this frame. */
   readonly hudLen: number
-  /** rb4-9: were BOTH HUD renderers invoked this frame? (a deleted HUD draw call → false). */
+  /** rb4-9/rb4-19: were ALL THREE HUD renderers (lives + windscreen + hudText readout) invoked
+   *  this frame? (a deleted HUD draw call → false). Coarse: hudText half is an OR across readouts. */
   readonly hudDrawn: boolean
+  /** rb4-19 round-2: was the SCORE readout SPECIFICALLY drawn this frame? (per-readout, every frame). */
+  readonly scoreDrawn: boolean
 }
 
 const frames: Frame[] = []
@@ -536,9 +585,18 @@ const FRAMES = 24
  * still seeded, still deterministic) sequence of planes. One shell fewer is alive across the run.
  * This is the "re-read the numbers on purpose" the guard is built to force.
  *
+ * Re-measured for rb4-15 (51 → 84), and the delta is the DEATH THIS SKY NO LONGER HAS. The old
+ * paragraph above ("the airship's fire connects mid-run... EOL clears GUN.ST") described the
+ * drifter-era blimp: an every-level, div-by-2 threat whose shot grounded the pilot and cooled the
+ * gun mid-run. The ROM machine fires through SHLAUN — only at GMLEVL >= 2 (:4038-4041) — so the
+ * level-0 opening airship is a TARGET, not a threat: nobody dies, GUN.ST is never death-cooled,
+ * and the gun runs its whole magazine — 33 more live-shell frames. The airship itself (held open
+ * past the N.PLNZ gate at the seam above) closes from 0x1000 and is reaped below 0x100 mid-run,
+ * eating no shells at this seed's lateral placement. Stable across runs; the pool still fills.
+ *
  * A drift toward zero would still fail, which is the point.
  */
-const TOTAL_LIVE_SHELLS = 51
+const TOTAL_LIVE_SHELLS = 84
 
 beforeAll(async () => {
   await import('../../src/main') // the module body runs: resize(), the listeners, the first rAF
@@ -559,6 +617,8 @@ beforeAll(async () => {
     rec.hudLen = 0
     rec.livesCalled = false
     rec.windscreenCalled = false
+    rec.hudTextCalled = false
+    rec.scoreDrawn = false
     // NB: rec.simWrecks is NOT cleared — a wreck drawn on a frame where no calc-step ran was
     // produced on an EARLIER frame, so the sim's roster of real Wreck objects must accumulate.
 
@@ -579,7 +639,8 @@ beforeAll(async () => {
       live,
       stepped,
       hudLen: rec.hudLen,
-      hudDrawn: rec.livesCalled && rec.windscreenCalled,
+      hudDrawn: rec.livesCalled && rec.windscreenCalled && rec.hudTextCalled,
+      scoreDrawn: rec.scoreDrawn,
     })
   }
 })
@@ -852,8 +913,8 @@ describe('INVARIANT 4 — every pixel stroked came out of a core projection, una
       //   (b) the tail's stroke count must equal exactly what they returned.
       expect(
         f.hudDrawn,
-        `frame ${i}: main.ts did not invoke BOTH HUD renderers (livesGlyphs + windscreenSegments) — ` +
-          `a deleted HUD draw call would make the tail vanish and the prefix pass alone.`,
+        `frame ${i}: main.ts did not invoke ALL THREE HUD renderers (livesGlyphs + windscreenSegments ` +
+          `+ hudTextSegments) — a deleted HUD draw call would make the tail vanish and the prefix pass alone.`,
       ).toBe(true)
       expect(
         f.strokes.length - expected.length,
@@ -872,6 +933,23 @@ describe('INVARIANT 4 — every pixel stroked came out of a core projection, una
     // The HUD tail was actually exercised (lives are always drawn until game over) — not vacuous.
     expect(frames.some((f) => f.hudLen > 0), 'no HUD overlay was ever drawn — the tail guard is vacuous').toBe(true)
     expect(frames.some((f) => f.strokes.length > 0)).toBe(true)
+  })
+
+  // rb4-19 round-2 (Reviewer): the INVARIANT-4 `hudDrawn` flag proves ≥1 hudText call per frame, but
+  // its hudText half is a COARSE OR across all four readouts — on a wave-up frame the PLANE readout
+  // alone keeps it true, so deleting the SCORE draw is caught only INCIDENTALLY (the pinned seed's
+  // enemy-less frame 0, where SCORE is the sole caller). SCORE draws UNCONDITIONALLY in draw(), so it
+  // must appear on EVERY frame. This pins that per-readout, collecting ALL offending frames (no throw-
+  // on-first), so a dropped SCORE line reddens regardless of when the wave spawns. Mutation-proven:
+  // deleting the SCORE strokeSegments(hudTextSegments(`SCORE …`)) call → every frame index reported.
+  it('draws the SCORE readout on EVERY frame (per-readout guard, not the coarse hudDrawn OR)', () => {
+    expect(frames.length, 'frames were captured to check').toBeGreaterThan(0)
+    const missing = frames.map((f, i) => (f.scoreDrawn ? -1 : i)).filter((i) => i >= 0)
+    expect(
+      missing,
+      `the SCORE readout was not drawn through hudTextSegments on frame(s) ${missing.join(', ')} — ` +
+        `the unconditional score line was dropped (hudDrawn's OR'd flag can hide this on wave frames).`,
+    ).toHaveLength(0)
   })
 })
 

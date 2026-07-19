@@ -98,14 +98,22 @@ vi.mock('../src/shell/audio', () => ({
   }),
 }))
 
-const SEED_MS = 444 // rb4-7: the opening plane RUN this held trigger clears, reaching a ground slot
+const SEED_MS = 3 // rb4-15 re-stage: the opening plane RUN this FEATHERED trigger clears (~f95 ground)
 
 beforeAll(async () => {
   rec.reset()
   const cockpit = await bootCockpit(1600, 900, SEED_MS)
-  cockpit.pressKey(' ') // hold fire through the opening run; neutral yoke keeps the seed-444 clear
   for (let f = 1; f <= 140; f++) {
     rec.frame = f
+    // rb4-15 re-stage: FEATHER the trigger (6 display frames on, 6 off) instead of holding
+    // it. The old held-trigger staging (seed 444) only cleared because the DRIFTER-era
+    // airship spawned on the opening decision and shot the pilot — the death sequence cools
+    // GUN.ST — un-jamming a gun that locks out permanently at ~f31 under a constant hold.
+    // rb4-15's airship spawns behind the N.PLNZ four-plane gate, so the opening run has no
+    // blimp: feathered, the +1/shot heat never outruns the x3 release cooling, the gun
+    // fires all run, and the plane RUN clears to the ground slot on its own kills.
+    if (f % 12 === 1) cockpit.pressKey(' ')
+    if (f % 12 === 7) cockpit.releaseKey(' ')
     // rb4-8 rework (Reviewer F1): CLIMB (no turn) once the opening run has cleared. At the
     // ground frames the eye's ALTITUDE (eye[1]) is then nonzero while its lateral pan (eye[0])
     // stays 0 — so the render-seam guard below can tell eye[1] from eye[0]. A climb does not

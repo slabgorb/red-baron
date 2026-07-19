@@ -95,12 +95,18 @@ describe('SH2-18 — red-baron KEEPS its NUMBERS (no over-extraction)', () => {
     expect(gunStrobe(8), 'the D2 gun bit is gated by INTCNT & 8').toBe(true)
     expect(gunStrobe(0)).toBe(false)
 
-    expect(explosionLevel(0), 'EXPVAL is loaded with $F0').toBe(0xf0)
-    expect(explosionLevel(999), 'and ramps down to nothing').toBe(0)
+    // rb4-10: per-victim duration + hard cutoff (SN-016). EXPVAL still loads $F0.
+    expect(explosionLevel(0, 10), 'EXPVAL is loaded with $F0').toBe(0xf0)
+    expect(explosionLevel(999, 10), 'and is silent past the burst').toBe(0)
 
-    // Nearer ⇒ more intense; an UNKNOWN distance must read as "no target", never loudest.
-    expect(approachWhine(10).gain).toBeGreaterThan(approachWhine(1000).gain)
-    expect(approachWhine(Number.NaN).gain).toBe(0)
+    // rb4-10 (SN-014): the whine is a PITCH ramp at CONSTANT volume — nearer ⇒ HIGHER
+    // pitch (not louder); an UNKNOWN distance idles at the hum, never a garbage sweep.
+    expect(approachWhine(10).frequency).toBeGreaterThan(approachWhine(1000).frequency)
+    expect(approachWhine(10).gain, 'volume is flat, not distance-scaled').toBeCloseTo(
+      approachWhine(1000).gain,
+      6,
+    )
+    expect(Number.isFinite(approachWhine(Number.NaN).frequency)).toBe(true)
 
     // The DETUNED pair — divisors one apart, so the voices beat. That beat IS the engine.
     const hum = engineHumParams()

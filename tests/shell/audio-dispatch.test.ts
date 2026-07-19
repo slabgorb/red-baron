@@ -37,9 +37,14 @@
 //   `src/shell/audio-dispatch.ts`:
 //     export interface WorldSound {
 //       readonly playing: boolean       // in a live run (not attract/paused)
-//       readonly gunFiring: boolean     // trigger held & !overheated → the rat-a-tat
+//       readonly gunFiring: boolean     // PLAYER trigger held & !overheated
+//       readonly enemyFiring: boolean   // rb4-10 SN-017: an enemy shell was fired this
+//                                       //   frame — the ROM's S.VAL rattles for both sides
 //       readonly nearestDepth: number   // closest live enemy depth; +Infinity when clear
 //     }
+//   updateContinuousSounds turns the gun ON when gunFiring OR enemyFiring (and playing).
+//   main.ts must populate `enemyFiring` from the sim's enemy-shell creations (Delivery
+//   Finding — main.ts is not unit-testable under vitest's node env).
 //     export function playEventSounds(audio: SoundSurface, events: readonly GameEvent[]): void
 //     export function updateContinuousSounds(audio: SoundSurface, world: WorldSound): void
 //   where SoundSurface = Pick<AudioEngine, 'play'|'playTone'|'setEngine'|'setGun'|'setApproach'>.
@@ -56,6 +61,7 @@
 import { describe, it, expect } from 'vitest'
 import { playEventSounds, updateContinuousSounds, type WorldSound } from '../../src/shell/audio-dispatch'
 import type { GameEvent } from '../../src/core/events'
+import type { OneShot } from '../../src/shell/audio'
 
 /** A recording fake of the audio surface — captures every call, in order. */
 function recorder() {
@@ -63,7 +69,10 @@ function recorder() {
   return {
     calls,
     audio: {
-      play(name: 'explosion' | 'crash'): void {
+      // Mirror the REAL AudioEngine.play(OneShot) signature — now that OneShot
+      // includes 'spiral', a narrower 'explosion' | 'crash' here drifts from the
+      // surface it stands in for (method bivariance hides it from tsc).
+      play(name: OneShot): void {
         calls.push(`play:${name}`)
       },
       playTone(name: 'TK' | 'TP' | 'BN' | 'WP' | 'TH'): void {
@@ -85,6 +94,7 @@ function recorder() {
 const world = (over: Partial<WorldSound>): WorldSound => ({
   playing: true,
   gunFiring: false,
+  enemyFiring: false, // rb4-10 SN-017: an enemy shell rattles the gun too
   nearestDepth: Number.POSITIVE_INFINITY,
   ...over,
 })
@@ -175,14 +185,41 @@ describe('updateContinuousSounds — hum / gun / whine free-run from state', () 
     expect(r.calls).toContain('setApproach:120')
   })
 
-  it('the gun rat-a-tat is on ONLY while firing', () => {
+  it('the gun rat-a-tat is on while the PLAYER fires', () => {
     const firing = recorder()
     updateContinuousSounds(firing.audio, world({ playing: true, gunFiring: true }))
     expect(firing.calls).toContain('setGun:true')
 
-    const held = recorder()
-    updateContinuousSounds(held.audio, world({ playing: true, gunFiring: false }))
-    expect(held.calls).toContain('setGun:false')
+    const idle = recorder()
+    updateContinuousSounds(idle.audio, world({ playing: true, gunFiring: false, enemyFiring: false }))
+    expect(idle.calls).toContain('setGun:false')
+  })
+
+  // rb4-10 / SN-017: the CRSHSN D2 gun bit is driven by S.VAL, which SETSHL bumps for
+  // EVERY shell — the enemy's as well as the player's (RBARON.MAC:2182-84, and the
+  // enemy spray at :1479). So enemy fire, which is audible in the cabinet, must rattle
+  // our gun too. rb2-11 drove the gate purely off the player's trigger, so an enemy
+  // shooting at you was SILENT. The ROM makes no attempt to tell the two sides apart —
+  // one latch bit, one counter — so an enemy shell alone is enough to sound the gun.
+  it('an ENEMY firing rattles the gun even when the player is NOT firing (SN-017)', () => {
+    const r = recorder()
+    updateContinuousSounds(r.audio, world({ playing: true, gunFiring: false, enemyFiring: true }))
+    expect(r.calls, 'enemy fire is audible — the ROM sounds the gun for both sides').toContain(
+      'setGun:true',
+    )
+  })
+
+  it('the gun is silent only when NEITHER side is firing (SN-017)', () => {
+    const r = recorder()
+    updateContinuousSounds(r.audio, world({ playing: true, gunFiring: false, enemyFiring: false }))
+    expect(r.calls).toContain('setGun:false')
+  })
+
+  it('a stopped game keeps the gun silent even under enemy fire (SN-017)', () => {
+    const r = recorder()
+    updateContinuousSounds(r.audio, world({ playing: false, gunFiring: true, enemyFiring: true }))
+    expect(r.calls, 'SNDON is a no-op outside play — attract is silent').toContain('setGun:false')
+    expect(r.calls).not.toContain('setGun:true')
   })
 
   it('out of a run everything falls silent — hum off, gun off, whine off', () => {
