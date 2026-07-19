@@ -1,7 +1,7 @@
 {
   "name": "red-baron",
   "private": true,
-  "version": "0.0.20",
+  "version": "0.0.21",
   "type": "module",
   "dependencies": {
     "@arcade/shared": "github:slabgorb/arcade-shared#v0.15.0"
