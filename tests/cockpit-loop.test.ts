@@ -54,27 +54,27 @@
 //     whose result is thrown away and replaced is caught too.
 //
 // From that sequence alone, four things are proved, and no name, comment, import, constant or
-// expression shape appears in any of them:
+// expression shape appears in any of them (re-seated by rb4-15 — the machine APPROACHES):
 //
-//   1. the airship ENTERS at an edge and is on screen the moment it appears
+//   1. the airship ENTERS at the ROM depth (Z = 0x1000) and is on screen the moment it appears
 //   2. every frame-to-frame move is EXACTLY one core `step` — it cannot be teleported, double-
-//      stepped, or hurried off the edge
-//   3. it CROSSES: through the centre, out to the far side
+//      stepped, or hurried past the line
+//   3. it APPROACHES: the drawn depth closes by the ROM's 0x80 every calc-frame
 //   4. THE ONE THAT MATTERS: the state main.ts DROPPED — the successor of the last state it drew —
-//      must be genuinely off-screen by core's own reckoning, at the aspect of the canvas the game
-//      is really being drawn on. Round 3's bypass drops it at ndc 0.70. This test says so, by name,
-//      with the number.
+//      must be genuinely past the ROM's Z = 0x100 line by core's own reckoning. An early bound, in
+//      any shape, drops a state above the line. This test says so, by name, with the number.
 //
 // A despawn bound smuggled back into main.ts under ANY name, in ANY shape — a const, a bare
-// literal, an `||`, an `&&`, a helper function, an early `return`, a frame counter, a poisoned
-// aspect argument — changes WHICH state gets dropped, and (4) fails. There is nothing to walk
-// around, because there is no text being inspected.
+// literal, an `||`, an `&&`, a helper function, an early `return`, a frame counter — changes
+// WHICH state gets dropped, and (4) fails. There is nothing to walk around, because there is
+// no text being inspected.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { createRng, nextFloat } from '@arcade/shared/rng'
 
-import { sceneProjection } from '../src/core/scene'
-import { ndcX, inFrame } from '../src/core/screen'
+import { sceneProjection, type SceneSegment } from '../src/core/scene'
+import { inFrame } from '../src/core/screen'
+import type { Mat4 } from '@arcade/shared/math3d'
 import type { Blimp } from '../src/core/blimp'
 
 /**
@@ -86,11 +86,28 @@ import type { Blimp } from '../src/core/blimp'
  * observer writing into the observation. So every assertion below is made with the UNMOCKED
  * functions, and the tap is used for nothing but writing down what the cockpit did.
  */
-const core = await vi.importActual<typeof import('../src/core/blimp')>('../src/core/blimp')
-const { shouldSpawnBlimp, BLIMP_SPAWN_CHANCE } = core
+// rb4-15 mid-migration mirror: the TARGET module shape — one-arg reapBlimp, no
+// blimpOffScreen (the drifter's screen-edge predicate retires with the drifter).
+// `typeof import` would pin whichever side of the migration the source currently
+// sits on; the mirror + `as unknown as` bridges the contravariant function members
+// (the rb4-7 lesson). Every member the tests call is still fully typed, and
+// realReap() fails loud-and-clear while the export is missing (RED-friendly).
+interface CoreBlimp {
+  readonly BLIMP_SPAWN_CHANCE: number
+  readonly step: (b: Blimp) => Blimp
+  readonly reapBlimp?: (b: Blimp) => Blimp | null
+  readonly blimpSegments: (b: Blimp, viewProj: Mat4) => readonly SceneSegment[]
+}
+const core = (await vi.importActual<object>('../src/core/blimp')) as unknown as CoreBlimp
+const { BLIMP_SPAWN_CHANCE } = core
 const realStep = core.step
-const realOffScreen = core.blimpOffScreen
 const realSegments = core.blimpSegments
+function realReap(b: Blimp): Blimp | null {
+  if (core.reapBlimp === undefined) {
+    throw new Error('src/core/blimp.ts must export reapBlimp(blimp) (rb4-15 RED contract)')
+  }
+  return core.reapBlimp(b)
+}
 
 // ─────────────────────────────────────────────────────────────────────────────────────────
 // THE RECORDER — a transparent tap on core/blimp. It DELEGATES to the real module (this is
@@ -100,10 +117,16 @@ const realSegments = core.blimpSegments
 
 const rec = vi.hoisted(() => ({
   spawned: [] as unknown[],
+  spawnedAt: [] as number[], // display frame of each blimp spawn (parallel to `spawned`)
+  waves: [] as Array<{ display: number; count: number }>, // every plane wave, as it spawned
+  gateCalls: [] as Array<{ display: number; planeCount: number }>, // every spawn-gate consult
   drawn: [] as Array<{ display: number; blimp: unknown }>,
   display: 0,
   reset(): void {
     this.spawned = []
+    this.spawnedAt = []
+    this.waves = []
+    this.gateCalls = []
     this.drawn = []
     this.display = 0
   },
@@ -113,14 +136,46 @@ vi.mock('../src/core/blimp', async (importOriginal) => {
   const real = await importOriginal<typeof import('../src/core/blimp')>()
   return {
     ...real,
+    // rb4-15: THE GATE IS HELD OPEN AT THE SEAM — and here is the honest why. The N.PLNZ
+    // gate wants FOUR planes shown before a blimp may roll, and with nobody at the controls
+    // that is unreachable in this cockpit: a pilotless wave takes ~1,000 calc-frames to bore
+    // past P.MNDP, the first fly-past arms the returning ACE, and the ace's 4-calc-frame
+    // 50/50 passes kill an idle pilot (no skill-dodge) into game over — which freezes the
+    // wave schedule — minutes before a fourth plane could ever appear. So the pass-through
+    // RECORDS the planeCount main.ts REALLY passed (asserted against the wave tap's own
+    // running sum below — the wiring truth), then lifts it past the gate so the roll still
+    // decides and the machine flown afterwards is untouched (nothing reads the count after
+    // spawn). The gate's own threshold matrix is pinned in tests/core/blimp-approach.test.ts;
+    // the two-argument call shape in tests/blimp-wiring.test.ts. This is the "force the
+    // starving branch at the sim seam" pattern — the sky starves the gate, not the code.
+    shouldSpawnBlimp(planeCount: number, roll: number) {
+      rec.gateCalls.push({ display: rec.display, planeCount })
+      return real.shouldSpawnBlimp(Math.max(planeCount, real.BLIMP_PLANE_GATE), roll)
+    },
     spawn(rng: Parameters<typeof real.spawn>[0], aspect: number) {
       const b = real.spawn(rng, aspect)
       rec.spawned.push(b)
+      rec.spawnedAt.push(rec.display)
       return b
     },
     blimpSegments(blimp: Blimp, viewProj: Parameters<typeof real.blimpSegments>[1]) {
       rec.drawn.push({ display: rec.display, blimp })
       return real.blimpSegments(blimp, viewProj)
+    },
+  }
+})
+
+// rb4-15: a second transparent tap, on the WAVE spawner, so the N.PLNZ gate is checkable
+// from the cockpit — how many planes had appeared when each airship rolled in. Delegates
+// to the real module; it only writes down what went past.
+vi.mock('../src/core/waves', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../src/core/waves')>()
+  return {
+    ...real,
+    spawnWave(...args: Parameters<typeof real.spawnWave>) {
+      const wave = real.spawnWave(...args)
+      rec.waves.push({ display: rec.display, count: wave.length })
+      return wave
     },
   }
 })
@@ -232,17 +287,30 @@ afterEach(() => {
 // ─────────────────────────────────────────────────────────────────────────────────────────
 
 /**
- * A `Date.now()` whose BLMOTN roll lands under the ~25 % chance, so an airship rolls in on the
- * cockpit's very first wave decision. FOUND, not hardcoded: it is re-derived here from the real
- * `createRng`/`nextFloat`/`shouldSpawnBlimp`, so if the Rng or the chance ever changes, this
- * finds the new answer instead of quietly failing to spawn a blimp and passing vacuously.
+ * A `Date.now()` seed whose blimpRng stream rolls UNDER the ~25 % chance early and OFTEN.
+ *
+ * rb4-15 makes the spawn decision TWO-gated (four planes must have appeared, THEN the
+ * roll — RBARON.MAC:2325-2331), so WHICH draw of main.ts's blimpRng is the accepted roll
+ * now depends on how many wave decisions pass before the sky has shown four planes (and
+ * on whether Dev draws per decision or per open gate). Rather than guess that index,
+ * pick a seed whose FIRST draw wins AND whose first six draws include at least three
+ * winners — dense enough that the first open-gate decision lands a blimp for any
+ * reasonable wiring. FOUND, not hardcoded, and deliberately CONTRACT-AGNOSTIC: it reads
+ * the RAW Rng floats against BLIMP_SPAWN_CHANCE (shouldSpawnBlimp's own gate matrix is
+ * pinned in tests/core/blimp-approach.test.ts), so it works identically on both sides
+ * of the migration instead of quietly failing to spawn and passing vacuously.
  */
 function seedThatSpawnsABlimp(): number {
   for (let t = 1; t < 500_000; t++) {
-    // main.ts: createRng((Date.now() ^ 0x5e_ed) >>> 0), and the FIRST draw off that Rng is the roll
-    if (shouldSpawnBlimp(nextFloat(createRng((t ^ 0x5e_ed) >>> 0)))) return t
+    // main.ts: createRng((Date.now() ^ 0x5e_ed) >>> 0) is the blimpRng stream
+    const rng = createRng((t ^ 0x5e_ed) >>> 0)
+    const draws = Array.from({ length: 6 }, () => nextFloat(rng))
+    const wins = draws.filter((d) => d < BLIMP_SPAWN_CHANCE).length
+    // draw 0 is the opening-wave decision's roll (the gate is held open at the seam — see
+    // the mock); the density requirement keeps the seed useful for nearby wiring variants.
+    if (draws[0] < BLIMP_SPAWN_CHANCE && wins >= 3) return t
   }
-  throw new Error('no Date.now seed rolls a blimp — has BLIMP_SPAWN_CHANCE changed?')
+  throw new Error('no Date.now seed rolls a dense blimp stream — has BLIMP_SPAWN_CHANCE changed?')
 }
 
 const SEED_MS = seedThatSpawnsABlimp()
@@ -263,6 +331,9 @@ interface Sighting {
 interface Life {
   /** Every DISTINCT blimp state the cockpit drew, in order — one per calc-frame it survived. */
   readonly states: readonly Blimp[]
+  /** `states`, split into one array per airship (rb4-15: after the first is reaped past the
+   *  player, the two-gate roll may legitimately land a SECOND — each life is its own machine). */
+  readonly lives: ReadonlyArray<readonly Blimp[]>
   /** Every display frame on which the cockpit drew the airship, with the state it drew. */
   readonly sightings: readonly Sighting[]
   /** The painted output of every display frame, in order. */
@@ -271,11 +342,24 @@ interface Life {
   readonly displayFrames: number
   /** How many airships rolled in over the whole run. */
   readonly spawns: number
+  /** Every plane wave the cockpit spawned: when, and how many planes it held (rb4-15). */
+  readonly planeWaves: ReadonlyArray<{ readonly display: number; readonly count: number }>
+  /** Every spawn-gate consult: when, and the plane count main.ts REALLY passed (rb4-15). */
+  readonly gateCalls: ReadonlyArray<{ readonly display: number; readonly planeCount: number }>
+  /** The display frame each airship rolled in on (parallel to the lives, rb4-15). */
+  readonly blimpSpawnDisplays: readonly number[]
   readonly aspect: number
 }
 
-/** Boot the cockpit, fly it for `displayFrames`, and report the airship's whole life. */
-async function flyTheCockpit(width: number, height: number, displayFrames = 1400): Promise<Life> {
+/** Boot the cockpit, fly it for `displayFrames`, and report the airship's whole life.
+ *
+ *  rb4-15: with the gate held open at the seam (see the mock), the airship rolls in on
+ *  the OPENING wave decision (~display 7) and its 31-calc-frame approach is done by
+ *  ~display 200 — 2,000 frames is 10x margin, and the run ends long before the first
+ *  fly-past arms the returning ace (~display 5,860), so the sky stays clean around the
+ *  whole life. The 30 s per-test timeouts absorb slow CI runners (the tempest
+ *  first-release lesson). */
+async function flyTheCockpit(width: number, height: number, displayFrames = 2_000): Promise<Life> {
   const cockpit = await bootCockpit(width, height, SEED_MS)
   const painted: Painted[] = []
   for (let i = 0; i < displayFrames; i++) painted.push(cockpit.tick())
@@ -289,10 +373,29 @@ async function flyTheCockpit(width: number, height: number, displayFrames = 1400
   for (const s of sightings) {
     if (states.length === 0 || states[states.length - 1] !== s.blimp) states.push(s.blimp)
   }
-  return { states, sightings, painted, displayFrames, spawns, aspect: width / height }
-}
 
-const ndcOf = (b: Blimp, aspect: number): number => ndcX(b.x, b.depth, aspect)
+  // Split the state sequence into one life per airship. The recorder tap returns the exact
+  // object main.ts stores, so a life starts precisely at a state the spawn wrapper minted —
+  // identity, not a heuristic.
+  const spawnSet = new Set(rec.spawned)
+  const lives: Blimp[][] = []
+  for (const s of states) {
+    if (spawnSet.has(s) || lives.length === 0) lives.push([s])
+    else lives[lives.length - 1].push(s)
+  }
+  return {
+    states,
+    lives,
+    sightings,
+    painted,
+    displayFrames,
+    spawns,
+    planeWaves: [...rec.waves],
+    gateCalls: [...rec.gateCalls],
+    blimpSpawnDisplays: [...rec.spawnedAt],
+    aspect: width / height,
+  }
+}
 
 /** Is ANY part of the airship's REAL drawn geometry inside the frame? Ground truth for "visible". */
 function isVisible(b: Blimp, aspect: number): boolean {
@@ -313,95 +416,121 @@ describe('THE COCKPIT BOOTS — main.ts is not, and never was, untestable', () =
     expect(first.strokes.some((s) => s.op === 'lineTo')).toBe(true)
   })
 
-  it('the BLMOTN roll actually rolls an airship in — this suite is not vacuous', async () => {
+  it('the spawn roll actually rolls an airship in — this suite is not vacuous', async () => {
     // A test that proves nothing about a blimp that never spawned is the fourth way to be green
-    // and wrong. Prove the airship exists before proving anything about it.
+    // and wrong. Prove the airship exists before proving anything about it. (rb4-15: the
+    // N.PLNZ gate is held open at the seam — see the mock — so the seeded roll lands on the
+    // opening decision; a second airship may legitimately roll in after the first flies past.)
     const { states, spawns } = await flyTheCockpit(1600, 900)
     expect(BLIMP_SPAWN_CHANCE).toBe(0.25)
-    expect(spawns, 'exactly one airship should roll in during the opening wave').toBe(1)
+    expect(spawns, 'at least one airship must roll in').toBeGreaterThanOrEqual(1)
     expect(states.length, 'and the cockpit must actually DRAW it').toBeGreaterThan(10)
-  })
+  }, 30_000)
 })
 
-describe('THE AIRSHIP, FLOWN IN THE REAL COCKPIT — it is never deleted while the player can see it', () => {
-  // 16:9 is the cabinet. The other two aspects prove the despawn tracks the WINDOW, not a
-  // constant fitted to one of them — a poisoned `aspect` argument dies here too.
+describe('THE AIRSHIP, FLOWN IN THE REAL COCKPIT — it approaches, and the reap is the ROM line', () => {
+  // 16:9 is the cabinet. The other two aspects prove the entry visibility and the step
+  // fidelity are window-independent — a poisoned `aspect` argument still dies here.
   const CABINETS: ReadonlyArray<readonly [string, number, number]> = [
     ['16:9', 1600, 900],
     ['4:3', 1200, 900],
     ['21:9', 2100, 900],
   ]
 
-  it.each(CABINETS)('(%s) ENTERS at an edge, IN FRAME — it does not materialise mid-screen', async (_n, w, h) => {
-    const { states, aspect } = await flyTheCockpit(w, h)
-    const entry = states[0]
-    const ndc = ndcOf(entry, aspect)
-    expect(Math.abs(ndc), `the airship entered at ndc ${ndc.toFixed(3)} — that is the middle of the screen`)
-      .toBeGreaterThanOrEqual(0.7)
-    expect(Math.abs(ndc), 'and it must be INSIDE the frame, so the player sees it arrive').toBeLessThanOrEqual(1)
-    expect(isVisible(entry, aspect)).toBe(true)
-  })
-
-  it.each(CABINETS)('(%s) every move is EXACTLY one core step — it cannot be hurried off the edge', async (_n, w, h) => {
-    // Closes the "drift it out faster" family: double-stepping, teleporting, or mutating the pose
-    // would all reap a visible airship "legitimately". The drawn path must BE the core drift.
-    const { states } = await flyTheCockpit(w, h)
-    for (let i = 1; i < states.length; i++) {
-      expect(states[i], `frame ${i}: the cockpit moved the airship somewhere core/blimp.step did not`)
-        .toEqual(realStep(states[i - 1]))
+  it('the gate is fed the REAL plane count — the running sum of every wave the sky has spawned', async () => {
+    // The core gate matrix (closed below four, open at four) is pinned in blimp-approach.test.ts;
+    // THIS proves main.ts feeds it the truth. Every spawn-gate consult the tap recorded must
+    // carry EXACTLY the cumulative plane count of the waves spawned so far — the wave tap's own
+    // running sum, two independent recorders agreeing. A wiring that passes simFrame, kills, a
+    // constant, or nothing at all disagrees on the very first decision (opening wave: ONE plane).
+    // (Why the flown-4-planes version of this test cannot exist, see the mock's header note.)
+    const { gateCalls, planeWaves } = await flyTheCockpit(1600, 900)
+    expect(gateCalls.length, 'the cockpit must consult the spawn gate').toBeGreaterThanOrEqual(1)
+    for (const call of gateCalls) {
+      const planesShown = planeWaves
+        .filter((wv) => wv.display <= call.display)
+        .reduce((sum, wv) => sum + wv.count, 0)
+      expect(call.planeCount, `gate consult at display frame ${call.display}`).toBe(planesShown)
     }
-  })
+    // …and the count is genuinely COUNTING, not vacuously zero: the opening wave was shown.
+    expect(gateCalls[0].planeCount).toBe(planeWaves[0].count)
+    expect(gateCalls[0].planeCount).toBeGreaterThanOrEqual(1)
+  }, 30_000)
 
-  it.each(CABINETS)('(%s) CROSSES the frame — edge, through the centre, out the far side', async (_n, w, h) => {
-    const { states, aspect } = await flyTheCockpit(w, h)
-    const path = states.map((b) => ndcOf(b, aspect))
-    const side = Math.sign(path[0])
-    expect(Math.min(...path.map(Math.abs)), 'the airship must pass through the middle of the screen')
-      .toBeLessThan(0.1)
-    expect(
-      Math.max(...path.map((n) => (Math.sign(n) === -side ? Math.abs(n) : 0))),
-      'and sail out the FAR side — "drifts across the screen" (rb2-10 AC), not "pops and vanishes"',
-    ).toBeGreaterThan(0.9)
-  })
+  it.each(CABINETS)('(%s) every life ENTERS deep, at the ROM depth, IN FRAME — visible on arrival', async (_n, w, h) => {
+    // rb4-15: the machine enters at Z = 0x1000 = 4096 (INITBP, RBARON.MAC:1425-1426) — a
+    // distant airship the player watches arrive, not a prop materialising at a cruise depth.
+    const { lives, aspect } = await flyTheCockpit(w, h)
+    expect(lives.length).toBeGreaterThanOrEqual(1)
+    for (const life of lives) {
+      const entry = life[0]
+      expect(entry.depth, 'every airship must enter at BLIMP_Z_START = 0x1000').toBe(0x1000)
+      expect(isVisible(entry, aspect), 'and the player must see it arrive').toBe(true)
+    }
+  }, 30_000)
+
+  it.each(CABINETS)('(%s) every move is EXACTLY one core step — it cannot be hurried past the line', async (_n, w, h) => {
+    // Closes the "close it out faster" family: double-stepping, teleporting, or mutating the pose
+    // would all reap a visible airship "legitimately". The drawn path must BE the core approach.
+    const { lives } = await flyTheCockpit(w, h)
+    expect(lives.length, 'no airship flew — this guard would pass vacuously').toBeGreaterThanOrEqual(1)
+    for (const life of lives) {
+      for (let i = 1; i < life.length; i++) {
+        expect(life[i], `frame ${i}: the cockpit moved the airship somewhere core/blimp.step did not`)
+          .toEqual(realStep(life[i - 1]))
+      }
+    }
+  }, 30_000)
+
+  it.each(CABINETS)('(%s) APPROACHES — the drawn depth CLOSES by the ROM rate, frame on frame', async (_n, w, h) => {
+    // The wiring-level mirror of BLMOTN :4259-4265: between every two states the cockpit
+    // drew of one airship, the depth fell by exactly 0x80 = 128. The shipped drifter's
+    // delta is 0 — the one-number discriminator between the machines, read off the canvas.
+    const { lives } = await flyTheCockpit(w, h)
+    expect(lives[0].length, 'the approach must be drawn across many calc-frames').toBeGreaterThan(1)
+    for (const life of lives) {
+      for (let i = 1; i < life.length; i++) {
+        expect(life[i - 1].depth - life[i].depth, `state ${i}`).toBe(0x80)
+      }
+      expect(life[life.length - 1].depth, 'no drawn state may sit below the 0x100 line')
+        .toBeGreaterThanOrEqual(0x100)
+    }
+  }, 30_000)
 
   it.each(CABINETS)(
-    '(%s) THE ONE THAT MATTERS: the state the cockpit DROPPED was genuinely off-screen',
+    '(%s) THE ONE THAT MATTERS: the state the cockpit DROPPED was genuinely past the ROM line',
     async (_n, w, h) => {
       // Nothing shot the airship — `held` is empty, so the guns never fire (no shells, no hits).
-      // The ONLY way it can stop being drawn is that main.ts despawned it. So: take the last state
-      // it drew, advance it one core calc-frame (that is exactly the `drifted` main.ts then reaped),
-      // and demand that core — at the aspect of the canvas the game is REALLY drawn on — agrees it
-      // was gone.
-      //
-      // ROUND 3'S BYPASS DIES HERE, LOUDLY. `|| Math.abs(drifted.x) > 640` drops the airship on its
-      // FIRST calc-frame, at ndc ~0.70 — 70 % of the way to the edge, all 36 vertices of it being
-      // stroked onto the canvas. This assertion prints that number back at you.
-      const { states, aspect, sightings, displayFrames } = await flyTheCockpit(w, h)
+      // The ONLY way it can stop being drawn is that main.ts reaped it. So: take the FIRST
+      // life (the run is ~480 calc-frames; a 31-frame life beginning mid-run always completes),
+      // advance its last drawn state one core calc-frame (exactly the state main.ts then
+      // binned), and demand that core agrees it was gone — and that "gone" is the ROM's Z line
+      // (BLMOTN :4266-4270), not a screen-edge invention or an early bound.
+      const { lives, sightings, displayFrames } = await flyTheCockpit(w, h)
 
-      const lastDrawn = states[states.length - 1]
+      const firstLife = lives[0]
+      const lastDrawn = firstLife[firstLife.length - 1]
       const dropped = realStep(lastDrawn) // what main.ts had in hand when it decided to reap
 
       expect(
-        realOffScreen(dropped, aspect),
-        `THE AIRSHIP WAS DELETED IN PLAIN VIEW.\n` +
-          `  last drawn at ndc ${ndcOf(lastDrawn, aspect).toFixed(3)}\n` +
-          `  deleted at    ndc ${ndcOf(dropped, aspect).toFixed(3)}  (|ndc| <= 1 is ON SCREEN)\n` +
-          `  aspect        ${aspect.toFixed(4)} (the canvas the game is actually drawn on)\n\n` +
-          `core/blimp.reapBlimp says this airship is still in the frame, and the cockpit binned it ` +
-          `anyway. Something in src/main.ts is overruling the despawn — a bound, a counter, a ` +
-          `second operand, a doctored aspect. The despawn is ONE call with no operator in it:\n` +
-          `      blimp = reapBlimp(drifted, aspect)\n`,
-      ).toBe(true)
+        realReap(dropped),
+        `core/blimp.reapBlimp says the state the cockpit binned (depth ${dropped.depth}) was still ` +
+          `alive. Something in src/main.ts is overruling the reap — a bound, a counter, a second ` +
+          `operand. The despawn is ONE call with no operator in it: blimp = reapBlimp(stepped)`,
+      ).toBeNull()
+      expect(dropped.depth, 'the binned state sits below Z = 0x100 — it flew past the player').toBeLessThan(0x100)
+      expect(lastDrawn.depth, 'and the last DRAWN state does not — the reap is never early')
+        .toBeGreaterThanOrEqual(0x100)
 
-      // …and the hull, not just the centre: not one vertex of the airship may still be drawable.
-      expect(isVisible(dropped, aspect), 'the airship\'s geometry was still inside the frame').toBe(false)
-
-      // It must also actually LEAVE — an airship that never despawns drifts to infinity, firing.
-      // (It was drawn, and by the end of the run it is not being drawn any more.)
-      const lastSeenOn = sightings[sightings.length - 1].display
-      expect(lastSeenOn, 'the airship never left — the unbounded drift was never reaped')
+      // It must also actually LEAVE — an airship that never despawns closes forever, firing.
+      // (The FIRST life's last sighting: a later airship may legitimately still be aloft at
+      // the end of the run, so the whole-run last sighting proves nothing about this one.)
+      const lifeSightings = sightings.filter((s) => firstLife.includes(s.blimp))
+      const lastSeenOn = lifeSightings[lifeSightings.length - 1].display
+      expect(lastSeenOn, 'the airship never left — the approach was never reaped')
         .toBeLessThan(displayFrames)
     },
+    30_000,
   )
 
   it('the recorded airship is the one on the CANVAS — the tap is not being bypassed', async () => {
@@ -431,5 +560,5 @@ describe('THE AIRSHIP, FLOWN IN THE REAL COCKPIT — it is never deleted while t
       'core/blimp.blimpSegments produced the airship, and its vectors are NOT on the canvas. ' +
         'main.ts is drawing the blimp with something else.',
     ).toBeGreaterThan(segs.length / 2)
-  })
+  }, 30_000)
 })

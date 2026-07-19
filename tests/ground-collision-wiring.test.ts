@@ -77,14 +77,20 @@ vi.mock('../src/shell/audio', () => ({
   }),
 }))
 
-const SEED_MS = 444 // rb4-7: seed whose opening plane RUN the held trigger clears, reaching a ground slot
+const SEED_MS = 3 // rb4-15 re-stage: seed whose opening RUN the FEATHERED trigger clears (~f95 ground)
 
 beforeAll(async () => {
   rec.reset()
   const cockpit = await bootCockpit(1600, 900, SEED_MS)
-  cockpit.pressKey(' ') // hold fire through the opening run; the ground slot follows the MODECT-0 run
   for (let f = 1; f <= 220; f++) {
     rec.frame = f
+    // rb4-15 re-stage: FEATHER the trigger (6 on / 6 off). The old held trigger (seed 444)
+    // relied on the drifter-era airship shooting the pilot — the death sequence cools
+    // GUN.ST — to un-jam a gun that locks out permanently at ~f31 under a constant hold;
+    // the approaching airship spawns behind the N.PLNZ gate, so the opening run is
+    // blimp-free and the pilot must manage the heat instead.
+    if (f % 12 === 1) cockpit.pressKey(' ')
+    if (f % 12 === 7) cockpit.releaseKey(' ')
     cockpit.tick()
   }
 }, 30000)

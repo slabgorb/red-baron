@@ -107,19 +107,26 @@ vi.mock('../src/shell/audio', () => ({
   }),
 }))
 
-const SEED_MS = 444 // the shared staging: this held trigger clears the opening plane RUN
-const FRAMES = 280 //  ... reaches the ground slot well inside 140 (mountain-scroll-wiring);
+const SEED_MS = 3 // rb4-15 re-stage: the shared staging seed — the FEATHERED trigger clears the RUN
+const FRAMES = 280 //  ... reaches the ground slot ~f95 (shared with mountain-scroll-wiring);
 //                     280 leaves the deploy machine dozens of calc-frames of mountain
 //                     events (4 mountains step every calc frame) — but is far too short
 //                     for the NEXT ground slot (a full plane RUN + wrecks must clear first),
-//                     so every recorded deploy below belongs to ONE ground wave.
+//                     so every recorded deploy below belongs to ONE ground wave
+//                     (verified in the rb4-15 re-stage hunt: deploys stay exactly 2 at 280).
 
 beforeAll(async () => {
   rec.reset()
   const cockpit = await bootCockpit(1600, 900, SEED_MS)
-  cockpit.pressKey(' ') // hold fire through the opening run; neutral yoke keeps the seed-444 clear
   for (let f = 1; f <= FRAMES; f++) {
     rec.frame = f
+    // rb4-15 re-stage: FEATHER the trigger (6 on / 6 off). The old held trigger (seed 444)
+    // relied on the drifter-era airship shooting the pilot — the death sequence cools
+    // GUN.ST — to un-jam a gun that locks out permanently at ~f31 under a constant hold;
+    // the approaching airship spawns behind the N.PLNZ gate, so the opening run is
+    // blimp-free and the pilot must manage the heat instead.
+    if (f % 12 === 1) cockpit.pressKey(' ')
+    if (f % 12 === 7) cockpit.releaseKey(' ')
     cockpit.tick()
   }
 }, 30000)

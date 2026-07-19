@@ -192,6 +192,25 @@ vi.mock('../../src/shell/audio', () => ({
   }),
 }))
 
+// rb4-15: THE SPAWN GATE IS HELD OPEN AT THE SEAM. The airship now spawns behind the
+// N.PLNZ gate — four planes must have appeared — and a 24-frame sky cannot have shown
+// four planes, so the REAL gate would empty this suite of its airship: TARGET TRUTH
+// below exists to measure "every plane AND the airship", and the drifter-era pinned sky
+// relied on the airship's fire grounding the pilot mid-run. The pass-through lifts the
+// count past the gate; the roll still decides (FIXED_NOW's first draw wins, as it always
+// has) and everything flown afterwards — the approach, the fire gates, the reap — is the
+// real machine. The gate's own threshold matrix is pinned in tests/core/blimp-approach
+// .test.ts, its wiring truth in tests/cockpit-loop.test.ts and tests/blimp-wiring.test.ts.
+vi.mock('../../src/core/blimp', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../src/core/blimp')>()
+  return {
+    ...real,
+    shouldSpawnBlimp(planeCount: number, roll: number) {
+      return real.shouldSpawnBlimp(Math.max(planeCount, real.BLIMP_PLANE_GATE), roll)
+    },
+  }
+})
+
 // THE TWO GATES. Every vector on screen is divided by a matrix here — main.ts may not import
 // either function (screen-scale.test.ts) and may not build its own `perspective(`. So this sees
 // the whole scene, in WORLD SPACE, before the perspective divide hides the depth. rb4-5 split the
@@ -566,9 +585,18 @@ const FRAMES = 24
  * still seeded, still deterministic) sequence of planes. One shell fewer is alive across the run.
  * This is the "re-read the numbers on purpose" the guard is built to force.
  *
+ * Re-measured for rb4-15 (51 → 84), and the delta is the DEATH THIS SKY NO LONGER HAS. The old
+ * paragraph above ("the airship's fire connects mid-run... EOL clears GUN.ST") described the
+ * drifter-era blimp: an every-level, div-by-2 threat whose shot grounded the pilot and cooled the
+ * gun mid-run. The ROM machine fires through SHLAUN — only at GMLEVL >= 2 (:4038-4041) — so the
+ * level-0 opening airship is a TARGET, not a threat: nobody dies, GUN.ST is never death-cooled,
+ * and the gun runs its whole magazine — 33 more live-shell frames. The airship itself (held open
+ * past the N.PLNZ gate at the seam above) closes from 0x1000 and is reaped below 0x100 mid-run,
+ * eating no shells at this seed's lateral placement. Stable across runs; the pool still fills.
+ *
  * A drift toward zero would still fail, which is the point.
  */
-const TOTAL_LIVE_SHELLS = 51
+const TOTAL_LIVE_SHELLS = 84
 
 beforeAll(async () => {
   await import('../../src/main') // the module body runs: resize(), the listeners, the first rAF
