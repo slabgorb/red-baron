@@ -72,6 +72,11 @@ describe('scaffold — vite.config.ts (pinned port 5277, base /)', () => {
     expect(count(cfg, 'strictPort: true')).toBeGreaterThanOrEqual(2)
   })
 
+  it('pins host 127.0.0.1 on both server and preview (td1-1: strictPort alone does not protect the pin — vite falls through to the IPv6 twin [::1]:<port> with no collision error; the host pin is the line that actually fails loudly)', () => {
+    const cfg = read('vite.config.ts')
+    expect(count(cfg, "host: '127.0.0.1'")).toBeGreaterThanOrEqual(2)
+  })
+
   it('allow-lists arcade.slabgorb.com on both server and preview (tunnel Host)', () => {
     const cfg = read('vite.config.ts')
     // Count actual `allowedHosts: ['arcade.slabgorb.com']` ENTRIES, not bare
