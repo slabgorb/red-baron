@@ -21,7 +21,12 @@ export default defineConfig({
   // Pin Red Baron's dedicated port 5277 — the next free pin in the arcade's
   // port block (the lobby and the other games own the lower pins). strictPort
   // fails loudly on a collision instead of silently wandering to a free port.
+  // host is pinned to IPv4 loopback because strictPort alone does NOT protect
+  // the pin: with 127.0.0.1:5277 held, vite happily binds [::1]:5277 and two
+  // dev servers share the port with no error (td1-1 — the exact
+  // silent-wrong-checkout trap the orchestrator CLAUDE.md warns about).
   server: {
+    host: '127.0.0.1',
     port: 5277,
     strictPort: true,
     // The Cloudflare tunnel forwards Host: arcade.slabgorb.com; Vite blocks
@@ -29,6 +34,7 @@ export default defineConfig({
     allowedHosts: ['arcade.slabgorb.com'],
   },
   preview: {
+    host: '127.0.0.1',
     port: 5277,
     strictPort: true,
     allowedHosts: ['arcade.slabgorb.com'],
