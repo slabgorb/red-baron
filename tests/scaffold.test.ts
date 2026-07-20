@@ -31,6 +31,11 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const path = (rel: string): string => join(root, rel)
 const read = (rel: string): string => readFileSync(path(rel), 'utf8')
 const count = (haystack: string, needle: string): number => haystack.split(needle).length - 1
+// Isolates one top-level vite config block's own text (server/preview never nest
+// braces in this repo's config) so an assertion can be anchored to BLOCK
+// MEMBERSHIP instead of a bare file-wide count — see the host-pin test below.
+const block = (cfg: string, key: 'server' | 'preview'): string =>
+  cfg.match(new RegExp(`${key}:\\s*{[^}]*}`, 's'))?.[0] ?? ''
 
 // Red Baron owns 5277. Every other pin belongs to a live sibling and must never
 // leak into this config: 5270 lobby, 5273 tempest, 5274 star-wars, 5275
@@ -70,6 +75,21 @@ describe('scaffold — vite.config.ts (pinned port 5277, base /)', () => {
   it('keeps strictPort: true on both server and preview (fail loud on collision)', () => {
     const cfg = read('vite.config.ts')
     expect(count(cfg, 'strictPort: true')).toBeGreaterThanOrEqual(2)
+  })
+
+  it('pins host 127.0.0.1 on both server and preview (td1-1: strictPort alone does not protect the pin — vite falls through to the IPv6 twin [::1]:<port> with no collision error; the host pin is the line that actually fails loudly)', () => {
+    // Anchored to block membership, not a bare count: a config with BOTH host
+    // pins moved into `server` and NONE in `preview` would still pass a bare
+    // `count(...) >= 2` check (2 occurrences, wrong block) — the exact trap
+    // this story exists to close (td1-7 review round 1). Isolate each block's
+    // own text and assert the pin lives inside it.
+    const cfg = read('vite.config.ts')
+    expect(block(cfg, 'server'), 'server block must pin host 127.0.0.1').toContain(
+      "host: '127.0.0.1'",
+    )
+    expect(block(cfg, 'preview'), 'preview block must pin host 127.0.0.1').toContain(
+      "host: '127.0.0.1'",
+    )
   })
 
   it('allow-lists arcade.slabgorb.com on both server and preview (tunnel Host)', () => {
